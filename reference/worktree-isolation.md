@@ -16,7 +16,10 @@ giving each run its own full checkout.
    intentionally absent, so **pass the run's input via `--arg`/`--brief`/`--arg-file`** rather than
    relying on an uncommitted file.
 2. **Symlinks `node_modules`** from the main checkout (it is gitignored, so the fresh checkout has
-   none) for the package dir and the repo root.
+   none) for **every package in the repo** — each tracked `package.json`'s dir (discovered via
+   `git ls-files`) plus the repo root and cwd. A multi-package repo (e.g. a `packages/verify`
+   harness with its own deps) thus has all its scripts runnable inside the worktree; a single-package
+   repo links just root.
 3. **Remaps execution** — `ROOT`/`RUN_CWD` (where pi runs + where artifacts resolve) point at the
    worktree. Each node's prompt has the workflow's hardcoded absolute paths rewritten
    `BASE_ROOT→<worktree>` ONCE, so the agent writes INTO the worktree AND the driver's own marker

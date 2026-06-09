@@ -219,13 +219,30 @@ function setupWorktree(run, baseRoot, cwdRel, baseRunCwd) {
   ensureDir(path.dirname(wtRoot));
   // -B resets branch pi/<run> to HEAD so the run starts from a known committed state (clean room).
   git(baseRoot, "worktree", "add", "-B", branch, wtRoot, "HEAD");
-  // Link node_modules (gitignored → absent in the fresh checkout) for the package dir + repo root.
-  for (const rel of [cwdRel, ""].filter((v, i, arr) => arr.indexOf(v) === i)) {
-    const target = path.join(rel ? baseRunCwd : baseRoot, "node_modules");
+  // Link node_modules (gitignored → absent in the fresh checkout) for EVERY package in the base
+  // checkout, not just root+cwd: a worktree is HEAD-clean, so any tracked package dir whose base
+  // has an installed node_modules needs it symlinked, or that package's scripts (build/test/verify)
+  // break inside the worktree (e.g. a packages/verify harness with its own deps). Discover packages
+  // by their TRACKED package.json (git ls-files — so a gitignored nested node_modules never
+  // recurses), then symlink each existing node_modules at the same relative path. A single-package
+  // repo links just root — identical to the prior behavior.
+  let pkgRels = [];
+  try {
+    pkgRels = git(baseRoot, "ls-files")
+      .split("\n")
+      .filter((f) => f === "package.json" || f.endsWith("/package.json"))
+      .map((f) => (f === "package.json" ? "" : path.dirname(f)));
+  } catch {}
+  const linkRels = Array.from(new Set(["", cwdRel, ...pkgRels])).filter((d) => !d.split("/").includes("node_modules"));
+  let linked = 0;
+  for (const rel of linkRels) {
+    const target = path.join(baseRoot, rel, "node_modules");
     const link = path.join(wtRoot, rel, "node_modules");
-    try { if (fs.existsSync(target) && !fs.existsSync(link)) fs.symlinkSync(target, link, "dir"); } catch {}
+    try {
+      if (fs.existsSync(target) && !fs.existsSync(link)) { ensureDir(path.dirname(link)); fs.symlinkSync(target, link, "dir"); linked++; }
+    } catch {}
   }
-  console.log(`worktree → ${wtRoot}  (branch ${branch}, node_modules symlinked)\n`);
+  console.log(`worktree → ${wtRoot}  (branch ${branch}, ${linked} node_modules symlinked)\n`);
   return wtRoot;
 }
 // After the run: preserve the lesson SOURCE on its branch, copy the deliverable (out/<run>) back to
