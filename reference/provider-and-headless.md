@@ -46,11 +46,18 @@ these; if you adapt the spawn, keep them:
   argv string — robust for multi-KB wave prompts.
 
 ## Watchdog (why the heartbeat exists)
-Because a headless model can stall with no output, the driver treats **silence as the signal**:
-it tracks "time since last event," raises a **stall flag at >45s**, and hard-kills a node past
-`--node-timeout` (`$PI_RUNNER_NODE_TIMEOUT` or 1800s default, SIGTERM then SIGKILL). With `--debug`
-this is on your console every 4s; in production it still refreshes `run-status.json`. Never run a
-bring-up without it.
+A headless model fails in two shapes, and the driver guards both:
+- **Silence** — it stalls with no output. The driver treats silence as the signal: it tracks "time
+  since last event," raises a **stall flag at >45s**, and hard-kills a node past `--node-timeout`
+  (`$PI_RUNNER_NODE_TIMEOUT` or 1800s default, SIGTERM then SIGKILL).
+- **Stuck-token loop** — it streams the *same delta* over and over (a known cheap-model failure). The
+  driver counts consecutive identical ≥4-char deltas and kills at `PI_RUNNER_REPEAT_KILL` (default
+  400), so a loop dies in seconds instead of burning to the node-timeout. Legit heavy nodes never
+  repeat a delta more than ~2× in a row, so it never false-positives. (A *huge transcript* is not this
+  loop — those lines grow, never repeat; that bloat is handled by slimming the archive, not by a kill.)
+
+With `--debug` this is on your console every 4s; in production it still refreshes `run-status.json`.
+Never run a bring-up without it.
 
 ## Picking a model
 Start cheap and non-reasoning (`PI_CP_REASONING=0`) to shake out mechanics fast; flip reasoning

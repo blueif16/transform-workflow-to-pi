@@ -29,11 +29,11 @@
 //   --until <phase>    truncate after the first stage whose phase TITLE or node LABEL contains
 //                      this substring (case-insensitive). Default = $PI_RUNNER_UNTIL or "all".
 //   --provider/--model/--extension(-e)/--status as below (model defaults to $PI_CP_MODEL).
-//   --debug            DEBUG mode: real-time heartbeats + stall detection AND the heavy forensic
-//                      archive (full raw <node>.events.jsonl + <node>.debug.log). Production (no
-//                      --debug) skips both — can be 100s of MB/node — keeping only the digest's
-//                      distilled aggregates (timing, tool breakdown, thinking, tokens). ALWAYS use
-//                      while developing; re-run one node with --debug to recover its raw archive.
+//   --debug            DEBUG mode: real-time heartbeats + stall detection AND the forensic archive
+//                      (<node>.events.jsonl, slimmed to the low MB, + <node>.debug.log). Production
+//                      (no --debug) skips both, keeping only the digest's distilled aggregates
+//                      (timing, tool breakdown, thinking, tokens). ALWAYS use while developing;
+//                      re-run one node with --debug to recover its raw archive.
 //   --node-timeout N   hard-kill a node after N seconds (default $PI_RUNNER_NODE_TIMEOUT or 1800).
 //   --dry-run          extract + build prompts + print the exact pi commands; invoke no model.
 
@@ -111,6 +111,12 @@ const HEARTBEAT_MS = DEBUG ? 4000 : 10000;
 const STALL_WARN_S = 45;
 const NODE_TIMEOUT_S =
   args.nodeTimeout || Number(process.env.PI_RUNNER_NODE_TIMEOUT) || 1800;
+// Stuck-loop guard: some cheap models get stuck emitting the SAME delta over and over. If one
+// non-trivial delta repeats this many times in a row the node is looping (not progressing), so it's
+// killed early instead of burning to the node-timeout. 0 disables. NOTE: this is NOT what makes a raw
+// transcript huge — that is pi re-embedding the whole accumulated message on every delta (those lines
+// GROW, never repeat), fixed separately by the message_update slimming below.
+const REPEAT_KILL = process.env.PI_RUNNER_REPEAT_KILL !== undefined ? Number(process.env.PI_RUNNER_REPEAT_KILL) : 400;
 
 const outRel = `out/${args.run}`;
 const promptDir = path.join(RUN_CWD, outRel, "_pi");
@@ -234,11 +240,12 @@ async function runNode(node) {
     // modes (cheap). These are the SIGNAL that the raw archive below buries in bulk.
     const toolBreakdown = {};                                       // toolName -> count
     let thinkingChars = 0, thinkingDeltas = 0, thinkFirstAt = 0, thinkLastAt = 0;
+    let lastDelta = null, repeatRun = 0;                            // consecutive identical-delta run (stuck-loop guard)
     const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, billable: 0, contextPeak: 0, cost: 0 };
-    // SINGLE FLIP (--debug) gates the heavy FORENSIC artifacts: the full raw event stream AND the
-    // timeline debug.log. The raw stream is cumulative — pi re-embeds the whole accumulated message
-    // on every delta, so a single node can reach 100s of MB. Production writes neither (the digest's
-    // aggregates above are its telemetry); re-run one node with --debug to get the archive back.
+    // SINGLE FLIP (--debug) gates the FORENSIC artifacts: the event stream AND the timeline
+    // debug.log. The stream is SLIMMED as written (message_update snapshots stripped below), so it
+    // stays in the low MB instead of the 100s of MB pi's cumulative deltas would otherwise produce.
+    // Production writes neither (the digest's aggregates above are its telemetry); re-run with --debug.
     const evStream = DEBUG ? fs.createWriteStream(eventsFile) : null;
     const dbgStream = DEBUG ? fs.createWriteStream(debugLog) : null;
     const dbg = (m) => { if (dbgStream) dbgStream.write(`[+${((Date.now() - t0) / 1000).toFixed(1)}s] ${m}\n`); };
@@ -261,14 +268,17 @@ async function runNode(node) {
 
     const rl = createInterface({ input: child.stdout });
     rl.on("line", (line) => {
-      if (evStream) evStream.write(line + "\n");
       eventCount++;
       lastEventAt = Date.now();
       let ev;
-      try { ev = JSON.parse(line); } catch { return; }
+      try { ev = JSON.parse(line); } catch { if (evStream) evStream.write(line + "\n"); return; }
       const t = typeof ev.type === "string" ? ev.type : "";
       if (t) n.live.lastEvent = t;
       const ame = ev.assistantMessageEvent || ev.event || null;
+      // Stuck-loop guard: count consecutive IDENTICAL non-trivial deltas across text+thinking. A
+      // model looping on one token trips this; normal generation never repeats a ≥4-char delta 400×.
+      const delta = ev.type === "message_update" && ame && typeof ame.delta === "string" ? ame.delta : null;
+      if (delta && delta.length >= 4) { if (delta === lastDelta) repeatRun++; else { repeatRun = 1; lastDelta = delta; } }
       if (ev.type === "message_update" && ame && ame.type === "text_delta" && typeof ame.delta === "string") assistantText += ame.delta;
       else if (ev.type === "message_update" && ame && ame.type === "thinking_delta" && typeof ame.delta === "string") { thinkingChars += ame.delta.length; thinkingDeltas++; thinkLastAt = lastEventAt; if (!thinkFirstAt) thinkFirstAt = lastEventAt; }
       else if (typeof ev.delta === "string" && t.includes("text")) assistantText += ev.delta;
@@ -293,6 +303,28 @@ async function runNode(node) {
       }
       else if (t.startsWith("tool_execution_end")) { dbg(`tool✓ ${n.live.currentTool || ""}`); n.live.currentTool = null; }
       else if (dbgStream && t) dbg(`ev ${t}`);
+      // Archive write — SLIM message_update events: drop the cumulative `partial`/`message` snapshots
+      // pi re-embeds on every delta. THAT redundancy is what makes a raw transcript 100s of MB; the
+      // unique content is tiny and fully reconstructable from the kept `delta`s. Every other event
+      // type (incl. message_end's `usage`) is written verbatim. Aggregates above already read the
+      // full event, so slimming costs no information.
+      if (evStream) {
+        if (ev.type === "message_update") {
+          if (ev.assistantMessageEvent) delete ev.assistantMessageEvent.partial;
+          delete ev.message;
+          evStream.write(JSON.stringify(ev) + "\n");
+        } else {
+          evStream.write(line + "\n");
+        }
+      }
+      // Kill an obvious stuck-token loop early instead of letting it burn to the node-timeout.
+      if (REPEAT_KILL > 0 && repeatRun >= REPEAT_KILL && !n.killedRepeat && !finished) {
+        n.killedRepeat = true; n.repeatRun = repeatRun;
+        console.error(`    ✕ ${node.id} stuck-loop: same delta ×${repeatRun} (${JSON.stringify(lastDelta).slice(0, 40)}) — killing pi`);
+        dbg(`stuck-loop kill: same delta ×${repeatRun}`);
+        try { child.kill("SIGTERM"); } catch {}
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
+      }
       refresh(false);
     });
     child.stderr.on("data", (d) => { stderr += d.toString(); dbg(`stderr: ${d.toString().trim().slice(0, 200)}`); });
@@ -332,7 +364,7 @@ async function runNode(node) {
       // legitimate gates (e.g. a mid-chain-resume preflight that only verifies upstream files).
       const declaredMissing = n.artifacts.length > 0 && !n.artifacts.every((a) => a.exists);
       let st;
-      if (n.killedTimeout || code !== 0) st = "error";
+      if (n.killedTimeout || n.killedRepeat || code !== 0) st = "error";
       else if (parsed && parsed.status && parsed.status !== "ok") st = parsed.status; // gap/blocked self-report honored
       else if (declaredMissing) st = "blocked"; // ok claimed but a REPORTED file is missing (measure, don't trust)
       else st = "ok";
@@ -343,7 +375,9 @@ async function runNode(node) {
       n.thinking = { deltas: thinkingDeltas, chars: thinkingChars, spanMs: thinkFirstAt ? thinkLastAt - thinkFirstAt : 0 };
       n.tokens = tokens;
       n.eventCount = eventCount;
-      n.summary = n.killedTimeout ? `killed: exceeded ${NODE_TIMEOUT_S}s node timeout` : (parsed && parsed.summary) || assistantText.trim().slice(-240) || "";
+      n.summary = n.killedTimeout ? `killed: exceeded ${NODE_TIMEOUT_S}s node timeout`
+        : n.killedRepeat ? `killed: stuck-loop — same delta repeated ≥${REPEAT_KILL}×`
+        : (parsed && parsed.summary) || assistantText.trim().slice(-240) || "";
       n.issues = (parsed && parsed.issues) || [];
       n.pipelineFindings = (parsed && parsed.pipelineFindings) || [];
       if (!parsed) (n.issues = n.issues || []).push("no return JSON block parsed from pi output");

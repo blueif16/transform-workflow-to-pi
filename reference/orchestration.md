@@ -47,13 +47,19 @@ the only shared state is the reusable library the workflow's nodes read.
 `--debug` is the **single flip** between full-forensic and lean-fleet. It gates the heavy artifacts
 only; the digest's distilled aggregates (timing, tool breakdown, thinking, tokens) land in BOTH modes.
 - **`--debug` (always while developing):** 4s console heartbeat per running node — `t=elapsed ·
-  ev=events · tools=count · cur=tool · think=chars · tok=billable · last=event · Δ=since-last-event ·
-  ⚠STALLED` — continuous `run-status.json` refresh, a **stall flag at >45s** since the last event, a
-  hard `--node-timeout` (`$PI_RUNNER_NODE_TIMEOUT` or 1800s) that SIGTERM→SIGKILLs a runaway node, AND
-  the full forensic archive (raw `*.events.jsonl` + `*.debug.log`). A hang is visible in seconds.
-- **Production (no `--debug`):** lean — 10s status refresh, no console heartbeat, and **no raw event
-  archive** (it can hit 100s of MB/node — pi's stream is cumulative). The digest is the telemetry; the
-  unattended fleet runs this way. Re-run one node with `--debug` to recover its raw stream.
+  cur=tool · think=chars · tok=billable · Δ=since-last-event · ⚠STALLED` — continuous
+  `run-status.json` refresh, a **stall flag at >45s**, a hard `--node-timeout` (`$PI_RUNNER_NODE_TIMEOUT`
+  or 1800s) that SIGTERM→SIGKILLs a runaway node, AND the forensic archive (`*.events.jsonl` +
+  `*.debug.log`). A hang is visible in seconds.
+- **Production (no `--debug`):** lean — 10s status refresh, no console heartbeat, and **no event
+  archive**. The digest is the telemetry; the unattended fleet runs this way. Re-run one node with
+  `--debug` to recover its archive.
+- **The archive is slimmed.** pi's `message_update` events are cumulative (each delta re-embeds the
+  whole accumulated message → 100s of MB/node); the driver strips those snapshots as it writes,
+  keeping only deltas (~55× smaller, lossless). A giant transcript is **bloat, not a loop**.
+- **Three cost guards.** stall flag (>45s no event) · `--node-timeout` hard kill · **stuck-loop kill**
+  (`PI_RUNNER_REPEAT_KILL`, default 400 consecutive identical deltas — the signature of a model stuck
+  emitting one token; legit nodes never exceed ~2). Kills early instead of burning to the timeout.
 
 ## The incremental-bring-up lever: `--until`
 `--until <substring>` truncates after the first stage whose phase title or node label contains

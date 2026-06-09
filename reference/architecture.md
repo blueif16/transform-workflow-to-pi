@@ -81,12 +81,18 @@ discipline the Workflow's schema validation gives you for free on Claude.)
    summary, issues, pipelineFindings, artifacts[]}`, refreshed continuously. The whole run at a
    glance. This is what the Claude Code orchestrator polls. All of it is distilled live from the
    stream, so it is present in BOTH debug and production mode (cheap — no big files involved).
-2. **Per-node prompt** (`out/<id>/_pi/<node>.prompt.md`, always) + the **heavy forensic archive**
+2. **Per-node prompt** (`out/<id>/_pi/<node>.prompt.md`, always) + the **forensic archive**
    (`<node>.events.jsonl` + `<node>.debug.log`, **`--debug` only**) — drop here when a node looks wrong.
-3. **`events.jsonl`** (ground truth) — every pi event for exact reproduction. **DEBUG-ONLY**: the raw
-   stream is cumulative (pi re-embeds the whole accumulated message on each delta), so one node can
-   reach 100s of MB; production skips it and relies on tier 1. Re-run a node with `--debug` to get it
-   back. The single `--debug` flip is the toggle between lean-production and full-forensic.
+3. **`events.jsonl`** (ground truth) — every pi event for reproduction. **DEBUG-ONLY**, and **slimmed
+   as written**: pi's `message_update` events are cumulative (each delta re-embeds the *whole*
+   accumulated message), which would balloon one node to 100s of MB; the driver strips those redundant
+   `partial`/`message` snapshots, keeping only the incremental deltas → ~55× smaller (159 MB → 2.9 MB)
+   with zero loss (full text reconstructs from the deltas). Production skips the file entirely and
+   relies on tier 1. The single `--debug` flip toggles lean-production vs full-forensic.
+
+   A huge transcript is **bloat, not a loop** — those lines grow, never repeat. A real stuck-token
+   loop (same delta over and over) is caught separately by the `PI_RUNNER_REPEAT_KILL` watchdog
+   (default 400 consecutive identical deltas → kill), alongside the >45s stall flag and node-timeout.
 
 The union of all nodes' `pipelineFindings` is the workflow-improvement backlog — the same role
 it plays in the Claude Code Workflow.
