@@ -170,7 +170,9 @@ const promptDir = path.join(BASE_RUN_CWD, outRel, "_pi");
 const statusPath = path.resolve(args.status || path.join(BASE_RUN_CWD, outRel, "run-status.json"));
 
 const abs = (p) => (path.isAbsolute(p) ? p : path.join(RUN_CWD, p));
-const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
+// FUNCTION DECLARATION (hoisted): setupWorktree runs at module-eval (the `const wtRoot = ...` above),
+// BEFORE this line — so ensureDir must be hoisted, not a TDZ const, or --worktree throws on startup.
+function ensureDir(d) { return fs.mkdirSync(d, { recursive: true }); }
 const nowISO = () => new Date().toISOString();
 const slug = (label, i) => (label || `node-${i}`).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 function artifactState(p) {
@@ -209,7 +211,10 @@ function artifactStateAbs(p) {
 // never recurse. node_modules is symlinked from the main checkout (it is gitignored, so the fresh
 // checkout has none). The workflow's hardcoded absolute paths are rewritten BASE_ROOT→wtRoot per
 // node in runNode, so agents write INTO the worktree; status + logs stay in the MAIN tree (below).
-const git = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
+// FUNCTION DECLARATION (hoisted): setupWorktree calls git() at module-eval (above), before this
+// line — a TDZ const would throw on --worktree startup (the worktree-remove try/catch hid it; the
+// later worktree-add did not). Hoisted so the eager setupWorktree call resolves it.
+function git(cwd, ...a) { return execFileSync("git", a, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString().trim(); }
 function setupWorktree(run, baseRoot, cwdRel, baseRunCwd) {
   const wtRoot = path.join(path.dirname(baseRoot), ".pi-worktrees", run);
   const branch = `pi/${run}`;
