@@ -37,7 +37,7 @@
 //   --node-timeout N   hard-kill a node after N seconds (default $PI_RUNNER_NODE_TIMEOUT or 1800).
 //   --dry-run          extract + build prompts + print the exact pi commands; invoke no model.
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import fs from "node:fs";
 import os from "node:os";
@@ -73,9 +73,11 @@ loadDefaults();
 //                    Set generously: heavy nodes (long TTS / build / render steps) run long on a
 //                    cheap coding-plan model. Default 1800 (30 min); 600 was too tight.
 const resolveFrom = (root, p, fb) => (!p ? fb : path.isAbsolute(p) ? p : path.join(root, p));
-const ROOT = process.env.PI_RUNNER_ROOT ? path.resolve(process.env.PI_RUNNER_ROOT) : path.resolve(HERE, "..");
-const RUN_CWD = resolveFrom(ROOT, process.env.PI_RUNNER_CWD, ROOT);
-const WORKFLOW = resolveFrom(ROOT, process.env.PI_RUNNER_WORKFLOW, path.join(ROOT, ".claude/workflows/CHANGEME.js"));
+// BASE_* = the real (main) checkout. With --worktree these are remapped to a per-run git
+// worktree below (ROOT/RUN_CWD become the worktree); without it ROOT===BASE_ROOT etc.
+const BASE_ROOT = process.env.PI_RUNNER_ROOT ? path.resolve(process.env.PI_RUNNER_ROOT) : path.resolve(HERE, "..");
+const BASE_RUN_CWD = resolveFrom(BASE_ROOT, process.env.PI_RUNNER_CWD, BASE_ROOT);
+const WORKFLOW = resolveFrom(BASE_ROOT, process.env.PI_RUNNER_WORKFLOW, path.join(BASE_ROOT, ".claude/workflows/CHANGEME.js"));
 // ==========================================================================================
 
 function parseArgs(argv) {
@@ -96,6 +98,8 @@ function parseArgs(argv) {
     else if (k === "--status") a.status = next();
     else if (k === "--dry-run") a.dryRun = true;
     else if (k === "--debug") a.debug = true;
+    else if (k === "--worktree") a.worktree = true;
+    else if (k === "--keep-worktree") { a.worktree = true; a.keepWorktree = true; }
     else if (k === "--node-timeout") a.nodeTimeout = Number(next());
     else throw new Error(`unknown arg: ${k}`);
   }
@@ -124,9 +128,19 @@ const NODE_TIMEOUT_S =
 // GROW, never repeat), fixed separately by the message_update slimming below.
 const REPEAT_KILL = process.env.PI_RUNNER_REPEAT_KILL !== undefined ? Number(process.env.PI_RUNNER_REPEAT_KILL) : 400;
 
+// WORKTREE remap (opt-in via --worktree / PI_RUNNER_WORKTREE=1). When on, every node runs inside a
+// fresh per-run git worktree (ROOT/RUN_CWD point there); when off, ROOT===BASE_ROOT (unchanged).
+const WORKTREE = (args.worktree === true || process.env.PI_RUNNER_WORKTREE === "1") && !args.dryRun;
+const cwdRel = path.relative(BASE_ROOT, BASE_RUN_CWD); // e.g. "remotion-svg-primitives" (or "" if cwd===root)
+const wtRoot = WORKTREE ? setupWorktree(args.run, BASE_ROOT, cwdRel, BASE_RUN_CWD) : null;
+const ROOT = wtRoot || BASE_ROOT;
+const RUN_CWD = wtRoot ? path.join(wtRoot, cwdRel) : BASE_RUN_CWD;
+
 const outRel = `out/${args.run}`;
-const promptDir = path.join(RUN_CWD, outRel, "_pi");
-const statusPath = path.resolve(args.status || path.join(RUN_CWD, outRel, "run-status.json"));
+// Status + prompt/event logs ALWAYS live in the MAIN tree, so monitoring (run-status.json /
+// status.mjs / watch.mjs) is unaffected by worktree mode and survives teardown.
+const promptDir = path.join(BASE_RUN_CWD, outRel, "_pi");
+const statusPath = path.resolve(args.status || path.join(BASE_RUN_CWD, outRel, "run-status.json"));
 
 const abs = (p) => (path.isAbsolute(p) ? p : path.join(RUN_CWD, p));
 const ensureDir = (d) => fs.mkdirSync(d, { recursive: true });
@@ -159,6 +173,59 @@ function driverPreflightPaths(prompt) {
 function artifactStateAbs(p) {
   try { const s = fs.statSync(p); return { path: p, exists: s.size > 0, bytes: s.size }; }
   catch { return { path: p, exists: false, bytes: 0 }; }
+}
+
+// ===== WORKTREE ISOLATION (opt-in) =========================================================
+// Create a fresh per-run git worktree (branch pi/<run>, checked out at HEAD) so N concurrent runs
+// are PHYSICALLY isolated — a node in one run cannot see or clobber another lesson's files. The
+// worktree lives OUTSIDE the repo (a sibling .pi-worktrees/<run>) so it needs no gitignore and can
+// never recurse. node_modules is symlinked from the main checkout (it is gitignored, so the fresh
+// checkout has none). The workflow's hardcoded absolute paths are rewritten BASE_ROOT→wtRoot per
+// node in runNode, so agents write INTO the worktree; status + logs stay in the MAIN tree (below).
+const git = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
+function setupWorktree(run, baseRoot, cwdRel, baseRunCwd) {
+  const wtRoot = path.join(path.dirname(baseRoot), ".pi-worktrees", run);
+  const branch = `pi/${run}`;
+  // Idempotent: drop any stale worktree at this path first (a prior run / crash), then re-add.
+  try { git(baseRoot, "worktree", "remove", "--force", wtRoot); } catch {}
+  try { fs.rmSync(wtRoot, { recursive: true, force: true }); } catch {}
+  ensureDir(path.dirname(wtRoot));
+  // -B resets branch pi/<run> to HEAD so the run starts from a known committed state (clean room).
+  git(baseRoot, "worktree", "add", "-B", branch, wtRoot, "HEAD");
+  // Link node_modules (gitignored → absent in the fresh checkout) for the package dir + repo root.
+  for (const rel of [cwdRel, ""].filter((v, i, arr) => arr.indexOf(v) === i)) {
+    const target = path.join(rel ? baseRunCwd : baseRoot, "node_modules");
+    const link = path.join(wtRoot, rel, "node_modules");
+    try { if (fs.existsSync(target) && !fs.existsSync(link)) fs.symlinkSync(target, link, "dir"); } catch {}
+  }
+  console.log(`worktree → ${wtRoot}  (branch ${branch}, node_modules symlinked)\n`);
+  return wtRoot;
+}
+// After the run: preserve the lesson SOURCE on its branch, copy the deliverable (out/<run>) back to
+// the MAIN tree (out/ is gitignored, so it would vanish with the worktree), then remove the worktree
+// (branch persists for a human-gated merge). On failure we KEEP the worktree for inspection.
+function finishWorktree(wtRoot, run, baseRoot, baseRunCwd, cwdRel, ok, keep) {
+  const wtCwd = path.join(wtRoot, cwdRel);
+  try {
+    git(wtRoot, "add", "-A");
+    try { git(wtRoot, "commit", "-m", `pi(${run}): lesson run artifacts`); } catch {} // nothing to commit is fine
+  } catch (e) { console.error(`worktree commit skipped: ${e.message}`); }
+  // Copy the deliverable back so it survives teardown and is visible in the main tree.
+  try {
+    const src = path.join(wtCwd, "out", run);
+    if (fs.existsSync(src)) {
+      const dst = path.join(baseRunCwd, "out", run);
+      ensureDir(dst);
+      fs.cpSync(src, dst, { recursive: true, force: true });
+      console.log(`worktree → copied out/${run} back to the main tree`);
+    }
+  } catch (e) { console.error(`worktree copy-back skipped: ${e.message}`); }
+  if (ok && !keep) {
+    try { git(baseRoot, "worktree", "remove", "--force", wtRoot); console.log(`worktree removed (branch pi/${run} kept for merge)`); }
+    catch (e) { console.error(`worktree remove skipped: ${e.message}`); }
+  } else {
+    console.log(`worktree KEPT at ${wtRoot} (${ok ? "--keep-worktree" : "run not ok — inspect it"}); branch pi/${run}`);
+  }
 }
 
 // OUTPUT CONTRACT (the "artifact contract") — the generic marker layer Claude Code leaves to the
@@ -305,6 +372,13 @@ async function runNode(node) {
   n.startedAt = nowISO();
   const t0 = Date.now();
   writeStatus();
+
+  // WORKTREE: rewrite the workflow's hardcoded absolute paths (under BASE_ROOT) to THIS run's
+  // worktree, ONCE — so the agent writes INTO the worktree AND the driver's own marker checks
+  // (DRIVER-PREFLIGHT / DRIVER-ARTIFACTS / DRIVER-OWNS, all parsed from node.prompt below) resolve
+  // there too. wtRoot is a sibling dir that never contains BASE_ROOT as a substring, so this is
+  // idempotent. No-op when not isolated.
+  if (wtRoot && node.prompt.includes(BASE_ROOT)) node.prompt = node.prompt.split(BASE_ROOT).join(wtRoot);
 
   // DRIVER-side preflight short-circuit (see driverPreflightPaths): resolve a pure existence-check
   // node in plain code, no pi spawn.
@@ -572,6 +646,7 @@ async function runNode(node) {
       status.stage = null;
       status.done = true; status.ok = false; status.durationMs = Date.now() - RUN_T0; writeStatus();
       console.error(`\n✕ halted at ${bad.id} (${bad.status}) after ${((Date.now() - RUN_T0) / 1000).toFixed(1)}s. See ${statusPath}\n`);
+      if (wtRoot) finishWorktree(wtRoot, args.run, BASE_ROOT, BASE_RUN_CWD, cwdRel, false, args.keepWorktree);
       process.exit(1);
     }
   }
@@ -592,4 +667,5 @@ async function runNode(node) {
   const totS = (status.durationMs / 1000).toFixed(1), totMin = (status.durationMs / 60000).toFixed(1);
   const totTokK = status.totals.tokensBillable > 999 ? `${(status.totals.tokensBillable / 1000).toFixed(1)}k` : `${status.totals.tokensBillable}`;
   console.log(`\n${args.dryRun ? "DRY-RUN complete" : "✓ complete"} — ${status.totals.nodes} nodes in ${totS}s (${totMin}m) · ${status.totals.toolCalls} tools · ${totTokK} tok · status: ${statusPath}\n`);
+  if (wtRoot) finishWorktree(wtRoot, args.run, BASE_ROOT, BASE_RUN_CWD, cwdRel, status.ok === true, args.keepWorktree);
 })();

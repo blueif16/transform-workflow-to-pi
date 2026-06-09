@@ -101,17 +101,19 @@ nodes legitimately produce nothing).
   post-hook, and Claude is reliable). On pi the driver *enforces*. Both executors see the same
   prompt text, so there is no second copy.
 
-## Composition — per-stage commits and worktree isolation (the roadmap)
+## Composition — per-stage commits and worktree isolation
 
 The contract is the **shift-left, root-cause** layer. Two isolation layers compose with it:
 
-- **Per-stage git commit** (next): commit each node's diff in the run tree. Gives a precise
+- **Worktree per run** (SHIPPED — opt-in `--worktree`): each run gets its own git worktree, so a
+  node *cannot see* a sibling's files — cross-contamination becomes **impossible** rather than merely
+  *caught*. The contract still runs inside the worktree (its markers are rewritten to the worktree
+  paths), so the two layers reinforce. Full spec: `reference/worktree-isolation.md`.
+- **Per-stage git commit** (next): commit each node's diff inside the run's worktree. Gives a precise
   per-wave artifact snapshot (the audit trail *is* the commit DAG), resume-at-last-good-stage, and —
   crucially — turns the **owned-path check hard**: `git diff --name-only` for the stage must be a
-  subset of `DRIVER-OWNS`, catching cross-contamination *mechanically*, with the exact offending
-  path, at the stage it happened.
-- **Worktree per run** (endgame for big parallel fleets): each run gets its own checkout, so a node
-  *cannot see* a sibling's files — cross-contamination becomes **impossible** rather than *caught*.
+  subset of `DRIVER-OWNS`, catching any stray write *mechanically*, with the exact offending path, at
+  the stage it happened (today the owns check is soft — it inspects only the self-report).
 
 ## Relationship to the Hermes loop
 

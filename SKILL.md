@@ -96,6 +96,21 @@ transforms an existing workflow; it does not author the pipeline logic.
    wiring. Fleet = one background driver per instance, one `watch.mjs` each. See
    `reference/orchestration.md`. **You run every command; the user runs nothing.**
 
+8. **Adopt the Output Contract (recommended — one paste).** Paste `templates/workflow-snippets/contract.js`
+   into your workflow `.js` next to `discipline()`, and wrap each producing node's prompt with
+   `contract({ artifacts:[…], owns:[…] })`. Now the driver verifies each node's REQUIRED artifacts
+   independent of the self-report — a clean exit missing one is `blocked`, not a false `ok`. This is
+   already baked into the engine `run.mjs`; the snippet is the only per-workflow edit.
+   See `reference/artifact-contract.md`.
+
+9. **Harden for parallel fleets (opt-in — `--worktree`).** For a multi-run fleet, add `--worktree`
+   (or `PI_RUNNER_WORKTREE=1`): each run executes in its OWN git worktree (branch `pi/<id>`), so
+   concurrent runs are PHYSICALLY isolated — a cheap model cannot see or clobber another run's files.
+   Pass the run's input via `--arg`/`--brief` (the worktree is a clean `HEAD` checkout). Merge-back
+   is a conflict-free union IF your project doesn't hand-edit a shared registration list — see the
+   auto-discovery enabler (`templates/examples/auto-discover-registry.example.mjs`) +
+   `reference/worktree-isolation.md`. Also engine-baked; `--worktree` is the only switch.
+
 ## The laws (do not violate)
 - **Single source of truth = the workflow `.js`.** Improve a wave by editing its prompt/skill in
   the workflow and re-proving on Claude; pi runs the new prompts automatically. Zero hand-sync.
@@ -127,6 +142,10 @@ transforms an existing workflow; it does not author the pipeline logic.
   provider comes from pi's core `models.json`, which `--no-extensions` does NOT disable), always
   `--debug` while developing (heartbeat + 45s stall flag + node-timeout). A silent headless hang is
   otherwise invisible — this cost a real ~10-minute mystery stall.
+- **Physical isolation for fleets is one switch, not a fork.** `--worktree` runs each run in its own
+  git worktree (engine-baked, opt-in) — concurrent runs cannot see each other. Its only cost,
+  merge-back, is erased by auto-discovered registration (units register by exporting a descriptor
+  from their own file, never by hand-editing a shared list). See `reference/worktree-isolation.md`.
 
 ## Files in this skill
 - `reference/architecture.md` — why the workflow runs unchanged: the four invariants, the
@@ -136,14 +155,23 @@ transforms an existing workflow; it does not author the pipeline logic.
   driver enforcement). **Read this to make a node deliver the right artifact to the right place.**
 - `reference/orchestration.md` — Claude-Code-as-console: dry-run → background live → poll
   `run-status.json`, fleet, `--until`, debug vs production. **Read this to operate a run.**
+- `reference/worktree-isolation.md` — the opt-in `--worktree` physical isolation for parallel
+  fleets: what it does, the prompt-rewrite, node_modules symlink, status-stays-in-main, and the
+  conflict-free merge-back recipe. **Read this before running a fleet with `--worktree`.**
 - `reference/provider-and-headless.md` — the native `~/.pi/agent/models.json` credential setup and
   the headless pi invariants/watchdog. **Read this for setup + when a node hangs.**
 - `templates/models.json.example` — copy to `~/.pi/agent/models.json` (once per machine): the
   provider + credential pi resolves natively for every project.
 - `templates/pi-runner/` — copy this whole folder into a repo **verbatim**. `run.mjs` + `extract.mjs`
-  are the generic engine and `watch.mjs` + `status.mjs` the generic monitors (all stay byte-identical);
-  `.env` (from `.env.example`) is the only file you fill in — **wiring only, no secret**. `providers/coding-plan.ts` ships only for providers that need
-  a custom API impl / OAuth; the OpenAI-compatible case uses `models.json` and no extension.
+  are the generic engine and `watch.mjs` + `status.mjs` the generic monitors (all stay byte-identical) —
+  the Output Contract verification AND `--worktree` isolation are baked into `run.mjs`, so a project
+  gets both just by copying. `.env` (from `.env.example`) is the only file you fill in — **wiring
+  only, no secret**. `providers/coding-plan.ts` ships only for providers that need a custom API impl /
+  OAuth; the OpenAI-compatible case uses `models.json` and no extension.
+- `templates/workflow-snippets/contract.js` — the `contract()` helper to paste into your workflow
+  `.js` (the only per-workflow edit to adopt the Output Contract).
+- `templates/examples/auto-discover-registry.example.mjs` — adapt-me generator for auto-discovered
+  registration (the worktree merge-back enabler — stop hand-editing a shared registration list).
 
 ## Reference implementation
 The original, battle-tested instance lives in the `animation-test` repo at `pi-runner/` (the
