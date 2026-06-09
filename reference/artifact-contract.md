@@ -80,13 +80,43 @@ After a node exits, in addition to stat()ing the self-reported `outputArtifacts`
    self-report**. Any missing → `status = "blocked"`, with `contract breach — required artifact(s)
    missing: …` in `issues`. This branch sits **above** the self-reported status, so a node that
    claims `ok` but didn't produce a required file cannot pass. Recorded as `n.requiredArtifacts`.
-2. **Owned-path containment (soft, today).** Parse `DRIVER-OWNS`; check every self-reported write
+2. **Owned-path containment (soft, post-hoc).** Parse `DRIVER-OWNS`; check every self-reported write
    is inside an owned glob. A reported out-of-lane write → a `contract warn` issue + `n.ownsBreach`.
-   This is **soft** because the self-report won't *admit* a contamination write — full hard
-   enforcement is `git diff --name-only ⊆ owns`, which arrives with **per-stage commits** (below).
+   This is **soft** because the self-report won't *admit* a contamination write. Two hard layers now
+   compose above it: the **in-loop block** (the node-contract extension, below — PREVENTS the write)
+   and `git diff --name-only ⊆ owns` via per-stage commits (DETECTS it after the fact).
 
 A node with no `DRIVER-ARTIFACTS` line is unaffected (backward-compatible — check/preflight/gate
 nodes legitimately produce nothing).
+
+## The node-contract extension (in-loop, opt-in) — `extensions/node-contract.ts`
+
+The contract above is enforced by the **driver, after the node exits**. pi's own extension API lets
+us enforce two of its concerns **inside the agent loop**, where the model gets immediate feedback and
+can self-correct. This is a generic `-e` extension shipped with the template (explicit `-e` still
+loads under `--no-extensions`), opt-in via `PI_RUNNER_CONTRACT_EXT`. It does NOT replace the driver
+checks — it shifts them left; the driver's stat() + fenced-JSON fallback remain, so ON or OFF is
+non-breaking.
+
+1. **`submit_result` — a typed terminating return tool.** The node ENDS by *calling* it; pi validates
+   the args against the TypeBox schema (`{node,status,outputArtifacts,summary,issues,pipelineFindings}`)
+   and `terminate:true` ends the turn. The structured payload rides the `tool_execution_end` json
+   event as `result.details`; the driver reads it there (`submittedResult`) **in preference to** the
+   fenced-JSON parser — so the cheap model can no longer botch the ```json fence (the single most-
+   patched run.mjs surface: `98fcdd3 → 89fe3ac`). If the model didn't call the tool, the driver falls
+   back to the parser exactly as before. **Spike-verified (2026-06-09):** qwen3.7-max calls it
+   reliably headless; `details` land at `ev.result.details` (the exact field the driver reads).
+2. **Owned-paths in-loop block.** A `pi.on("tool_call")` hook reads `PI_NODE_OWNS` (the driver sets it
+   per node from the `DRIVER-OWNS` marker) and returns `{block:true,reason}` for any `write`/`edit`
+   whose resolved path is outside the lane — PREVENTING the cross-contamination write instead of
+   detecting it post-hoc. **Spike-verified (2026-06-09):** out-of-lane write blocked (file never
+   created), in-lane write succeeds (no over-block). **Best-effort caveat:** it gates `write`/`edit`
+   (target = `input.path`); a shell redirect inside `bash` can still bypass it, so the driver's
+   post-hoc check + worktree-per-run remain the backstop for bash writes.
+
+Arming it in production (`PI_RUNNER_CONTRACT_EXT=1`) is the next real-run validation step — the
+isolated spikes pass, but over-blocking risk (a node whose legitimate write falls outside a too-tight
+`DRIVER-OWNS`) is only provable on a full lesson run.
 
 ## Invariants
 

@@ -111,6 +111,22 @@ transforms an existing workflow; it does not author the pipeline logic.
    auto-discovery enabler (`templates/examples/auto-discover-registry.example.mjs`) +
    `reference/worktree-isolation.md`. Also engine-baked; `--worktree` is the only switch.
 
+10. **Arm the escalation gate (opt-in — `PI_RUNNER_ESCALATE=1`).** A cheap model runs every node; on a
+    **verified** failure (artifact-contract breach / stuck-loop / timeout / degenerate — never self-
+    confidence) the driver consults a stronger, ideally **cross-family** model ONCE, fed the failure
+    evidence. Wiring is `.env` only: `PI_RUNNER_ESCALATE_MODEL` (+ optional `PI_RUNNER_ESCALATE_PROVIDER`),
+    `PI_RUNNER_MAX_RETRIES`. Pick a cross-family consult — a provider whose cheap default is already its
+    top tier has no headroom (DashScope `cp`: `qwen3.7-max` is the ceiling → escalate to `minimax/MiniMax-M3`).
+    `DRIVER-NO-ESCALATE` opts a pure gate out. Engine-baked; driver-side, no pi extension. See `reference/escalation.md`.
+
+11. **Tighten the loop with the node-contract extension (opt-in — `PI_RUNNER_CONTRACT_EXT=1`).** Loads
+    `extensions/node-contract.ts` via `-e`: a typed `submit_result` tool (structured return — the model
+    *calls* it, so it can't botch the ```json fence; the driver reads `result.details` off the
+    `tool_execution_end` event, with the fenced-JSON parser as fallback) + an in-loop owned-paths
+    `tool_call` block (BLOCKS an out-of-lane `write`/`edit` before it lands, from the node's `DRIVER-OWNS`).
+    Per-node tool gating rides the same family: `DRIVER-TOOLS` / `DRIVER-EXCLUDE-TOOLS` markers →
+    `--tools`/`--exclude-tools`. Both spike-verified on qwen headless; see `reference/artifact-contract.md`.
+
 ## The laws (do not violate)
 - **Single source of truth = the workflow `.js`.** Improve a wave by editing its prompt/skill in
   the workflow and re-proving on Claude; pi runs the new prompts automatically. Zero hand-sync.
@@ -146,6 +162,15 @@ transforms an existing workflow; it does not author the pipeline logic.
   git worktree (engine-baked, opt-in) — concurrent runs cannot see each other. Its only cost,
   merge-back, is erased by auto-discovered registration (units register by exporting a descriptor
   from their own file, never by hand-editing a shared list). See `reference/worktree-isolation.md`.
+- **Hand-roll the orchestration; reach for pi-native only at the interpretation surfaces.** The
+  driver's own deterministic plumbing (the DAG, filesystem coordination, artifact `stat()`, worktree)
+  is YOURS — pi is minimal by design (no sub-agents, no native typed-return) and *expects* you to own
+  it; keep it. Reach for a pi-native mechanism ONLY where the driver must INTERPRET the cheap model's
+  free-form output — that is where harness fragility concentrates (the return-block parser was the
+  single most-patched surface). pi's purpose-built seams there: `submit_result` (typed return) and the
+  `tool_call` block (in-loop owned-paths) — both opt-in via `PI_RUNNER_CONTRACT_EXT`, both keep the
+  driver fallback so they never break a run. Escalation, by contrast, needs NO extension: it is a
+  per-node `--model`/`--provider` override over signals the driver already computes.
 
 ## Files in this skill
 - `reference/architecture.md` — why the workflow runs unchanged: the four invariants, the
@@ -153,6 +178,9 @@ transforms an existing workflow; it does not author the pipeline logic.
 - `reference/artifact-contract.md` — the Output Contract: the fourth contract layer Claude Code
   leaves to the orchestrator (`DRIVER-ARTIFACTS`/`DRIVER-OWNS` markers + the `contract()` helper +
   driver enforcement). **Read this to make a node deliver the right artifact to the right place.**
+- `reference/escalation.md` — the escalation gate (advisor inversion): the empirical classifier, the
+  non-blind consult preamble, the `.env` wiring + cross-family target, `DRIVER-NO-ESCALATE`, and the
+  Hermes tie-in. **Read this to arm `PI_RUNNER_ESCALATE`.**
 - `reference/orchestration.md` — Claude-Code-as-console: dry-run → background live → poll
   `run-status.json`, fleet, `--until`, debug vs production. **Read this to operate a run.**
 - `reference/worktree-isolation.md` — the opt-in `--worktree` physical isolation for parallel
@@ -167,7 +195,9 @@ transforms an existing workflow; it does not author the pipeline logic.
   the Output Contract verification AND `--worktree` isolation are baked into `run.mjs`, so a project
   gets both just by copying. `.env` (from `.env.example`) is the only file you fill in — **wiring
   only, no secret**. `providers/coding-plan.ts` ships only for providers that need a custom API impl /
-  OAuth; the OpenAI-compatible case uses `models.json` and no extension.
+  OAuth; the OpenAI-compatible case uses `models.json` and no extension. `extensions/node-contract.ts`
+  is the generic opt-in in-loop layer (typed `submit_result` + owned-paths block), armed via
+  `PI_RUNNER_CONTRACT_EXT`; the escalation gate is engine-baked, armed via `PI_RUNNER_ESCALATE`.
 - `templates/workflow-snippets/contract.js` — the `contract()` helper to paste into your workflow
   `.js` (the only per-workflow edit to adopt the Output Contract).
 - `templates/examples/auto-discover-registry.example.mjs` — adapt-me generator for auto-discovered
