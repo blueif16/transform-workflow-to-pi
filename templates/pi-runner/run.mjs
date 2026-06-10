@@ -696,7 +696,7 @@ async function runNode(node, opts = {}) {
       if (n.killedTimeout || n.killedRepeat || code !== 0) st = "error";
       else if (contractMissing.length) st = "blocked"; // CONTRACT: a required artifact is missing — driver-verified, beats any self-report
       else if (parsed && parsed.status && parsed.status !== "ok") st = parsed.status; // gap/blocked self-report honored
-      else if (declaredMissing) st = "blocked"; // ok claimed but a REPORTED file is missing (measure, don't trust)
+      else if (declaredMissing && !(requiredPaths && requiredPaths.length)) st = "blocked"; // a missing/empty SELF-REPORTED file blocks ONLY a node with NO DRIVER-ARTIFACTS contract. When a contract WAS declared and is satisfied (contractMissing empty, above), it is the authority — a noisy self-report (a stripped path, or an intentionally size-0 file like .gitkeep) must NOT override it. "Verified, not trusted" cuts both ways: trust the driver-verified contract over the model's self-report.
       else if (!parsed) st = "error"; // clean exit but NO return-protocol block = degenerate run (agent derailed / its output was lost). Fail LOUDLY here — never silently pass it as ok. (A derailed W2c that wandered into another lesson's file + wrote nothing was slipping through as ok and only surfacing one node downstream when its consumer couldn't find the input.)
       else st = "ok";
       n.status = st;
@@ -714,6 +714,7 @@ async function runNode(node, opts = {}) {
       if (!parsed) (n.issues = n.issues || []).push("no return JSON block parsed from pi output");
       if (contractMissing.length) (n.issues = n.issues || []).push(`contract breach — required artifact(s) missing: ${contractMissing.join(", ")}`);
       if (ownsBreach.length) (n.issues = n.issues || []).push(`contract warn — reported writes outside owned paths: ${ownsBreach.join(", ")}`);
+      if (declaredMissing && requiredPaths && requiredPaths.length) (n.issues = n.issues || []).push(`contract note — a self-reported artifact is empty/unresolved but the DRIVER-ARTIFACTS contract is satisfied (advisory, non-blocking)`);
       if (stderr.trim()) n.stderrTail = stderr.trim().slice(-500);
       n.endedAt = nowISO();
       n.durationMs = Date.now() - t0;
