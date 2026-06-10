@@ -175,13 +175,28 @@ const abs = (p) => (path.isAbsolute(p) ? p : path.join(RUN_CWD, p));
 function ensureDir(d) { return fs.mkdirSync(d, { recursive: true }); }
 const nowISO = () => new Date().toISOString();
 const slug = (label, i) => (label || `node-${i}`).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+// PROJECT_BASE — the workflow's output root (the `projectDir` arg) resolved to absolute (and into
+// the worktree if active). Cheap models often self-report paths RELATIVE TO THIS dir (e.g. "src/x")
+// rather than to RUN_CWD/ROOT, so the forgiving resolvers below try it as an extra base — else a
+// node that genuinely wrote its files (esp. a no-DRIVER-ARTIFACTS node judged only by self-report)
+// gets a false "missing" → false `blocked`. No-op when no projectDir arg is passed (generic:
+// workflows without one are unaffected). Could later derive from the DRIVER-OWNS markers to drop the
+// arg-name convention entirely.
+const PROJECT_BASE = (() => {
+  const a = (args.wfArgs && args.wfArgs.projectDir != null) ? String(args.wfArgs.projectDir) : null;
+  if (!a) return null;
+  if (!path.isAbsolute(a)) return path.join(RUN_CWD, a);
+  return (wtRoot && a.includes(BASE_ROOT)) ? a.split(BASE_ROOT).join(wtRoot) : a;
+})();
+
 function artifactState(p) {
   // Resolve a node-declared artifact path FORGIVINGLY before judging it missing. pi agents
-  // inconsistently report a path relative to RUN_CWD (the repo subdir) OR to ROOT (e.g.
-  // "remotion-svg-primitives/lesson-data/..", because the prompt shows ROOT-prefixed abs paths).
-  // The strict join(RUN_CWD, p) double-prefixes the repo dir and false-flags a real written file as
-  // "blocked" (killing the whole run for nothing). Try RUN_CWD first, then ROOT; absolute as-is.
-  const candidates = path.isAbsolute(p) ? [p] : [path.join(RUN_CWD, p), path.join(ROOT, p)];
+  // inconsistently report a path relative to RUN_CWD (the repo subdir), ROOT (the prompt shows
+  // ROOT-prefixed abs paths), OR the projectDir (e.g. "src/x" under projectDir). The strict
+  // join(RUN_CWD, p) false-flags a real written file as "blocked" (killing the run for nothing).
+  // Try RUN_CWD, then ROOT, then PROJECT_BASE; absolute as-is.
+  const candidates = path.isAbsolute(p) ? [p]
+    : [path.join(RUN_CWD, p), path.join(ROOT, p), ...(PROJECT_BASE ? [path.join(PROJECT_BASE, p)] : [])];
   for (const c of candidates) {
     try { const s = fs.statSync(c); return { path: p, exists: s.size > 0, bytes: s.size }; } catch {}
   }
@@ -200,8 +215,16 @@ function driverPreflightPaths(prompt) {
   return paths.length ? paths : null;
 }
 function artifactStateAbs(p) {
-  try { const s = fs.statSync(p); return { path: p, exists: s.size > 0, bytes: s.size }; }
-  catch { return { path: p, exists: false, bytes: 0 }; }
+  // Forgiving like artifactState: a DRIVER-ARTIFACTS marker may be project-relative (resolve via
+  // RUN_CWD/ROOT/PROJECT_BASE — fixes the worktree/projectDir case where a bare statSync against the
+  // driver's cwd misses a file written into the worktree/projectDir). A DRIVER-PREFLIGHT path is
+  // absolute → candidates=[p], unchanged.
+  const candidates = path.isAbsolute(p) ? [p]
+    : [path.join(RUN_CWD, p), path.join(ROOT, p), ...(PROJECT_BASE ? [path.join(PROJECT_BASE, p)] : [])];
+  for (const c of candidates) {
+    try { const s = fs.statSync(c); return { path: p, exists: s.size > 0, bytes: s.size }; } catch {}
+  }
+  return { path: p, exists: false, bytes: 0 };
 }
 
 // ===== WORKTREE ISOLATION (opt-in) =========================================================
