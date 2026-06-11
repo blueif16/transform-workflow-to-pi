@@ -140,6 +140,8 @@ transforms an existing workflow; it does not author the pipeline logic.
     tool-thrash kill) that catch the degenerate classes the prompt can't. macOS only (a Linux fleet would
     use bubblewrap — not wired). Engine-baked; `sandbox/read-scope.sb` is the profile. See `reference/read-scope-sandbox.md`.
 
+13. **Seed the per-node output-criteria fixture (the judging standard).** Creating a workflow's harness includes creating its **acceptance-criteria fixture** alongside the skill-system map — `<repo>/.agents/skill-system-criteria.md`, ONE entry per producing node (artifact → downstream purpose → acceptance criteria → red flags). The node set is exactly what `extract.mjs` already enumerates, so draft it with a per-node criteria-drafting workflow (one agent per node reads that node's skill + a real sample artifact + the brief, returns a structured `{purpose, criteria, redFlags}`) and write the returned entries to the fixture. This is the human-judged quality bar every future run is judged against — the complement to the mechanical Output Contract (existence/lane) and the sibling of the skill-system map (composition/diagnostics). It is a **JUDGING fixture, NEVER injected into a node's prompt** (that teaches-to-the-test and voids the clean-room signal that tells you whether the SKILL ITSELF produces good output). The `hermes-skill-system` loop then MAINTAINS it (sharpens a node's criteria whenever an edit changes what good output for that node means); edit it by hand too, whenever you decide a node should emit a different/richer shape.
+
 ## The laws (do not violate)
 - **Single source of truth = the workflow `.js`.** Improve a wave by editing its prompt/skill in
   the workflow and re-proving on Claude; pi runs the new prompts automatically. Zero hand-sync.
@@ -167,6 +169,13 @@ transforms an existing workflow; it does not author the pipeline logic.
   parses them — no extractor change, same convention as `DRIVER-PREFLIGHT`). This is the shift-left
   root-cause fix: encode the end-product up front instead of detecting a missing one downstream.
   Full spec + the per-stage-commit/worktree roadmap: `reference/artifact-contract.md`.
+- **A workflow ships with its criteria fixture.** Standing up a workflow creates
+  `<repo>/.agents/skill-system-criteria.md` — the per-node, human-judged QUALITY bar (sibling of the
+  skill-system map, complement to the mechanical Output Contract: the contract checks the artifact
+  *exists*, the criteria say whether it is *good*). It is the standard runs are judged against to
+  converge on quality, and the improvement target sharpened each run. It is **never injected into a
+  node's prompt** (that would teach-to-the-test and void the clean-room signal), and the
+  `hermes-skill-system` loop maintains it (step 13 above; that skill's INIT seeds it, OPERATE evolves it).
 - **Headless invariants are non-negotiable.** Close stdin, `--offline`, `--no-extensions` (the `cp`
   provider comes from pi's core `models.json`, which `--no-extensions` does NOT disable), always
   `--debug` while developing (heartbeat + 45s stall flag + node-timeout). A silent headless hang is
