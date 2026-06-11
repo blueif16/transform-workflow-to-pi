@@ -127,6 +127,17 @@ transforms an existing workflow; it does not author the pipeline logic.
     Per-node tool gating rides the same family: `DRIVER-TOOLS` / `DRIVER-EXCLUDE-TOOLS` markers →
     `--tools`/`--exclude-tools`. Both spike-verified on qwen headless; see `reference/artifact-contract.md`.
 
+12. **Lock the read-scope with an OS sandbox (opt-in — `--sandbox`, macOS).** `--worktree` stops a node
+    *writing* outside its lane; it does NOT stop it *reading* a sibling's files (a cheap model that can't
+    find a component greps the whole tree + reads other units' source, bloating context). Add `--sandbox`
+    (or `PI_RUNNER_SANDBOX=1`): a node that DECLARES its read scope (a `DRIVER-READ-SCOPE:` marker, rendered
+    by the same `contract()` family) runs under macOS `sandbox-exec` (Seatbelt), so any read outside
+    {toolchain ∪ declared scope} returns `EPERM` — kernel-enforced and inherited by child `grep`/`find`/`cat`.
+    Default OFF and byte-identical when off; only a marked node is wrapped. Pair it with the two behavioral
+    watchdogs (`PI_RUNNER_STALL_TIMEOUT` silent-death kill, `PI_RUNNER_TOOL_REPEAT_KILL` no-progress
+    tool-thrash kill) that catch the degenerate classes the prompt can't. macOS only (a Linux fleet would
+    use bubblewrap — not wired). Engine-baked; `sandbox/read-scope.sb` is the profile. See `reference/read-scope-sandbox.md`.
+
 ## The laws (do not violate)
 - **Single source of truth = the workflow `.js`.** Improve a wave by editing its prompt/skill in
   the workflow and re-proving on Claude; pi runs the new prompts automatically. Zero hand-sync.
@@ -162,6 +173,14 @@ transforms an existing workflow; it does not author the pipeline logic.
   git worktree (engine-baked, opt-in) — concurrent runs cannot see each other. Its only cost,
   merge-back, is erased by auto-discovered registration (units register by exporting a descriptor
   from their own file, never by hand-editing a shared list). See `reference/worktree-isolation.md`.
+- **Prompt rules are unenforceable on weak models — put the boundary in the OS.** `--worktree` isolates
+  WRITES; `--sandbox` (macOS Seatbelt, opt-in) isolates READS: a node's `DRIVER-READ-SCOPE` becomes a
+  kernel-enforced deny-all-reads-except-{toolchain ∪ scope}, inherited by every child process, so a
+  `grep /` or a sibling-source spelunk EPERMs instead of bloating context. The two layers compose
+  (Seatbelt matches the symlink TARGET realpath, so the read-scope auto-follows the worktree). Its
+  profile must grant the FULL runtime read surface — process cwd, any `-e` extension dir, and the
+  realpath TARGET of every workspace-linked dep (`@scope/*` symlinks point OUTSIDE node_modules) — or
+  the toolchain EPERMs before the model runs. See `reference/read-scope-sandbox.md`.
 - **Hand-roll the orchestration; reach for pi-native only at the interpretation surfaces.** The
   driver's own deterministic plumbing (the DAG, filesystem coordination, artifact `stat()`, worktree)
   is YOURS — pi is minimal by design (no sub-agents, no native typed-return) and *expects* you to own
@@ -186,6 +205,10 @@ transforms an existing workflow; it does not author the pipeline logic.
 - `reference/worktree-isolation.md` — the opt-in `--worktree` physical isolation for parallel
   fleets: what it does, the prompt-rewrite, node_modules symlink, status-stays-in-main, and the
   conflict-free merge-back recipe. **Read this before running a fleet with `--worktree`.**
+- `reference/read-scope-sandbox.md` — the opt-in `--sandbox` OS read-scope (macOS Seatbelt): the
+  `DRIVER-READ-SCOPE` marker, `buildSandboxProfile`'s full-runtime-surface grants (cwd + extension dir +
+  linked-package realpath targets), worktree-compatibility, and the two behavioral watchdogs. **Read
+  this before running with `--sandbox`.**
 - `reference/provider-and-headless.md` — the native `~/.pi/agent/models.json` credential setup and
   the headless pi invariants/watchdog. **Read this for setup + when a node hangs.**
 - `templates/models.json.example` — copy to `~/.pi/agent/models.json` (once per machine): the
