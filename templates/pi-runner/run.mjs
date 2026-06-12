@@ -268,7 +268,12 @@ function buildSandboxProfile(node, scopeRoots) {
   // / src/lessons) stay denied -- a (subpath cwd) would re-expose the whole repo and defeat the isolation.
   // Expand to {itself, realpath} like the roots so a symlinked cwd (worktree mode) matches too.
   const cwdLits = [...new Set(expand(RUN_CWD))].map((p) => `  (literal ${JSON.stringify(p)})`).join("\n");
-  const allows = roots.map((p) => `  (subpath ${JSON.stringify(p)})`).join("\n") + "\n" + cwdLits;
+  // cwd dotenv files are ALWAYS readable: build CLIs (e.g. the Remotion CLI) unconditionally read
+  // .env/.env.local from cwd; an EPERM there kills the still-render path before the model runs.
+  const dotenvLits = [".env", ".env.local"]
+    .flatMap((f) => [...new Set(expand(path.join(RUN_CWD, f)))])
+    .map((p) => `  (literal ${JSON.stringify(p)})`).join("\n");
+  const allows = roots.map((p) => `  (subpath ${JSON.stringify(p)})`).join("\n") + "\n" + cwdLits + "\n" + dotenvLits;
   const out = tmpl
     .replaceAll("@HOME@", os.homedir())
     .replaceAll("@TMPDIR@", os.tmpdir().replace(/\/+$/, ""))
