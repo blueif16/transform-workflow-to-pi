@@ -858,6 +858,20 @@ async function runNode(node, opts = {}) {
     let lastDelta = null, repeatRun = 0;                            // consecutive identical-delta run (stuck-loop guard)
     let submittedResult = null;                                     // structured return from the node-contract submit_result tool (if active)
     const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, billable: 0, contextPeak: 0, cost: 0 };
+    // PER-CALL TIMING (the wall-clock x-ray). pi's events carry NO per-event timestamp and its
+    // tool_execution_start/end carry no time at all (verified: only `session` has an ISO stamp and
+    // message_end a per-turn epoch-ms), so per-tool/per-turn wall-clock can ONLY be reconstructed at
+    // the point the driver RECEIVES each line. We stamp every event with a node-relative `_t` ms (and
+    // the slimmed archive line also gets an absolute `_rt`), then pair tool_execution_start→end by the
+    // native `toolCallId` and turn_start/message_start→message_end for turns — accumulating ONE compact
+    // per-node timeline. All driver-side, all additive (no pi change). Lands in BOTH modes (cheap;
+    // bounded by tool-call + turn count, not by delta volume), so production keeps the x-ray too.
+    const tlTools = [];                                  // [{ id, name, tStartMs, durMs }] — pi tool calls, start→end paired by toolCallId
+    const tlTurns = [];                                  // [{ tStartMs, durMs, tokIn, tokOut, tokBillable }] — model turns, start→message_end
+    const toolOpen = new Map();                          // toolCallId -> { name, startRel } awaiting its tool_execution_end
+    let turnStartRel = null;                             // node-relative ms the current turn began (turn_start/message_start)
+    let firstEventRel = null, lastEventRel = 0;          // node-relative span of the event stream (for the reconciliation check)
+    let tokBefore = 0;                                   // running billable BEFORE the current message_end (→ per-turn delta)
     // SINGLE FLIP (--debug) gates the FORENSIC artifacts: the event stream AND the timeline
     // debug.log. The stream is SLIMMED as written (message_update snapshots stripped below), so it
     // stays in the low MB instead of the 100s of MB pi's cumulative deltas would otherwise produce.
@@ -912,6 +926,14 @@ async function runNode(node, opts = {}) {
     rl.on("line", (line) => {
       eventCount++;
       lastEventAt = Date.now();
+      // RECEIVE-TIME stamp (the per-event clock pi does not provide). `tRel` = ms since this node's
+      // t0; `rtISO` = wall-clock. Captured ONCE here so the slimmed archive line and the per-tool/
+      // per-turn timeline below share one consistent clock. Additive — no existing reader of
+      // events.jsonl enumerates keys, so injecting _t/_rt never breaks the tail/replay consumer.
+      const tRel = lastEventAt - t0;
+      const rtISO = new Date(lastEventAt).toISOString();
+      if (firstEventRel === null) firstEventRel = tRel;
+      lastEventRel = tRel;
       let ev;
       try { ev = JSON.parse(line); } catch { if (evStream) evStream.write(line + "\n"); return; }
       const t = typeof ev.type === "string" ? ev.type : "";
@@ -924,6 +946,9 @@ async function runNode(node, opts = {}) {
       if (ev.type === "message_update" && ame && ame.type === "text_delta" && typeof ame.delta === "string") assistantText += ame.delta;
       else if (ev.type === "message_update" && ame && ame.type === "thinking_delta" && typeof ame.delta === "string") { thinkingChars += ame.delta.length; thinkingDeltas++; thinkLastAt = lastEventAt; if (!thinkFirstAt) thinkFirstAt = lastEventAt; }
       else if (typeof ev.delta === "string" && t.includes("text")) assistantText += ev.delta;
+      // TURN START — a model turn opens at turn_start (or the first message_start if turn_start is
+      // absent in this pi version). Mark it ONCE per turn so message_end can close the interval.
+      if (t === "turn_start" || (t === "message_start" && turnStartRel === null)) turnStartRel = tRel;
       // Per-call usage is final on message_end. input/output are PER CALL → summing them is the true
       // billable total (input re-sends context each turn, which is what you pay). totalTokens is a
       // CUMULATIVE context counter, not per-call → take its MAX (peak context footprint), never sum.
@@ -935,6 +960,15 @@ async function runNode(node, opts = {}) {
         tokens.billable = tokens.input + tokens.output;
         tokens.contextPeak = Math.max(tokens.contextPeak, u.totalTokens || 0);
         tokens.cost += (u.cost && u.cost.total) || 0;
+        // PER-TURN row: timing (turn open → this message_end) + the billable token DELTA this turn
+        // added. tokIn/tokOut are already per-call (this turn's), so they ARE the delta; tokBillable
+        // is taken as (running billable − the snapshot before this turn) so the turns' deltas SUM to
+        // the node billable exactly (the reconciliation invariant). turn_start may be absent → fall
+        // back to firstEvent for turn 0 so the first row still has a real start.
+        const tStart = turnStartRel != null ? turnStartRel : (firstEventRel ?? tRel);
+        tlTurns.push({ tStartMs: tStart, durMs: tRel - tStart, tokIn: u.input || 0, tokOut: u.output || 0, tokBillable: tokens.billable - tokBefore });
+        tokBefore = tokens.billable;
+        turnStartRel = null;
       }
       if (t.startsWith("tool_execution_start")) {
         toolCalls++;
@@ -942,6 +976,10 @@ async function runNode(node, opts = {}) {
         toolBreakdown[tn] = (toolBreakdown[tn] || 0) + 1;
         n.live.currentTool = tn;
         dbg(`tool▶ ${tn}`);
+        // OPEN a per-tool interval keyed by the NATIVE toolCallId (exact start→end pairing, never
+        // positional). A long bash/render dominates a node's wall-clock; this is the only way to see it.
+        const cid = ev.toolCallId || ev.id || `${tn}#${toolCalls}`;
+        toolOpen.set(cid, { name: tn, startRel: tRel });
         // No-progress tool-thrash guard: identical (name+args) repeated with no write/edit between.
         if (TOOL_REPEAT_KILL > 0 && !finished) {
           if (/^(write|edit|str_replace|apply_patch|multi_edit|create|submit_result)/i.test(tn)) {
@@ -963,6 +1001,14 @@ async function runNode(node, opts = {}) {
         const res = ev.result || ev.toolResult || ev.output || null;
         const det = (res && (res.details || res.detail)) || ev.details || null;
         if (tn === "submit_result" && det && typeof det === "object") submittedResult = det;
+        // CLOSE the matching tool interval → one timeline row (name · start · duration). Match by the
+        // native toolCallId; fall back to the oldest still-open call (FIFO) for a pi version that omits
+        // the id on the end event, so a duration is still recorded rather than dropped.
+        const cid = ev.toolCallId || ev.id || null;
+        let open = cid ? toolOpen.get(cid) : null;
+        if (!open && toolOpen.size) { const k = toolOpen.keys().next().value; open = toolOpen.get(k); toolOpen.delete(k); }
+        else if (cid) toolOpen.delete(cid);
+        if (open) tlTools.push({ name: open.name || tn || "tool", tStartMs: open.startRel, durMs: tRel - open.startRel });
         dbg(`tool✓ ${n.live.currentTool || ""}`); n.live.currentTool = null;
       }
       else if (dbgStream && t) dbg(`ev ${t}`);
@@ -972,12 +1018,16 @@ async function runNode(node, opts = {}) {
       // type (incl. message_end's `usage`) is written verbatim. Aggregates above already read the
       // full event, so slimming costs no information.
       if (evStream) {
+        // Stamp every archived event with the driver receive-time: `_t` (node-relative ms) + `_rt`
+        // (wall ISO). Additive top-level keys — the only events.jsonl reader (viz-model.tailNodeOutput)
+        // reads named keys, never enumerates — so this is a pure superset of the prior stream.
+        ev._t = tRel; ev._rt = rtISO;
         if (ev.type === "message_update") {
           if (ev.assistantMessageEvent) delete ev.assistantMessageEvent.partial;
           delete ev.message;
           evStream.write(JSON.stringify(ev) + "\n");
         } else {
-          evStream.write(line + "\n");
+          evStream.write(JSON.stringify(ev) + "\n");
         }
       }
       // Kill an obvious stuck-token loop early instead of letting it burn to the node-timeout.
@@ -1080,6 +1130,26 @@ async function runNode(node, opts = {}) {
       n.thinking = { deltas: thinkingDeltas, chars: thinkingChars, spanMs: thinkFirstAt ? thinkLastAt - thinkFirstAt : 0 };
       n.tokens = tokens;
       n.eventCount = eventCount;
+      // PER-NODE TIMELINE (the wall-clock x-ray) — a COMPACT, additive node-record field, present in
+      // BOTH modes (its size is bounded by tool-call + turn count — a few dozen rows, KB not MB). It
+      // answers "where did this node's wall-clock go?": which tools ran when + for how long, each
+      // model turn's duration, and the per-turn token delta. `toolMs`/`turnMs` are the summed busy
+      // times; `wallMs` is the event-stream span (firstEvent→lastEvent). Reconciliation invariants a
+      // consumer can assert (anti-reward-hack): Σ tlTurns.tokBillable === tokens.billable (turns
+      // partition the billable tokens) and toolMs+turnMs ≲ durationMs+wallMs (busy time ≤ node wall-
+      // clock; tools and model turns interleave, never exceeding the node's own elapsed). A timeline
+      // that does not reconcile with the observed node wall-clock/tokens is a bug, not evidence.
+      const toolMs = tlTools.reduce((a, x) => a + (x.durMs || 0), 0);
+      const turnMs = tlTurns.reduce((a, x) => a + (x.durMs || 0), 0);
+      n.timeline = {
+        firstEventMs: firstEventRel ?? 0,
+        lastEventMs: lastEventRel,
+        wallMs: lastEventRel - (firstEventRel ?? 0),    // event-stream span (first→last received event)
+        toolMs, turnMs,                                  // summed per-tool / per-turn busy time
+        tools: tlTools,                                  // [{ name, tStartMs, durMs }] in completion order
+        turns: tlTurns,                                  // [{ tStartMs, durMs, tokIn, tokOut, tokBillable }]
+        toolsOpen: toolOpen.size,                        // tools still in flight at exit (e.g. a killed node) — nonzero flags an unclosed interval
+      };
       n.summary = n.killedTimeout ? `killed: exceeded ${NODE_TIMEOUT_S}s node timeout`
         : n.killedStall ? `killed: silent-stall — no event for ${((n.stallMs || 0) / 1000).toFixed(0)}s with no tool in flight`
         : n.killedToolLoop ? `killed: tool-thrash — ${n.toolLoopSig} repeated ×${n.toolLoopCount} with no write`

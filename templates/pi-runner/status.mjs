@@ -57,7 +57,14 @@ function render() {
       const q = Math.round((n.live.sinceEventMs || 0) / 1000);
       live = n.live.stalled ? `Δ${q}s ${q >= 120 ? 'STALL?' : 'pause'}` : `Δ${q}s ${n.live.currentTool || ''}`.trim();
     } else if (n.durationMs != null) dur = sec(n.durationMs);
-    rows.push(`  ${icon(n.status)} ${pad(k, 20)} ${pad(n.status, 8)} ${pad(dur, 7)} ${pad(cost ? '$' + cost.toFixed(4) : '', 9)} ${pad(tok ? (tok / 1000).toFixed(1) + 'k' : '', 7)} ${live}`);
+    // Per-node timeline x-ray (additive — only when run.mjs recorded n.timeline): the single
+    // slowest tool call + turn count, so the dashboard shows WHERE a node's wall-clock went.
+    let tl = '';
+    if (n.timeline && Array.isArray(n.timeline.tools) && n.timeline.tools.length) {
+      const top = n.timeline.tools.reduce((a, b) => ((b.durMs || 0) > (a.durMs || 0) ? b : a));
+      tl = `· ${n.timeline.tools.length}tools/${(n.timeline.turns || []).length}turns top:${top.name}${sec(top.durMs)}`;
+    }
+    rows.push(`  ${icon(n.status)} ${pad(k, 20)} ${pad(n.status, 8)} ${pad(dur, 7)} ${pad(cost ? '$' + cost.toFixed(4) : '', 9)} ${pad(tok ? (tok / 1000).toFixed(1) + 'k' : '', 7)} ${live}${tl ? '  ' + tl : ''}`);
   }
   const st = s.stage || {};
   const head = [

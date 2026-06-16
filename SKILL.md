@@ -61,7 +61,9 @@ transforms an existing workflow; it does not author the pipeline logic.
    only if a provider needs a custom API impl / OAuth — `models.json` covers the OpenAI-compatible
    case). **You edit none of the engine files.** `run.mjs` / `extract.mjs` are generic and stay
    byte-identical across every repo (and this template) — a future fix is a one-file copy, never a
-   manual merge.
+   manual merge. The copy also brings `viz-model.mjs` + `tui/` (the `pi-tui` cross-project monitor,
+   step 7). **At adoption, register the folder as a namespace once — `pi-tui add .`** — so it appears in
+   the global `pi-tui` console before its first run; every run thereafter self-registers too.
 
 4. **Configure the per-repo wiring `.env`.** `cp templates/pi-runner/.env.example pi-runner/.env`,
    then set the **wiring only** (no secret): `PI_RUNNER_WORKFLOW` (path to the `.js`, relative to
@@ -97,6 +99,13 @@ transforms an existing workflow; it does not author the pipeline logic.
    PID-free (driver-death is inferred from run-status staleness), so they work for any run with zero
    wiring. Fleet = one background driver per instance, one `watch.mjs` each. See
    `reference/orchestration.md`. **You run every command; the user runs nothing.**
+
+   **Across all projects — `pi-tui`.** `status.mjs`/`watch.mjs` watch ONE run; `pi-tui` is the standing
+   global console. Every run auto-registers its folder as a *namespace* in `~/.pi-runner/registry.json`,
+   so a bare `pi-tui` (installed once: `cd pi-runner/tui && npm install && npm link`) lists every project
+   and its live runs with no flags — drill in to namespace → thread (run) → per-node detail (status ·
+   time · tokens · gantt · artifacts · live output). `pi-tui add .` registers a folder before its first
+   run; `PI_RUNNER_NO_REGISTER=1` opts out. See `pi-runner/tui/README.md`.
 
 8. **Adopt the Output Contract (recommended — one paste).** Paste `templates/workflow-snippets/contract.js`
    into your workflow `.js` next to `discipline()`, and wrap each producing node's prompt with
@@ -170,6 +179,18 @@ transforms an existing workflow; it does not author the pipeline logic.
   the exact prompts + grouping. New/removed/reordered waves propagate for free.
 - **Driver owns the graph; pi owns the node.** Plain code decides stage order + parallel lanes +
   halt-on-failure; the model never decides control flow. Nodes coordinate via the filesystem.
+- **The workflow orchestrates; the SKILL carries the craft — never duplicate craft into a node body.**
+  When a node loads a skill (`SKILL TO LOAD AND FOLLOW: …`), split content by OWNER. The workflow `.js`
+  holds ORCHESTRATION ONLY: the node sequence + parallel lanes (the DAG), each node's I/O contract
+  (`contract({artifacts,owns,readScope})` + the return `schema`), and a THIN wiring body — who the node is ·
+  which input artifacts it reads · which output it writes · the load-and-follow pointer. The CRAFT — *how* to
+  do the work: the method, the bar, the build path, the domain detail — lives ONLY in the skill, its single
+  canonical home. A node body that RESTATES the skill's craft is two ground truths: every craft edit then needs
+  two edits and they drift (the dual-maintenance trap). So put all craft in the skill, keep the body a pointer,
+  and **improve a wave by editing its SKILL / improve the chain by editing the workflow.** Extraction is
+  unchanged — the realized prompt is still the (thin) body, and the model reads the loaded skill at runtime;
+  only WHERE the craft text lives collapses to one home. (Inline-prompt nodes with no backing skill are exempt —
+  there the body IS the only home; this law governs the skill-backed pattern.)
 - **Verified against the declared contract, not the self-report.** Each node ends with one fenced
   ```json``` block; the driver `stat()`s every `outputArtifact`. But the self-reported list is
   honest only when the model is — so a node may *also* declare, in its prompt, the files it is
@@ -222,6 +243,92 @@ transforms an existing workflow; it does not author the pipeline logic.
   `tool_call` block (in-loop owned-paths) — both opt-in via `PI_RUNNER_CONTRACT_EXT`, both keep the
   driver fallback so they never break a run. Escalation, by contrast, needs NO extension: it is a
   per-node `--model`/`--provider` override over signals the driver already computes.
+- **Every run announces its namespace.** A folder that adopts the harness IS a *namespace*; `run.mjs`
+  upserts it into `~/.pi-runner/registry.json` on every run (opt out `PI_RUNNER_NO_REGISTER=1`), and the
+  global `pi-tui` reads that registry so ONE command surveys every project's live runs. It is pure
+  reconstruction over data already on disk — the DAG from the `.js` ⋈ `run-status.json`, joined on node
+  `id` — so it adds NO new per-run field: the same "measure, don't duplicate" discipline as the digest.
+- **A verify node verifies; it never CREATES a key artifact.** Separate the roles: a PRODUCING node authors
+  each key artifact the flow binds to; a VERIFY node judges that artifact and may run a bounded inner self-fix
+  to *stabilize* it — but it is NEVER the primary creator. The test: **remove the verify node entirely and the
+  producing flow must still yield every key artifact.** A verify node that ALSO produces the load-bearing
+  artifact (e.g. a design gate that *authors* the frozen spec it also grades) is the conflation this law
+  forbids — it makes the node un-removable, re-introduces "the student grades its own homework," and breaks
+  the mode toggle below. Split it: a producer makes the artifact, the verifier judges it. (The bounded
+  stabilize-edit a verifier may apply mirrors a QA node's `src/**` self-fix — editing-to-stabilize an artifact
+  a PRODUCER created, never authoring one from nothing.)
+- **An output edit is not done until its CONSUMERS are reconciled — keep a node I/O map.** A node's output
+  artifact is an INTERFACE other nodes read. Change what a node writes — its format, shape, filename, or
+  fields — and you silently break every downstream node still reading the old shape (moving a design doc from
+  `gdd.json` to `gdd.md` orphans every node that opened `gdd.json`). So every node-output edit has a mandatory
+  second half: **find every consumer of that artifact and reconcile it** (re-point the read, update the parse,
+  migrate the field), then verify a `grep` for the old shape returns only history. This is the
+  producer/consumer twin of "verified against the declared contract": the `contract()` says what a node
+  WRITES; the **node I/O map** (a standing artifact — see *Designing a node's I/O* below) says who READS it,
+  so the reconcile is one glance, not grep-and-pray. **Every node/subagent edit checks in there FIRST.**
+
+## Companion Mode (dev-time) — the orchestrator IS the verification node
+A workflow ships with both an automated in-pipeline VERIFICATION surface (the verify nodes) AND the
+human-judged criteria fixture (step 13). Production runs the verify nodes for stable, unattended output. But
+during development/debugging — when you're babysitting the run — they're slow, and you (orchestrator + human)
+judge better. Companion Mode makes the orchestrator the standing verifier:
+- **One static toggle, two clean DAGs.** Branch the workflow on a `mode` INPUT arg
+  (`const COMPANION = (args.mode === 'companion')`) and wrap every verify node `if (!COMPANION)`. Because
+  `mode` is a static input (resolved BEFORE any node runs), `extract.mjs`/`run.mjs` realize a FIXED DAG per
+  mode — NOT the result-dependent branching the extractor can't see. `production` (default) = full pipeline;
+  `companion` = producing nodes only.
+- **This only works because verify nodes create nothing (the law above).** Drop them and every key artifact
+  still exists, because PRODUCERS made them. If a verify node is also a producer you could not drop it — split
+  it FIRST, then add the toggle.
+- **Run in the background; judge every stage as it lands.** Poll `run-status.json`; the moment a node goes
+  `ok`, compare its artifact to (a) the GOLD sample and (b) its criteria-fixture entry — the same dual
+  reference the `hermes-skill-system` node-validation loop uses (criteria stay a JUDGING reference, NEVER
+  injected). You are the verifier for EVERY surface the skipped nodes would have covered.
+- **On a heavy mistake, stop** — don't pour effort onto a bad upstream artifact. Fix at the canonical owner
+  (Hermes), rerun the SUFFIX fixed by the first changed node (`--from`/`--only`), reuse unchanged upstream.
+  Borderline → surface to the human (the eye), don't guess. Promote a fresh artifact over the gold when it's
+  better (this is also how the gold + criteria get sharpened each run).
+A dev-time POSTURE, not a code path beyond the one `mode` branch. Pairs with the criteria fixture (step 13)
+and `hermes-skill-system`'s node-validation loop.
+
+## Designing a node's I/O — the standards + the I/O map
+Designing a workflow IS setting each node's input/output standards — this is the most meaningful place to fix
+them, and where an edit must be reconciled against the rest. For every node:
+- **One node, one task**, so its I/O is a clean boundary; split a two-job node. **A producer creates each key
+  artifact; a verifier never does** (the verify-node law above).
+- **Format the output for its CONSUMER, not by default.** Strict typed JSON ONLY at a machine boundary (a
+  parser / schema / the driver). PROSE/Markdown for an LLM-reasoning hand-off (a *middle product* the next
+  model THINKS over): reason-in-prose, structure LAST — strict JSON on a reasoning hand-off taxes reasoning
+  ~5–15% and ~35% tokens, worst on cheap models, and inverts CoT when a decision field precedes its rationale.
+  Push the schema boundary as LATE as possible; keep a small fenced-JSON tail only for the fields a parser
+  reads. Merge/denormalize for a single downstream reasoner; split only for parallel agents. (Full
+  prompt-craft + citations: `agentic-prompt-design` §5.)
+- **Declare two things at node-creation time:** the `contract({ artifacts, owns, readScope })` (what it WRITES
+  + its read surface) AND the artifact's CONSUMERS in the I/O map.
+- **Design for parallelism from the I/O up — the map is where independent lanes become visible.** As you set
+  each node's I/O, look for nodes whose inputs are ALL already-frozen upstream artifacts and whose `owns` set is
+  DISJOINT from a sibling's — those are independent **lanes** that need not wait on each other, so run them as a
+  `parallel([laneA, laneB])` for wall-clock. The **correctness rule is write-disjoint `owns`**: two concurrent
+  lanes must share NO writable file (the `parallel()` collapses to one extractor stage and `run.mjs` runs them
+  via `Promise.all` — a real race). If a "dependency" is only that lane B reads an artifact lane A *also*
+  produces, check whether B can read the SAME upstream source instead (re-pointing the read dissolves the
+  artificial edge). When two lanes would BOTH touch one shared file, don't serialize the whole lane — split that
+  file: give each lane its own per-node fragment and add a tiny SERIAL JOIN node after the parallel stage to
+  merge them deterministically (e.g. `MEMORY.<node>.md` fragments → a merged `MEMORY.md`; an asset lane's own
+  manifest → reconciled into the build lane's index). The shared-write becomes one serial node, not a serial
+  pipeline. (The script has no fs at eval time, so the join is a NODE, never raw fs in the workflow.)
+
+**The node I/O map** — `<repo>/.agents/skill-system-io-map.md`, the THIRD standing artifact beside the
+skill-system map (composition) and the criteria fixture (quality). It is the producer→consumer ledger keyed by
+ARTIFACT: for each on-disk artifact, which node PRODUCES it, which nodes CONSUME it, and HOW (strict parse vs
+LLM read — because *that* is a format change's blast radius). It is the interface contract of a
+filesystem-coordinated pipeline, and the lookup that makes the reconcile-consumers law cheap: before changing a
+node's output, read the artifact's consumer row and reconcile every one; after, verify no consumer reads the
+stale shape. Derive it once from the node read-lines; update it on the SAME trigger as the map (any change to a
+node's read/write set). When an agent edits a node or its skill, it CHECKS IN here, fixes the downstream
+consumers the change affects, and reconciles with the upstream artifacts it reads — so a format change can
+never leave a dangling consumer (the class of bug where W1 moved to `gdd.md` and its readers still opened
+`gdd.json`).
 
 ## Files in this skill
 - `reference/cli.md` — the COMPLETE, exact CLI: every `run.mjs` flag, the `--from`/`--until`/`--only`
@@ -256,6 +363,12 @@ transforms an existing workflow; it does not author the pipeline logic.
   OAuth; the OpenAI-compatible case uses `models.json` and no extension. `extensions/node-contract.ts`
   is the generic opt-in in-loop layer (typed `submit_result` + owned-paths block), armed via
   `PI_RUNNER_CONTRACT_EXT`; the escalation gate is engine-baked, armed via `PI_RUNNER_ESCALATE`.
+- `templates/pi-runner/viz-model.mjs` + `templates/pi-runner/tui/` — the **`pi-tui` monitor**: a
+  renderer-agnostic data layer (the DAG from the `.js` ⋈ `run-status.json`, joined on node `id`) and an
+  Ink TUI over it. Install once (`cd templates/pi-runner/tui && npm install && npm link`); then a bare
+  `pi-tui` shows every registered namespace → its threads (runs) → per-node detail (status · time ·
+  tokens · gantt · artifacts · live output), live. Runs self-register (`run.mjs` → `~/.pi-runner/registry.json`);
+  `pi-tui add|rm|ls` manage it. **Read `templates/pi-runner/tui/README.md` to install + operate the console.**
 - `templates/workflow-snippets/contract.js` — the `contract()` helper to paste into your workflow
   `.js` (the only per-workflow edit to adopt the Output Contract).
 - `templates/examples/auto-discover-registry.example.mjs` — adapt-me generator for auto-discovered

@@ -24,8 +24,32 @@ import { fileURLToPath } from "node:url";
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
+// Pull the `meta = { … }` object literal out of the source and evaluate it on its own. meta is a
+// PURE literal by the Workflow contract (no vars/calls/spreads), so this is deterministic and safe —
+// it gives us each phase's human description (meta.phases[].detail) without running the body. Returns
+// null on any failure (older workflows, parse error): callers treat meta as optional.
+function extractMeta(src) {
+  const m = src.match(/\bmeta\s*=\s*\{/);
+  if (!m) return null;
+  let i = m.index + m[0].length - 1; // at the opening brace
+  let depth = 0, str = null, esc = false;
+  for (; i < src.length; i++) {
+    const c = src[i];
+    if (str) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === str) str = null;
+    } else if (c === '"' || c === "'" || c === "`") str = c;
+    else if (c === "{") depth++;
+    else if (c === "}") { depth--; if (depth === 0) { i++; break; } }
+  }
+  const startBrace = src.indexOf("{", m.index);
+  try { return new Function(`return (${src.slice(startBrace, i)})`)(); } catch { return null; }
+}
+
 export async function extractWorkflow(workflowPath, args = {}) {
   const src = fs.readFileSync(workflowPath, "utf8");
+  const meta = extractMeta(src);
   // de-export meta so the body is legal inside a function; nothing else is touched.
   const body = src.replace(/^[ \t]*export[ \t]+const[ \t]+meta\b/m, "const meta");
 
@@ -81,13 +105,14 @@ export async function extractWorkflow(workflowPath, args = {}) {
     if (r.group != null && last && last.group === r.group) last.nodes.push(r);
     else stages.push({ group: r.group, phase: r.phase, nodes: [r] });
   }
-  return { records, stages, aggregate };
+  return { records, stages, aggregate, meta };
 }
 
-// CLI: node pi-runner/extract.mjs [workflowPath] — print the realized stages/DAG to sanity-check
-// the recording BEFORE a live run. Costs nothing (no model is invoked). With no argv path it
-// resolves PI_RUNNER_WORKFLOW from the environment or pi-runner/.env (same key run.mjs reads), so
-// a bare `node pi-runner/extract.mjs` Just Works in a configured repo.
+// CLI: node pi-runner/extract.mjs [workflowPath] [--arg k=v ...] — print the realized stages/DAG to
+// sanity-check the recording BEFORE a live run. Costs nothing (no model is invoked). With no argv
+// path it resolves PI_RUNNER_WORKFLOW from the environment or pi-runner/.env (same key run.mjs reads).
+// `--arg k=v` (repeatable, same form as run.mjs) passes workflow args THROUGH, so a STATIC input-arg
+// branch is checkable too — e.g. `--arg mode=companion` realizes the companion DAG (verify nodes dropped).
 if (process.argv[1] && process.argv[1].endsWith("extract.mjs")) {
   const HERE = path.dirname(fileURLToPath(import.meta.url));
   const ROOT = path.resolve(HERE, "..");
@@ -97,10 +122,26 @@ if (process.argv[1] && process.argv[1].endsWith("extract.mjs")) {
       return m ? m[1].replace(/^["']|["']$/g, "") : null;
     } catch { return null; }
   };
+  // Parse argv: the first non-flag token is an optional workflow-path override; `--arg k=v` (or
+  // `--arg=k=v`), repeatable, are workflow args passed THROUGH to the script — so a flag is never
+  // mistaken for the path (the bug this fixes) and a static input-arg branch is realizable.
+  const cliArgs = {};
+  let pathArg = null;
+  const cli = process.argv.slice(2);
+  for (let i = 0; i < cli.length; i++) {
+    const a = cli[i];
+    const kv = a === "--arg" ? cli[++i] : a.startsWith("--arg=") ? a.slice(6) : null;
+    if (kv != null) {
+      const eq = kv.indexOf("=");
+      if (eq > 0) cliArgs[kv.slice(0, eq)] = kv.slice(eq + 1);
+    } else if (a && !a.startsWith("-") && pathArg === null) {
+      pathArg = a;
+    }
+  }
   const rel = process.env.PI_RUNNER_WORKFLOW || fromEnvFile("PI_RUNNER_WORKFLOW");
-  const wf = process.argv[2]
+  const wf = pathArg
     || (rel ? (path.isAbsolute(rel) ? rel : path.join(ROOT, rel)) : `${process.cwd()}/.claude/workflows/CHANGEME.js`);
-  const { records, stages } = await extractWorkflow(wf, { /* pass your workflow's args here */ });
+  const { records, stages } = await extractWorkflow(wf, cliArgs);
   console.log(`extracted ${records.length} agent() calls in ${stages.length} stages from\n  ${wf}\n`);
   stages.forEach((s, i) => {
     const tag = s.nodes.length > 1 ? `∥ parallel x${s.nodes.length}` : "serial";

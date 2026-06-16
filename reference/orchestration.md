@@ -28,7 +28,13 @@ asked "is it still running?".
    node pi-runner/status.mjs --run <id>     # ergonomic dashboard: per-node status/dur/cost + rollup
    node pi-runner/watch.mjs  --run <id>     # background sentinel: wakes ONLY on done/error/driver-gone/dead-stall
    cat <RUN_CWD>/out/<id>/run-status.json   # the raw truth — or jq '.nodes | map_values(.status)'
+   pi-tui                                   # GLOBAL standing console: EVERY registered project + its live runs
    ```
+   `status.mjs`/`watch.mjs` watch ONE run; `pi-tui` (installed once via `pi-runner/tui/`) is the
+   cross-project console — every run auto-registers its folder as a *namespace* in
+   `~/.pi-runner/registry.json`, so a bare `pi-tui` surveys all projects and drills into namespace →
+   thread (run) → per-node detail, live. It reconstructs everything from the same `run-status.json` you
+   already poll (no new state). `pi-tui add .` registers a folder before its first run.
    Prefer `watch.mjs` for a backgrounded run: it stays silent (no context spam) and exits with one
    summary line on the first event that needs you — and it will NOT trip on the transient ~60–90s
    `cp` stream pause (only a real >10-min dead stall, the stale driver, or a node error).
