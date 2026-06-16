@@ -130,6 +130,14 @@ transforms an existing workflow; it does not author the pipeline logic.
     `tool_call` block (BLOCKS an out-of-lane `write`/`edit` before it lands, from the node's `DRIVER-OWNS`).
     Per-node tool gating rides the same family: `DRIVER-TOOLS` / `DRIVER-EXCLUDE-TOOLS` markers →
     `--tools`/`--exclude-tools`. Both spike-verified on qwen headless; see `reference/artifact-contract.md`.
+    **Tool-gating doubles as a cheap-model BEHAVIOR LOCK, not only a write-safety rail.** When prompt-craft
+    alone won't move a weak executor, cut its tools to FORCE the action shape: a cheap model fills a fresh
+    structured artifact far more reliably by whole-file `write` than by exact-match `edit`, so EXCLUDING
+    `edit`/read-chain tools until `write` is the only affordance is what finally made MiniMax WRITE a complete
+    `blueprint.json` instead of composing it in-head and returning it inline (two prompt-only redesigns had
+    failed first). Choose the gated set by the action you must FORCE, not only the writes you must forbid —
+    `DRIVER-EXCLUDE-TOOLS` is a structural lever (same family as the owned-paths block), and a structural
+    invariant belongs in the harness, not in more prose the model can ignore.
 
 12. **Lock the read-scope — standard per-node, OS-enforced under `--sandbox` (macOS).** `--worktree`
     stops a node *writing* outside its lane; it does NOT stop it *reading* a sibling's files (a cheap
