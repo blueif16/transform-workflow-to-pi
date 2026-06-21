@@ -18,6 +18,8 @@ export { DefaultToolRegistry, BUILTIN_TOOLS, PENDING_EXTENSION } from './tools/r
 
 // Sandbox providers (lifecycle; in-memory reference impl + not-implemented stubs)
 export { InMemorySandbox, InMemorySandboxProvider, NotImplementedProvider } from './sandbox/index.js';
+// Seatbelt read-scope provider (macOS) + worktree stub (ROADMAP M1)
+export { SeatbeltSandbox, SeatbeltSandboxProvider, WorktreeSandboxProvider, buildSeatbeltProfile } from './sandbox/seatbelt.js';
 
 // Deterministic hook runner
 export { runHooks } from './hooks/index.js';
