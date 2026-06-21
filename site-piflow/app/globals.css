@@ -203,11 +203,24 @@ body {
   .flow {
     stroke-dasharray: 9 250;
     animation: flow-travel 3.4s linear infinite;
+    filter: drop-shadow(0 0 4px rgba(61, 242, 167, 0.5));
   }
   .station-glow { animation: station-pulse 6s ease-in-out infinite; }
 }
 @keyframes flow-travel { to { stroke-dashoffset: -259; } }
 @keyframes station-pulse { 0%, 100% { opacity: 0.5; } 30% { opacity: 1; } }
+
+/* ============================================================
+   Iso illustration motion — gentle bob for floating scenes.
+   ============================================================ */
+@media (prefers-reduced-motion: no-preference) {
+  .iso-float { animation: iso-float 7s ease-in-out infinite alternate; }
+  .iso-float-slow { animation: iso-float 11s ease-in-out infinite alternate; }
+}
+@keyframes iso-float { from { transform: translateY(3px); } to { transform: translateY(-5px); } }
+
+/* Accent cubes/edges get a real glow (the "expensive" lift). Static — safe always-on. */
+.iso-glow { filter: drop-shadow(0 0 4px rgba(61, 242, 167, 0.38)); }
 
 /* ============================================================
    Hover-expand row — three cards; hover/focus one, squeeze others.

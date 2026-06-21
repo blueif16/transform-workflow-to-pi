@@ -1,3 +1,5 @@
+import HeroLatticeArt from "@/components/iso/art/HeroLatticeArt";
+
 function CodeEditor() {
   // A few lines of intent — "describe the goal." Monochrome by design;
   // accent appears only on the status chip + caret (action voice, no files).
@@ -47,8 +49,14 @@ export default function Hero() {
   return (
     <section id="top" className="relative overflow-hidden">
       <div className="aurora" aria-hidden />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute right-[-8%] top-[58%] z-0 hidden w-[54%] -translate-y-1/2 opacity-45 lg:block"
+      >
+        <HeroLatticeArt className="w-full" />
+      </div>
 
-      <div className="mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-14 px-6 pt-36 pb-24 lg:grid-cols-[1.15fr_0.85fr] lg:pt-44 lg:pb-32">
+      <div className="relative z-10 mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-14 px-6 pt-36 pb-24 lg:grid-cols-[1.15fr_0.85fr] lg:pt-44 lg:pb-32">
         {/* Left — the pitch */}
         <div className="relative z-10">
           <p className="blur-in inline-flex items-center gap-2 font-mono text-xs uppercase tracking-[0.18em] text-fg-muted">
@@ -104,7 +112,7 @@ export default function Hero() {
           </p>
         </div>
 
-        {/* Right — the editor */}
+        {/* Right — the editor, floating in front of the hero lattice */}
         <div className="blur-in relative z-10" style={{ animationDelay: "0.16s" }}>
           <CodeEditor />
         </div>

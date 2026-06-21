@@ -1,49 +1,4 @@
-"use client";
-
-import { ReactFlow, Background, BackgroundVariant } from "@xyflow/react";
-import type { Node, Edge } from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
-
-const nodeBase = {
-  background: "var(--surface-2)",
-  color: "var(--fg)",
-  border: "1px solid var(--hairline)",
-  borderRadius: 10,
-  fontSize: 12,
-  padding: "8px 12px",
-  width: 150,
-  textAlign: "center" as const,
-};
-
-const nodeRunning = {
-  ...nodeBase,
-  border: "1px solid var(--accent-30)",
-  boxShadow: "0 0 32px -10px var(--accent-glow)",
-};
-
-// One goal fans out into parallel work, then converges into one finish.
-const nodes: Node[] = [
-  { id: "goal", position: { x: 0, y: 130 }, data: { label: "understand the goal" }, style: nodeBase },
-  { id: "gather", position: { x: 240, y: 20 }, data: { label: "gather sources" }, style: nodeBase },
-  { id: "draft", position: { x: 240, y: 130 }, data: { label: "draft" }, style: nodeRunning },
-  { id: "check", position: { x: 240, y: 240 }, data: { label: "fact-check" }, style: nodeBase },
-  { id: "publish", position: { x: 480, y: 130 }, data: { label: "publish" }, style: nodeBase },
-];
-
-const edgeBase = {
-  type: "smoothstep" as const,
-  animated: true,
-  style: { stroke: "var(--hairline-2)" },
-};
-
-const edges: Edge[] = [
-  { id: "g-gather", source: "goal", target: "gather", ...edgeBase },
-  { id: "g-draft", source: "goal", target: "draft", ...edgeBase },
-  { id: "g-check", source: "goal", target: "check", ...edgeBase },
-  { id: "gather-pub", source: "gather", target: "publish", ...edgeBase },
-  { id: "draft-pub", source: "draft", target: "publish", ...edgeBase },
-  { id: "check-pub", source: "check", target: "publish", ...edgeBase },
-];
+import ComposeDagArt from "@/components/iso/art/ComposeDagArt";
 
 const BULLETS = [
   "Decomposes the goal",
@@ -80,27 +35,8 @@ export default function ComposeL2() {
         </div>
 
         {/* Illustration — a designed DAG: one goal fans out, then converges */}
-        <div className="reveal rounded-2xl border border-[var(--hairline)] bg-surface-1">
-          <div className="h-[400px] w-full">
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              fitView
-              fitViewOptions={{ padding: 0.22 }}
-              nodesDraggable={false}
-              nodesConnectable={false}
-              elementsSelectable={false}
-              panOnDrag={false}
-              zoomOnScroll={false}
-              zoomOnPinch={false}
-              zoomOnDoubleClick={false}
-              panOnScroll={false}
-              preventScrolling={false}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background variant={BackgroundVariant.Dots} gap={28} color="rgba(255,255,255,0.06)" />
-            </ReactFlow>
-          </div>
+        <div className="reveal">
+          <ComposeDagArt className="mx-auto w-full max-w-2xl lg:max-w-none" />
         </div>
       </div>
     </section>
