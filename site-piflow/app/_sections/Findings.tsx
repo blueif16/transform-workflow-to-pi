@@ -93,7 +93,7 @@ export default function Findings() {
             </span>
           </div>
           <p className="mt-4 max-w-xs text-base leading-relaxed text-fg-muted">
-            the token tax of naive multi-agent — the cost floor a cheap fleet is built to beat.
+            the token tax of naive multi-agent — the cost floor an efficient fleet is built to beat.
           </p>
           <p className="mt-3 font-mono text-xs text-fg-faint">
             — across research on multi-agent systems
