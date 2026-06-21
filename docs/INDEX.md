@@ -1,7 +1,7 @@
 # Pi Flow — documentation map
 
 Pi Flow is a **self-designing, durable, self-improving orchestration substrate**: a graph of
-full-agent (`pi`) nodes that a planner *designs*, a cheap fleet *runs*, and a learning loop
+full-agent (`pi`) nodes that a planner *designs*, an efficient fleet *runs*, and a learning loop
 *improves* — all coordinated through the filesystem. It generalizes the proven `pi-runner` +
 `game-omni` + Hermes stack into a horizontal product.
 
@@ -37,7 +37,7 @@ This folder is the **design canon + the buildable spec**. Read in this order.
 | **The three loops** | Inner (within a run) · middle (across runs of one task) · outer (Hermes, across tasks). | substrate §6 |
 | **Three wiring modes** | A control node emits a deterministic hook · a callable tool · or a full producer node — always *at a seam*. | substrate §5 |
 | **Credit assignment** | Route a failure to the node that owns it; quality is capped by per-node oracles. | substrate §6 |
-| **Borrow-vs-build** | Borrow durability + structure-search + GEPA credit-assignment; **own** full-agent nodes + cheap-fleet economics + online-durable self-optimization. | substrate §10 |
+| **Borrow-vs-build** | Borrow durability + structure-search + GEPA credit-assignment; **own** full-agent nodes + efficient-fleet economics + online-durable self-optimization. | substrate §10 |
 | **The white-space** | A control agent that **generates → verifies → human-approves → durably registers** a new tool/node/hook in production. Nobody occupies it. | substrate §11.5 |
 | **The fork** | Substrate-as-product vs means-to-better-games. **Resolved: product** (see ROADMAP). | substrate §12 |
 

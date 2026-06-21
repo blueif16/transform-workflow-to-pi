@@ -242,7 +242,7 @@ export interface ProcessHandle {
    provider uploads exactly `readScope` and nothing else. Only Seatbelt (deny-all → re-allow roots) and Modal's
    Volume `sub_path` actually *enforce* a read boundary at runtime. → Keep `readScope` in the interface but
    document it as "**enforced** by Seatbelt; **realized by upload** on cloud." A local in-mem impl should assert
-   the agent never reads outside `readScope` (cheap correctness check that mirrors prod behavior).
+   the agent never reads outside `readScope` (efficient correctness check that mirrors prod behavior).
 2. **Streaming vs blocking-capture differ.** E2B/Modal/Cloudflare stream natively (`onStdout`/iterate); Daytona's
    `executeCommand` returns a buffered `.result` and you reach for **sessions** to stream. → `exec` must buffer
    *and* optionally fan out to `onStdout`/`onStderr`; treat streaming as best-effort.

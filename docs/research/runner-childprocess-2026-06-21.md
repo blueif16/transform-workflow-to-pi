@@ -55,7 +55,7 @@ via `ExecOpts.onStdout` (the spine's streaming seam), accumulating a partial-lin
 
 - **`readline` is the standard, dependency-free NDJSON reader** (Jsonic guide, 2026-05; the
   canonical SO answer). One `'line'` event per `\n`; `JSON.parse` per line inside a `try/catch`
-  (a cheap model can emit a non-JSON line — skip it, don't crash). This is exactly `run.mjs`'s
+  (a non-Claude model can emit a non-JSON line — skip it, don't crash). This is exactly `run.mjs`'s
   `rl.on('line', …)` with a `try { JSON.parse } catch { return }`.
 - **Partial lines split across chunks.** The recurring SO warning: a `'data'` chunk "might not
   break evenly between lines." Since the runner consumes via `ExecOpts.onStdout` (chunk strings, not
@@ -70,7 +70,7 @@ via `ExecOpts.onStdout` (the spine's streaming seam), accumulating a partial-lin
   through the one kill seam. The stuck-delta repeat-kill (1034–1037) is deferred (it needs pi's
   `message_update` delta shape; not required for M1's must-haves of watchdog+halt+resume+status).
 - **`lastJsonBlock` return-parse** (670–698): the forgiving fenced-JSON recovery (closed ```json
-  fence → unclosed fence → last balanced `{…}` carrying a node-return key) is ported as-is — cheap
+  fence → unclosed fence → last balanced `{…}` carrying a node-return key) is ported as-is — non-Claude
   models botch the fence even when the JSON is valid, so a strict parse false-fails a working node.
 
 ## What we port vs defer (net)

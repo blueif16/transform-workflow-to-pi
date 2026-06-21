@@ -23,7 +23,7 @@ emits a candidate; an acceptance check gates it; reflection repairs it) but NOT 
 loop. Pi Flow's COMPOSE job is **author a known-shape pipeline reliably ONCE**, not *discover a novel
 agent architecture over hundreds of rollouts*. So the recommended loop is **plan-and-execute's planner
 half** (ReWOO/LLMCompiler: one frontier planner emits the whole DAG up front with data-flow placeholders)
-+ **`tryCompile` as the acceptance test** (cheap, deterministic, no execution needed) + **Reflexion-style
++ **`tryCompile` as the acceptance test** (efficient, deterministic, no execution needed) + **Reflexion-style
 validate→repair** (validator errors fed back as verbal feedback) capped at **~3 iterations**. Sub-agent
 fan-out for per-part research is **optional and conditional**, sized to task complexity. The AFlow-MCTS
 search operator is the *upgrade path*, not the v1.
@@ -47,7 +47,7 @@ The frontier of *automated workflow design* searches for **novel** workflows; Pi
   edges**, searched via **Monte Carlo Tree Search** with LLM-guided expansion + **executable evaluation
   and explicit dollar cost** as the reward; reusable **Operators** (Ensemble/Review/Revise) shrink the
   search space; smaller models beat GPT-4o at ~4.5% cost. **Transfer:** Operators ≈ Pi Flow reusable node
-  templates; the *acceptance test should be cheap and automatic*. **Drop for v1:** MCTS — it needs an
+  templates; the *acceptance test should be efficient and automatic*. **Drop for v1:** MCTS — it needs an
   executable benchmark + many rollouts Pi Flow doesn't have at compose time.
   https://openreview.net/pdf?id=z5uVAKwmjf , survey table:
   "AFlow … MCTS … executable evaluation and explicit dollar cost" https://arxiv.org/pdf/2603.22386
@@ -75,7 +75,7 @@ upgrade** if a quality bar ever needs search.
 ## 2. Planning loops — decompose, plan up-front, when to fan out
 
 - **Plan-and-execute / ReWOO / LLMCompiler** are the right family: a **single planner emits the whole plan
-  up front**, then a cheaper executor runs it. Benefits (LangChain): faster (no re-plan per step), **cheaper
+  up front**, then a more efficient executor runs it. Benefits (LangChain): faster (no re-plan per step), **more efficient
   (sub-tasks go to smaller models)**, and *better* because the planner is forced to "think through all steps."
   https://www.langchain.com/blog/planning-agents
   - **LLMCompiler** (Kim et al., ICML 2024) — Planner "generates a **DAG of tasks with their
@@ -146,7 +146,7 @@ retry → cap → fail safely. Key parameters, with citations:
   **~95–99%, not 100%**, so validate→repair is **mandatory, not optional**. Caveat from BAML: constrained
   decoding **trades quality for conformance** ("structured outputs create false confidence… forcing format
   compliance over a high-quality response") — which is *another* reason the **planner (the spec author) must
-  be the FRONTIER model**, not the cheap tier. https://boundaryml.com/blog/structured-outputs-create-false-confidence
+  be the FRONTIER model**, not the efficient tier. https://boundaryml.com/blog/structured-outputs-create-false-confidence
 
 ---
 
@@ -235,11 +235,11 @@ specific model names as unverified.)
 
 **Model tiers:** **planner = FRONTIER** (it reasons over the whole task, and constrained decoding degrades
 quality so the *author* must be strong); **research sub-agents = frontier or mid**; **producer nodes =
-cheap/non-frontier** (plan-and-execute's whole economic argument), guarded by per-node output validation.
+efficient/non-frontier** (plan-and-execute's whole economic argument), guarded by per-node output validation.
 
 **Fan-out sizing:** O(uncertain parts), not O(nodes); most tasks need 0–2 research sub-agents.
 
-**Search operator / acceptance test — START SIMPLE:** use **`tryCompile` as a cheap deterministic acceptance
+**Search operator / acceptance test — START SIMPLE:** use **`tryCompile` as an efficient deterministic acceptance
 gate + single-pass planner + reflective repair**. Do **NOT** ship AFlow-MCTS or an ADAS archive in v1 — they
 need an executable benchmark and many rollouts COMPOSE doesn't have. **Upgrade path (v2):** if a quality bar
 demands it, add an **archive of past good specs** (ADAS) to condition the planner, and/or MCTS over

@@ -216,7 +216,7 @@ Extends the prior brief's compile-to-`-e`+`--tools` seam with **maintenance disc
 ### 2.5 TRUST / SECURITY before wiring a community tool into an agent
 Layer the survey's mechanisms onto **our existing per-node sandbox** (sandbox internals owned elsewhere — we only
 gate *which tools enter it*):
-1. **Provenance gate (cheap, static):** require `provenance.verified` for `mcp`/community `sdk` tools — namespace
+1. **Provenance gate (efficient, static):** require `provenance.verified` for `mcp`/community `sdk` tools — namespace
    ownership (MCP DNS/OIDC) + npm↔repo match (n8n) + Sigstore attestation if present. Unverified → `trust.tier:
    'community'`, **not wired without explicit operator opt-in.**
 2. **Introspect-in-sandbox before trust (Glama/Smithery pattern):** first time a tool is ingested/wired, run its
