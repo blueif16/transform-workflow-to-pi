@@ -13,21 +13,24 @@ This folder is the **design canon + the buildable spec**. Read in this order.
 2. **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — the *buildable mechanism* at contributor altitude: the two node
    kinds, three modes, three loops, the seam/control plane, and **what is built today vs the gaps**. Start here
    to write code.
-3. **[`design/orchestration-substrate.md`](design/orchestration-substrate.md)** — the **deep design + strategy
+3. **[`design/l1-node-envelope.md`](design/l1-node-envelope.md)** — the **L1 schema canon** (the frozen spine):
+   everything about a single agent node — work · sandbox · tools · hooks · contract — plus the flat `WorkflowSpec`
+   the design agent fills. Start here to write `@piflow/core`.
+4. **[`design/orchestration-substrate.md`](design/orchestration-substrate.md)** — the **deep design + strategy
    canon** (the *why*): positioning, the competitive landscape, borrow-vs-build decisions, the defensible
    white-space, the strategic fork. Read for rationale behind every choice in ARCHITECTURE.
-4. **[`research/substrate-multiagent-and-runtime-2026-06-21.md`](research/substrate-multiagent-and-runtime-2026-06-21.md)**
-   — the **evidence base** (Reddit + Exa legs): the multi-agent-vs-monolith debate and its 2026 resolution, the
-   error-amplification numbers, and the implementation-language verdict. Read to check a claim at its source.
-5. **[`../ROADMAP.md`](../ROADMAP.md)** — the forward plan: the strategic fork as resolved, the build order, the
+5. **[`research/`](research/)** — the **evidence base** (Exa + Reddit legs): the multi-agent-vs-monolith runtime
+   brief plus the four 2026-06-21 L1 briefs (tools/OpenClaw · sandbox providers · node hooks · declarative DAG).
+6. **[`../ROADMAP.md`](../ROADMAP.md)** — the forward plan: the strategic fork as resolved, the build order, the
    framework/library shape, and the guardrails.
-6. **[`pi-agent-notes.md`](pi-agent-notes.md)** — the durable knowledge record about `pi` as a headless executor
+7. **[`pi-agent-notes.md`](pi-agent-notes.md)** — the durable knowledge record about `pi` as a headless executor
    (capabilities, invocation mechanics, sharp edges, the codex-vs-pi comparison, backlog). Reference, not narrative.
 
 ## The vocabulary (one-line each — full treatment in the canon)
 
 | Term | One line | Canon |
 |---|---|---|
+| **Node envelope** | The declarative spec of one agent node — work · sandbox · tools · hooks · contract. | design/l1-node-envelope |
 | **Producer node** | A full autonomous `pi` agent that does the task (not a thin LLM call). | substrate §2 |
 | **Control node / seam** | Holds intelligence *about the workflow*: plan / optimize / debug / gate. | substrate §2, §5 |
 | **The three modes** | COMPOSE (build the workflow) · RUN+LEARN (execute + grade + improve) · CHAIN (splice workflows at a seam). | substrate §3 |
