@@ -74,6 +74,10 @@ export { runWorkflow, defaultExecRunner, defaultPiCommand, lastJsonBlock, writeS
 // Post-node schema gate (injectable validator seam + best-effort ajv-2020 default)
 export { validateArtifactSchemas, defaultSchemaValidator } from './runner/index.js';
 export type { SchemaValidator, SchemaCheckResult } from './runner/index.js';
+// Scoped-token / sealing-broker seam: a host plugs a SecretResolver so a cloud VM gets a short-lived
+// scoped token, not the raw credential (also surfaced via `export * from './types.js'` above).
+export { defaultSecretResolver } from './runner/index.js';
+export type { SecretResolver } from './runner/index.js';
 export type {
   RunOptions,
   RunResult,

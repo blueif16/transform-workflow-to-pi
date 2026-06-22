@@ -12,6 +12,7 @@ import {
   selectedBridgedTool,
   type ExecRunner,
   type RunStatus,
+  type SecretResolver,
 } from '../src/runner/index.js';
 import type { NodeSpec, Sandbox, SandboxProvider, CreateOpts, OpenRunOpts } from '../src/types.js';
 
@@ -623,6 +624,102 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
     // a bridge tool that is denied does NOT count as selected.
     expect(selectedBridgedTool(node(['oc.memory-core:memory_get'], ['oc.memory-core:memory_get']))).toBe(false);
     expect(selectedBridgedTool(node(['mcp.s:t'], ['mcp.s:t']))).toBe(false);
+  });
+
+  // ── SecretResolver seam: scoped-token / sealing broker (host mints a short-lived token per node) ──
+  // With NO resolver the runner reads process.env (today's behavior). With one plugged, the MINTED value
+  // is what crosses into the node env — the raw process.env value is NEVER injected — so the real
+  // long-lived credential need never enter a cloud VM. The cloud allowlist still bounds what crosses.
+
+  const ocMcpConfig = {
+    servers: { openclaw: { transport: 'http', url: 'https://gw.example.com/mcp', headers: { Authorization: 'Bearer $OPENCLAW_TOKEN' } } },
+  };
+
+  it('DEFAULT resolver (none plugged): injects the raw $OPENCLAW_TOKEN from process.env (preserves today)', async () => {
+    const registry = ocRegistry('memory-core', 'memory_get');
+    const g = compile(wf([n('Recall', [], ['out.txt'], { tools: { allow: ['oc.memory-core:memory_get'] } })]));
+    const outDir = await tmpOut();
+    const { provider, createEnvs } = recordingProvider('inmemory');
+
+    process.env.OPENCLAW_TOKEN = 'raw_host_secret';
+    try {
+      // No `secretResolver` ⇒ defaultSecretResolver ⇒ value comes straight from process.env.
+      const { status } = await runWorkflow(g, { run: 'sr-default', outDir, provider, registry, mcpConfig: ocMcpConfig, buildCommand: stubBuilder() });
+
+      expect(status.nodes.recall.status).toBe('ok');
+      const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e);
+      expect(env).toBeTruthy();
+      expect(env!.OPENCLAW_TOKEN).toBe('raw_host_secret');
+    } finally {
+      delete process.env.OPENCLAW_TOKEN;
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('BROKER plugged: the MINTED scoped token wins over process.env, and the resolver gets { nodeId, isCloud }', async () => {
+    const registry = ocRegistry('memory-core', 'memory_get');
+    const g = compile(wf([n('Recall', [], ['out.txt'], { tools: { allow: ['oc.memory-core:memory_get'] } })]));
+    const outDir = await tmpOut();
+    const { provider, createEnvs } = recordingProvider('inmemory');
+
+    // A DIFFERENT raw value lives in the host env — if the seam is wrong and process.env is read, this
+    // (not the minted token) would cross, and the assertions below would fail.
+    process.env.OPENCLAW_TOKEN = 'raw_host_secret_DO_NOT_USE';
+    const calls: { varName: string; nodeId: string; isCloud: boolean }[] = [];
+    const broker: SecretResolver = (varName, ctx) => {
+      calls.push({ varName, nodeId: ctx.nodeId, isCloud: ctx.isCloud });
+      return `scoped-${varName}-${ctx.nodeId}`;
+    };
+    try {
+      const { status } = await runWorkflow(g, {
+        run: 'sr-broker', outDir, provider, registry, mcpConfig: ocMcpConfig, secretResolver: broker, buildCommand: stubBuilder(),
+      });
+
+      expect(status.nodes.recall.status).toBe('ok');
+      const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e);
+      expect(env).toBeTruthy();
+      // The MINTED token crossed; the raw host secret did NOT.
+      expect(env!.OPENCLAW_TOKEN).toBe('scoped-OPENCLAW_TOKEN-recall');
+      expect(env!.OPENCLAW_TOKEN).not.toBe(process.env.OPENCLAW_TOKEN);
+      // The resolver was called once per referenced var with the correct context (inmemory ⇒ not cloud).
+      expect(calls).toEqual([{ varName: 'OPENCLAW_TOKEN', nodeId: 'recall', isCloud: false }]);
+    } finally {
+      delete process.env.OPENCLAW_TOKEN;
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('BROKER + CLOUD: allowlist still holds — PIFLOW_MCP_CONFIG + the minted var only, no host-env leak', async () => {
+    const registry = ocRegistry('memory-core', 'memory_get');
+    const g = compile(wf([n('Recall', [], ['out.txt'], { tools: { allow: ['oc.memory-core:memory_get'] } })]));
+    const outDir = await tmpOut();
+    const { provider, createEnvs } = recordingProvider('daytona');
+
+    // A non-referenced host secret that must NOT ride along into the cloud VM (allowlist, not passthrough).
+    process.env.UNRELATED_HOST_SECRET = 'do-not-leak-me';
+    const calls: { isCloud: boolean }[] = [];
+    const broker: SecretResolver = (varName, ctx) => {
+      calls.push({ isCloud: ctx.isCloud });
+      return `scoped-${varName}-${ctx.nodeId}`;
+    };
+    try {
+      const { status } = await runWorkflow(g, {
+        run: 'sr-cloud', outDir, provider, registry, mcpConfig: ocMcpConfig, secretResolver: broker, buildCommand: stubBuilder(),
+      });
+
+      expect(status.nodes.recall.status).toBe('ok');
+      const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e)!;
+      expect(env).toBeTruthy();
+      // The cloud broker was told it IS cloud (so it can mint cloud-scoped), and the minted var crossed…
+      expect(calls).toEqual([{ isCloud: true }]);
+      expect(env.OPENCLAW_TOKEN).toBe('scoped-OPENCLAW_TOKEN-recall');
+      // …while the allowlist still dropped the unrelated host secret and never blasted the rest.
+      expect(env).not.toHaveProperty('UNRELATED_HOST_SECRET');
+      expect(Object.keys(env).sort()).toEqual(['OPENCLAW_TOKEN', 'PIFLOW_MCP_CONFIG']);
+    } finally {
+      delete process.env.UNRELATED_HOST_SECRET;
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
   });
 });
 

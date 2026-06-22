@@ -25,7 +25,9 @@ import type {
   ToolRegistry,
   ResolveResult,
   ExecResult,
+  SecretResolver,
 } from '../types.js';
+import { defaultSecretResolver } from '../types.js';
 import { DefaultToolRegistry } from '../tools/registry.js';
 import { verifyToolBinding } from '../tools/verify.js';
 import { InMemorySandboxProvider } from '../sandbox/index.js';
@@ -111,6 +113,13 @@ export interface RunOptions {
    * Each server config carries `$VAR`/`${VAR}` REFERENCES in its secret-bearing fields, never literals.
    */
   mcpConfig?: { servers: Record<string, unknown> };
+  /**
+   * Per-node secret resolver — the seam where a host plugs a scoped-token / sealing broker. The runner
+   * calls it once per referenced `$VAR` per node to get the value injected into the node's env; a
+   * broker returns a SHORT-LIVED SCOPED token (cloud) so the raw long-lived credential never crosses
+   * into the VM. Omit ⇒ `defaultSecretResolver` (reads `process.env`, today's behavior).
+   */
+  secretResolver?: SecretResolver;
 }
 
 /** The result of a run: the final status record + the host run dir it was written to. */
@@ -261,24 +270,34 @@ function referencedEnvVars(config: { servers: Record<string, unknown> }): Set<st
 
 /**
  * Build the env additions for a node that staged `_pi/mcp.json`: `PIFLOW_MCP_CONFIG` (the absolute path)
- * plus EACH REFERENCED var resolved from the host. This is a DECLARED ALLOWLIST — only the `$VAR` names
- * the config actually references cross into the node; the host `process.env` is NEVER spread wholesale.
+ * plus EACH REFERENCED var resolved through the `SecretResolver` SEAM. This is a DECLARED ALLOWLIST —
+ * only the `$VAR` names the config actually references cross into the node; the host env is NEVER spread
+ * wholesale.
+ *
+ * The resolver is the broker seam. By default it reads `process.env` (today's behavior), but a host can
+ * plug a scoped-token / sealing broker: it MINTS a SHORT-LIVED, SCOPED token HOST-SIDE and returns THAT
+ * here, so the runner injects the scoped token as the env value and the bridge expands `$VAR` to it
+ * exactly as today — the real long-lived credential NEVER crosses into the cloud VM. (A sealing/egress
+ * proxy that swaps the scoped reference for the real credential at the gateway is the alternative the
+ * same seam supports.) The resolver gets `{ nodeId, isCloud }` so it can mint a per-node, cloud-only token.
  *
  * The allowlist is enforced identically for every backend, but it is LOAD-BEARING on cloud: a cloud VM
  * (daytona/e2b) does NOT inherit `process.env` (the provider's exec merges only `{...this.env,...opts.env}`),
  * so these additions are the ONLY way a secret reaches the VM — and they must be exactly the referenced
  * set, nothing else, so an unrelated host secret can't ride along. On local backends the child already
- * inherits `process.env` via the provider's exec merge; forwarding the referenced set here is harmless
- * (and correct if a var lives only in the parent process), and we still never blast the rest.
+ * inherits `process.env` via the provider's exec merge; forwarding the referenced (resolved) set here is
+ * harmless (and correct if a var lives only in the parent process), and we still never blast the rest.
  */
-function mcpEnvAdditions(
+export async function mcpEnvAdditions(
   configPathAbs: string,
   referenced: Set<string>,
   isCloud: boolean,
-): Record<string, string> {
+  nodeId: string,
+  resolver: SecretResolver = defaultSecretResolver,
+): Promise<Record<string, string>> {
   const env: Record<string, string> = { PIFLOW_MCP_CONFIG: configPathAbs };
   for (const name of referenced) {
-    const value = process.env[name];
+    const value = await resolver(name, { nodeId, isCloud });
     if (value !== undefined) env[name] = value;
   }
   // Defense-in-depth against drift: on cloud the additions MUST be exactly PIFLOW_MCP_CONFIG + the
@@ -309,6 +328,8 @@ interface RunContext {
   mcpConfig?: { servers: Record<string, unknown> };
   /** The provider's backend kind — drives the cloud (daytona/e2b) env ALLOWLIST vs local passthrough policy. */
   providerKind: SandboxProvider['kind'];
+  /** Per-node secret resolver (the scoped-token / sealing-broker seam). Undefined ⇒ `defaultSecretResolver`. */
+  secretResolver?: SecretResolver;
 }
 
 /** Read a host-side input file as bytes (for staging a downstream node's reads). */
@@ -368,7 +389,15 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     // Absolute in-sandbox path: the run root + the node's workdir + the staged file. posix join keeps it
     // valid in a cloud VM; on local providers scope.root is the host repoRoot under which the node resolves.
     const configPathAbs = path.posix.join(scope.root, node.sandbox.workspace || '.', MCP_CONFIG_FILE);
-    mcpEnv = mcpEnvAdditions(configPathAbs, referencedEnvVars(ctx.mcpConfig), CLOUD_KINDS.has(ctx.providerKind));
+    // Resolve each referenced $VAR through the broker seam (default: process.env). A host-plugged broker
+    // mints a scoped token here so the raw credential never reaches the (cloud) VM.
+    mcpEnv = await mcpEnvAdditions(
+      configPathAbs,
+      referencedEnvVars(ctx.mcpConfig),
+      CLOUD_KINDS.has(ctx.providerKind),
+      node.id,
+      ctx.secretResolver ?? defaultSecretResolver,
+    );
   }
 
   let sandbox: Sandbox;
@@ -613,6 +642,7 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     validateSchema,
     mcpConfig: opts.mcpConfig,
     providerKind: provider.kind,
+    secretResolver: opts.secretResolver,
     watchdog: {
       nodeTimeoutMs: opts.nodeTimeoutMs ?? 1_800_000,
       stallMs: opts.stallMs ?? 0,
