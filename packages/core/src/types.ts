@@ -241,11 +241,13 @@ export interface ResolveResult {
   extension?: string;
 }
 
-/** The catalog: register tools, resolve a selection to pi flags, and search for candidates. */
+/** The catalog: register tools, resolve a selection to pi flags, search, and enumerate. */
 export interface ToolRegistry {
   register(entry: ToolEntry): void;
   resolve(sel: ToolSelection): ResolveResult;
   search(query: string, opts?: { source?: ToolSource; limit?: number }): ToolEntry[];
+  /** All registered entries — the catalog the bind pre-check enumerates (discovery/debugging too). */
+  list(): ToolEntry[];
 }
 
 // ── L1∩L2 BOUNDARY: the flat node bag the design agent fills ──────────────────
