@@ -11,6 +11,12 @@ export type BridgeErrorCode =
   | 'unknown-server'
   /** The bridge has not been configured (no in-process config and `PIFLOW_MCP_CONFIG` unset/invalid). */
   | 'not-configured'
+  /**
+   * A `$VAR`/`${VAR}` reference in the config resolved to no env var. Distinct from `not-configured`
+   * (config IS present, just unexpandable) and `connect-failed` — we fail HERE so a literal `$VAR`
+   * never reaches a server as a bogus credential.
+   */
+  | 'missing-env'
   /** Connecting the MCP client to its server transport failed. */
   | 'connect-failed';
 

@@ -4,12 +4,19 @@
 // client → transport → server → handler path every time.
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { z } from 'zod';
 
 import { callTool, configureBridge, disposeBridge, BridgeError } from '../src/index.js';
+// Internal config seam (NOT re-exported from index.ts on purpose) — the env-file resolution path with
+// the new `$VAR`/`${VAR}` expansion. Importing the module directly keeps the public surface unchanged.
+import { resolveConfig, resetConfig, CONFIG_ENV } from '../src/config.js';
+import type { McpServerConfig } from '../src/types.js';
 
 // ── A real in-process MCP server with a couple of tools + a connect counter. ──
 // Returns the CLIENT-side transport to hand the bridge, plus the live counters the tests assert on.
@@ -142,5 +149,107 @@ describe('callTool', () => {
 
     expect(h.connectCount()).toBe(1);
     await h.close();
+  });
+});
+
+// ── $VAR / ${VAR} expansion in the env-file config (the secret-porting half of gap A) ──────────────
+// The runner writes `_pi/mcp.json` carrying only `$VAR` REFERENCES in secret-bearing fields; the real
+// secrets ride as env vars in the spawned pi child. The bridge MUST expand those references against
+// `process.env` right after JSON.parse — a literal `$VAR` must NEVER reach a server, and an unresolved
+// reference must fail LOUD (distinct `missing-env`), not silently pass a bogus credential.
+
+describe('loadEnvConfig — $VAR / ${VAR} expansion', () => {
+  const SAVED = { ...process.env };
+  let tmpDir: string;
+  let cfgPath: string;
+
+  /** Write a config object to a temp file and point PIFLOW_MCP_CONFIG at it (env-file resolution path). */
+  async function writeConfig(servers: Record<string, unknown>): Promise<void> {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-cfg-'));
+    cfgPath = path.join(tmpDir, 'mcp.json');
+    await fs.writeFile(cfgPath, JSON.stringify({ servers }));
+    process.env[CONFIG_ENV] = cfgPath;
+  }
+
+  afterEach(async () => {
+    resetConfig();
+    // Restore the env to its pre-test snapshot (drop any vars a test set, restore the config var).
+    for (const k of Object.keys(process.env)) if (!(k in SAVED)) delete process.env[k];
+    Object.assign(process.env, SAVED);
+    if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+  });
+
+  it('expands $VAR and ${VAR} in stdio env, http headers, url, and args from process.env', async () => {
+    process.env.GH_TOKEN = 'ghp_secret123';
+    process.env.SERVER_HOST = 'mcp.example.com';
+    process.env.WORKDIR = '/srv/work';
+    await writeConfig({
+      gh: {
+        transport: 'stdio',
+        command: 'server',
+        args: ['--root', '${WORKDIR}/sub', 'plain-arg'],
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: '$GH_TOKEN', STATIC: 'literal' },
+      },
+      remote: {
+        transport: 'http',
+        url: 'https://${SERVER_HOST}/mcp',
+        headers: { Authorization: 'Bearer $GH_TOKEN' },
+      },
+    });
+
+    const cfg = resolveConfig();
+    const gh = cfg.servers.gh as Extract<McpServerConfig, { transport: 'stdio' }>;
+    const remote = cfg.servers.remote as Extract<McpServerConfig, { transport: 'http' }>;
+
+    // stdio env: $VAR expanded, a literal left untouched, NO literal `$VAR` survives anywhere.
+    expect(gh.env?.GITHUB_PERSONAL_ACCESS_TOKEN).toBe('ghp_secret123');
+    expect(gh.env?.STATIC).toBe('literal');
+    // args: ${VAR} expanded inline; a plain arg untouched.
+    expect(gh.args).toEqual(['--root', '/srv/work/sub', 'plain-arg']);
+    // http url + headers expanded.
+    expect(remote.url).toBe('https://mcp.example.com/mcp');
+    expect(remote.headers?.Authorization).toBe('Bearer ghp_secret123');
+    // The whole resolved config must be free of any unexpanded reference.
+    expect(JSON.stringify(cfg)).not.toMatch(/\$\{?[A-Za-z_]/);
+  });
+
+  it('throws a LOUD, DISTINCT missing-env error (not connect-failed/not-configured) on an unresolved reference', async () => {
+    delete process.env.NOPE_TOKEN;
+    await writeConfig({
+      gh: { transport: 'http', url: 'https://x/mcp', headers: { Authorization: 'Bearer $NOPE_TOKEN' } },
+    });
+
+    // Must throw at resolution time — BEFORE any transport is built — so the literal never reaches a server.
+    let err: unknown;
+    try {
+      resolveConfig();
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BridgeError);
+    expect((err as BridgeError).code).toBe('missing-env');
+    // Distinct from the other resolution failures.
+    expect((err as BridgeError).code).not.toBe('not-configured');
+    expect((err as BridgeError).code).not.toBe('connect-failed');
+    // The message names the unresolved variable so the failure is debuggable.
+    expect((err as Error).message).toMatch(/NOPE_TOKEN/);
+  });
+
+  it('does NOT mangle a value that legitimately contains no reference (and an empty-string env var still counts as defined)', async () => {
+    process.env.EMPTY_OK = '';
+    await writeConfig({
+      svc: {
+        transport: 'http',
+        url: 'https://host/path?q=a&b=c',
+        headers: { 'X-Empty': '$EMPTY_OK', 'X-Plain': 'no-refs-here' },
+      },
+    });
+
+    const cfg = resolveConfig();
+    const svc = cfg.servers.svc as Extract<McpServerConfig, { transport: 'http' }>;
+    expect(svc.url).toBe('https://host/path?q=a&b=c');
+    // A defined-but-empty env var resolves to '' (defined ⇒ not a missing-env), not a throw.
+    expect(svc.headers?.['X-Empty']).toBe('');
+    expect(svc.headers?.['X-Plain']).toBe('no-refs-here');
   });
 });
