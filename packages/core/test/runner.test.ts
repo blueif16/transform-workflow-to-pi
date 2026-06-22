@@ -2,17 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { compile, InMemorySandboxProvider, DefaultToolRegistry, mcpToolsToEntries } from '../src/index.js';
+import { compile, InMemorySandboxProvider, DefaultToolRegistry, mcpToolsToEntries, openClawPluginToEntries } from '../src/index.js';
 import type { NodeIntent, WorkflowSpec } from '../src/index.js';
 import {
   runWorkflow,
   defaultExecRunner,
   defaultPiCommand,
   writeStatus,
+  selectedBridgedTool,
   type ExecRunner,
   type RunStatus,
 } from '../src/runner/index.js';
-import type { Sandbox, SandboxProvider, CreateOpts, OpenRunOpts } from '../src/types.js';
+import type { NodeSpec, Sandbox, SandboxProvider, CreateOpts, OpenRunOpts } from '../src/types.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -473,6 +474,16 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
     return registry;
   }
 
+  /** Register a gateway-coupled OpenClaw tool so a node can select an `oc.<plugin>:<tool>` address. */
+  function ocRegistry(plugin: string, tool: string): DefaultToolRegistry {
+    const registry = new DefaultToolRegistry();
+    // git-source-pinned ref → the entry is gateway-coupled (routes through the bridge), like the real community catalog.
+    for (const e of openClawPluginToEntries({ id: plugin, contracts: { tools: [tool] } }, { ref: `openclaw@1#extensions/${plugin}` })) {
+      registry.register(e);
+    }
+    return registry;
+  }
+
   const mcpConfig = {
     servers: {
       github: { transport: 'http', url: 'https://api.example.com/mcp', headers: { Authorization: 'Bearer $GH_TOKEN' } },
@@ -568,6 +579,50 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
       delete process.env.UNRELATED_HOST_SECRET;
       await fs.rm(outDir, { recursive: true, force: true });
     }
+  });
+
+  it('stages _pi/mcp.json for an oc.* node (the OpenClaw gateway lane triggers staging just like mcp.)', async () => {
+    // A node that selected ONLY an oc.* tool must stage the config (so the `openclaw` server reaches the
+    // bridge in-child). Before the runner predicate accepted `oc.`, this node staged NOTHING and the
+    // gateway was never configured → callTool would fail not-configured. This is the regression guard.
+    const registry = ocRegistry('memory-core', 'memory_get');
+    const g = compile(wf([n('Recall', [], ['out.txt'], { tools: { allow: ['oc.memory-core:memory_get'] } })]));
+    const outDir = await tmpOut();
+    const { provider, writes, createEnvs } = recordingProvider('inmemory');
+
+    // The host supplies the OpenClaw gateway under the reserved `openclaw` server key, exactly like any MCP server.
+    const ocMcpConfig = {
+      servers: { openclaw: { transport: 'http', url: 'https://gw.example.com/mcp', headers: { Authorization: 'Bearer $OPENCLAW_TOKEN' } } },
+    };
+    process.env.OPENCLAW_TOKEN = 'ocp_runner_secret';
+    try {
+      const { status } = await runWorkflow(g, { run: 'oc-stage', outDir, provider, registry, mcpConfig: ocMcpConfig, buildCommand: stubBuilder() });
+
+      expect(status.nodes.recall.status).toBe('ok');
+      // _pi/mcp.json was staged VERBATIM (carries the openclaw server with its $VAR ref).
+      const cfg = writes.find((w) => w.path === '_pi/mcp.json');
+      expect(cfg).toBeTruthy();
+      expect(JSON.parse(cfg!.data)).toEqual(ocMcpConfig);
+      // PIFLOW_MCP_CONFIG + the referenced secret were injected into the node env.
+      const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e);
+      expect(env).toBeTruthy();
+      expect(env!.OPENCLAW_TOKEN).toBe('ocp_runner_secret');
+    } finally {
+      delete process.env.OPENCLAW_TOKEN;
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  // The staging-trigger predicate in isolation (the unit under the integration test above).
+  it('selectedBridgedTool: true for mcp./oc. selections, false for builtins and for a denied bridge tool', () => {
+    const node = (allow: string[], deny: string[] = []): NodeSpec =>
+      ({ tools: { allow, deny } } as unknown as NodeSpec);
+    expect(selectedBridgedTool(node(['oc.memory-core:memory_get']))).toBe(true);
+    expect(selectedBridgedTool(node(['mcp.s:t']))).toBe(true);
+    expect(selectedBridgedTool(node(['fs:read']))).toBe(false);
+    // a bridge tool that is denied does NOT count as selected.
+    expect(selectedBridgedTool(node(['oc.memory-core:memory_get'], ['oc.memory-core:memory_get']))).toBe(false);
+    expect(selectedBridgedTool(node(['mcp.s:t'], ['mcp.s:t']))).toBe(false);
   });
 });
 

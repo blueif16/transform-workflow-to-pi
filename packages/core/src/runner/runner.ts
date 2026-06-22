@@ -220,18 +220,25 @@ function selectWindow(wf: Workflow, from?: string, until?: string): { fromIdx: n
 }
 
 // ── MCP config staging (env/secret porting — see docs/research/tool-bridge-env-2026-06-21.md) ───────
-// When a node selected MCP tools AND a run-level `mcpConfig` is present, the runner stages the server map
-// to `_pi/mcp.json` (verbatim — the map carries `$VAR` refs, NEVER literal secrets) and injects, via the
-// `CreateOpts.env` seam, `PIFLOW_MCP_CONFIG` (the ABSOLUTE in-sandbox path of that file) + the referenced
-// secret env vars. The bridge inside the pi child expands the refs at resolution time.
+// When a node selected bridge tools (mcp./oc.) AND a run-level `mcpConfig` is present, the runner stages
+// the server map to `_pi/mcp.json` (verbatim — the map carries `$VAR` refs, NEVER literal secrets) and
+// injects, via the `CreateOpts.env` seam, `PIFLOW_MCP_CONFIG` (the ABSOLUTE in-sandbox path of that file)
+// + the referenced secret env vars. The bridge inside the pi child expands the refs at resolution time.
+// An `oc.*` selection stages identically: the host supplies the reserved `openclaw` server in
+// `mcpConfig.servers` exactly like any MCP server, and the runner writes/forwards it verbatim.
 
 /** Provider kinds with no host trust boundary — the host env must NOT be spread into the VM (allowlist only). */
 const CLOUD_KINDS = new Set<SandboxProvider['kind']>(['daytona', 'e2b']);
 
-/** Did this node select at least one MCP tool? True iff an `mcp.` address survives `allow` minus `deny`. */
-function selectedMcpTool(node: NodeSpec): boolean {
+/**
+ * Did this node select at least one BRIDGE tool (mcp./oc.)? True iff an `mcp.<server>:<tool>` OR an
+ * `oc.<plugin>:<tool>` address survives `allow` minus `deny`. Both families execute through the bridge,
+ * which resolves its server config from the staged `_pi/mcp.json` — so either kind triggers staging.
+ * Exported for direct unit testing of the staging-trigger predicate.
+ */
+export function selectedBridgedTool(node: NodeSpec): boolean {
   const deny = new Set(node.tools.deny ?? []);
-  return (node.tools.allow ?? []).some((a) => a.startsWith('mcp.') && !deny.has(a));
+  return (node.tools.allow ?? []).some((a) => (a.startsWith('mcp.') || a.startsWith('oc.')) && !deny.has(a));
 }
 
 /** The SET of `$VAR`/`${VAR}` names referenced anywhere in the config's string values (deep walk). */
@@ -298,7 +305,7 @@ interface RunContext {
   status: RunStatus;
   /** Resolved schema validator (default ajv-2020 / injected / null=disabled) for the schema gate. */
   validateSchema: SchemaValidator | null;
-  /** The MCP server map staged into `_pi/mcp.json` for MCP-tool nodes (verbatim; bridge owns validation). */
+  /** The MCP server map staged into `_pi/mcp.json` for bridge-tool nodes (mcp./oc.) (verbatim; bridge owns validation). */
   mcpConfig?: { servers: Record<string, unknown> };
   /** The provider's backend kind — drives the cloud (daytona/e2b) env ALLOWLIST vs local passthrough policy. */
   providerKind: SandboxProvider['kind'];
@@ -350,11 +357,12 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
   // completed work (MDN "Promise.all fail-fast"; javascript.info "Dangerous Promise.all": an uncaught
   // rejection can crash a Node process). Mark this node `error` and let the run halt cleanly instead.
   // MCP CONFIG STAGING (decided BEFORE create so the env additions reach the `CreateOpts.env` seam):
-  // a node that selected MCP tools + a run-level mcpConfig gets `_pi/mcp.json` (written below, after the
-  // sandbox exists) and, injected here, `PIFLOW_MCP_CONFIG` (absolute in-sandbox path) + the referenced
-  // secret env vars. CLOUD providers forward ONLY the referenced (allowlisted) vars — never the host env.
+  // a node that selected bridge tools (mcp./oc.) + a run-level mcpConfig gets `_pi/mcp.json` (written
+  // below, after the sandbox exists) and, injected here, `PIFLOW_MCP_CONFIG` (absolute in-sandbox path) +
+  // the referenced secret env vars. CLOUD providers forward ONLY the referenced (allowlisted) vars — never
+  // the host env.
   const MCP_CONFIG_FILE = '_pi/mcp.json';
-  const stageMcp = Boolean(resolved.extension) && selectedMcpTool(node) && Boolean(ctx.mcpConfig);
+  const stageMcp = Boolean(resolved.extension) && selectedBridgedTool(node) && Boolean(ctx.mcpConfig);
   let mcpEnv: Record<string, string> | undefined;
   if (stageMcp && ctx.mcpConfig) {
     // Absolute in-sandbox path: the run root + the node's workdir + the staged file. posix join keeps it

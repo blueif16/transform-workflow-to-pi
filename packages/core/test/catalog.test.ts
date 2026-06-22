@@ -75,6 +75,9 @@ describe('OpenClaw COMMUNITY catalog — discoverable, gateway-coupled skeleton 
     const src = compileToolExtension([fire]).source;
     expect(src).not.toContain('__ocPlugin'); // no native plugin import
     expect(src).not.toContain('captureOpenClawTools'); // not the native-bind path
+    // POSITIVE: it routes through the bridge BY ITS oc ADDRESS (the load-bearing wiring) — the generated
+    // execute calls `callTool("oc.firecrawl:firecrawl_search", …)`, which the bridge maps to the openclaw gateway.
+    expect(src).toContain('callTool("oc.firecrawl:firecrawl_search"');
     // the executable seed, by contrast, DOES carry an importable native module (the pure-tool path).
     const calc = OPENCLAW_SEED_CATALOG.find((e) => e.address === 'oc.calc:add')!;
     expect(planTools([calc])[0].pluginModule).toBe('@piflow/core/seeds/calc');
