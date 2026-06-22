@@ -324,8 +324,12 @@ describe('runWorkflow — tool binding (the per-node pre-check + the generated -
     const ext = writes.find((w) => w.path === '_pi/tools.ts');
     expect(ext).toBeTruthy();
     expect(ext!.data).toContain('name: "github_create_issue"');
-    expect(ext!.data).toContain('from "@piflow/tool-bridge"');
-    expect(ext!.data).toContain('callTool("mcp.github:create_issue"');
+    // the staged extension is now the self-contained BUNDLE (the bundle seam): the @piflow/tool-bridge
+    // import is INLINED (so it resolves on any sandbox — temp dir / cloud VM), while the tool still binds
+    // the declared MCP tool BY ADDRESS through the (now inlined) bridge.
+    expect(ext!.data).toContain('mcp.github:create_issue');
+    const extImports = ext!.data.split('\n').filter((l) => /^\s*import\s/.test(l));
+    expect(extImports.some((l) => /@piflow\/tool-bridge/.test(l))).toBe(false);
 
     await fs.rm(outDir, { recursive: true, force: true });
   });
@@ -428,6 +432,142 @@ describe('runWorkflow — run scope (the openRun lifecycle for worktree/cloud pr
     expect(disposeCalls).toBe(1); // finally-block teardown fired despite the failure
 
     await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── MCP config staging: _pi/mcp.json + PIFLOW_MCP_CONFIG (absolute) + referenced-secret env injection ─
+// The runner writes the node's MCP server map (with $VAR refs, never literals) to _pi/mcp.json and sets
+// PIFLOW_MCP_CONFIG to its ABSOLUTE in-sandbox path, plus the referenced secret env vars. On CLOUD
+// providers (daytona/e2b) it forwards ONLY the referenced (allowlisted) vars — never the whole host env.
+
+describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG + referenced-secret env)', () => {
+  /**
+   * A recording provider: captures the env handed to create() and every writeFile path+data, so a test
+   * can prove what was staged and what env crossed into the sandbox. `kind` is parameterized so the same
+   * harness exercises the local (full-passthrough) and cloud (allowlist) policies.
+   */
+  function recordingProvider(kind: 'inmemory' | 'daytona') {
+    const writes: { path: string; data: string }[] = [];
+    const createEnvs: (Record<string, string> | undefined)[] = [];
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind,
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        createEnvs.push(opts.env);
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+    return { provider, writes, createEnvs };
+  }
+
+  /** Register an MCP tool so a node can actually select an `mcp.<server>:<tool>` address. */
+  function mcpRegistry(server: string, tool: string): DefaultToolRegistry {
+    const registry = new DefaultToolRegistry();
+    for (const e of mcpToolsToEntries(server, [{ name: tool, description: `${tool} tool` }])) registry.register(e);
+    return registry;
+  }
+
+  const mcpConfig = {
+    servers: {
+      github: { transport: 'http', url: 'https://api.example.com/mcp', headers: { Authorization: 'Bearer $GH_TOKEN' } },
+    },
+  };
+
+  it('stages _pi/mcp.json and injects PIFLOW_MCP_CONFIG (absolute) + the referenced secret into the node env (local)', async () => {
+    const registry = mcpRegistry('github', 'create_issue');
+    const g = compile(wf([n('Issue', [], ['out.txt'], { tools: { allow: ['fs:write', 'mcp.github:create_issue'] } })]));
+    const outDir = await tmpOut();
+    const { provider, writes, createEnvs } = recordingProvider('inmemory');
+
+    // Make the referenced secret resolvable from the host env (local passthrough territory).
+    process.env.GH_TOKEN = 'ghp_runner_secret';
+    try {
+      const { status } = await runWorkflow(g, {
+        run: 'mcp-local',
+        outDir,
+        provider,
+        registry,
+        mcpConfig,
+        buildCommand: stubBuilder(),
+      });
+
+      expect(status.nodes.issue.status).toBe('ok');
+
+      // (1) _pi/mcp.json was staged VERBATIM (the runner writes the loose JSON it was handed).
+      const cfg = writes.find((w) => w.path === '_pi/mcp.json');
+      expect(cfg).toBeTruthy();
+      expect(JSON.parse(cfg!.data)).toEqual(mcpConfig);
+
+      // (2) PIFLOW_MCP_CONFIG is set to an ABSOLUTE path ending in _pi/mcp.json, plus the referenced secret.
+      const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e);
+      expect(env).toBeTruthy();
+      expect(path.isAbsolute(env!.PIFLOW_MCP_CONFIG)).toBe(true);
+      expect(env!.PIFLOW_MCP_CONFIG.endsWith(path.join('_pi', 'mcp.json')) || env!.PIFLOW_MCP_CONFIG.endsWith('_pi/mcp.json')).toBe(true);
+      expect(env!.GH_TOKEN).toBe('ghp_runner_secret');
+    } finally {
+      delete process.env.GH_TOKEN;
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT write _pi/mcp.json for a node that selected NO mcp tools', async () => {
+    // Builtin-only node: no extension, no mcp address → nothing MCP to stage even though mcpConfig is present.
+    const g = compile(wf([n('Plain', [], ['out.txt'], { tools: { allow: ['fs:write'] } })]));
+    const outDir = await tmpOut();
+    const { provider, writes, createEnvs } = recordingProvider('inmemory');
+
+    const { status } = await runWorkflow(g, { run: 'mcp-none', outDir, provider, mcpConfig, buildCommand: stubBuilder() });
+
+    expect(status.nodes.plain.status).toBe('ok');
+    expect(writes.find((w) => w.path === '_pi/mcp.json')).toBeUndefined();
+    // …and PIFLOW_MCP_CONFIG was NOT injected for a node with no MCP tools.
+    expect(createEnvs.every((e) => !(e && 'PIFLOW_MCP_CONFIG' in e))).toBe(true);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('CLOUD allowlist: forwards ONLY the referenced var (+ PIFLOW_MCP_CONFIG), never the whole host process.env', async () => {
+    const registry = mcpRegistry('github', 'create_issue');
+    const g = compile(wf([n('Issue', [], ['out.txt'], { tools: { allow: ['fs:write', 'mcp.github:create_issue'] } })]));
+    const outDir = await tmpOut();
+    const { provider, writes, createEnvs } = recordingProvider('daytona');
+
+    // A SENTINEL host secret that is NOT referenced by the config — it must NOT cross into the cloud env.
+    process.env.GH_TOKEN = 'ghp_cloud_secret';
+    process.env.UNRELATED_HOST_SECRET = 'do-not-leak-me';
+    try {
+      const { status } = await runWorkflow(g, {
+        run: 'mcp-cloud',
+        outDir,
+        provider,
+        registry,
+        mcpConfig,
+        buildCommand: stubBuilder(),
+      });
+
+      expect(status.nodes.issue.status).toBe('ok');
+      expect(writes.find((w) => w.path === '_pi/mcp.json')).toBeTruthy();
+
+      const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e)!;
+      expect(env).toBeTruthy();
+      // The referenced var crossed; the unrelated host secret did NOT (allowlist, not passthrough).
+      expect(env.GH_TOKEN).toBe('ghp_cloud_secret');
+      expect(env).not.toHaveProperty('UNRELATED_HOST_SECRET');
+      // Hard invariant: the host env was NOT spread wholesale into the cloud node env.
+      expect(Object.keys(env).length).toBeLessThan(Object.keys(process.env).length);
+      // Only the expected keys are present (whatever the node already carried + our two injections).
+      expect(Object.keys(env).sort()).toEqual(['GH_TOKEN', 'PIFLOW_MCP_CONFIG']);
+    } finally {
+      delete process.env.GH_TOKEN;
+      delete process.env.UNRELATED_HOST_SECRET;
+      await fs.rm(outDir, { recursive: true, force: true });
+    }
   });
 });
 
