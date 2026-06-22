@@ -12,7 +12,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { z } from 'zod';
 
-import { callTool, configureBridge, disposeBridge, BridgeError } from '../src/index.js';
+import { callTool, configureBridge, disposeBridge, BridgeError, OPENCLAW_SERVER } from '../src/index.js';
+import { parseAddress } from '../src/address.js';
 // Internal config seam (NOT re-exported from index.ts on purpose) — the env-file resolution path with
 // the new `$VAR`/`${VAR}` expansion. Importing the module directly keeps the public surface unchanged.
 import { resolveConfig, resetConfig, CONFIG_ENV } from '../src/config.js';
@@ -120,11 +121,12 @@ describe('callTool', () => {
     await expect(callTool('mcp.ghost:echo', {})).rejects.toThrow(/ghost/);
   });
 
-  it('throws the unsupported-address error for a non-mcp. address', async () => {
+  it('throws the unsupported-address error for an address in neither family (mcp./oc.)', async () => {
     configureBridge({ servers: {} });
 
-    await expect(callTool('web:search', { q: 'x' })).rejects.toThrow(BridgeError);
-    await expect(callTool('web:search', { q: 'x' })).rejects.toThrow(/unsupported address/i);
+    // `builtin:read` is genuinely out of the bridge's scope (a pi native tool, not mcp./oc.).
+    await expect(callTool('builtin:read', { q: 'x' })).rejects.toThrow(BridgeError);
+    await expect(callTool('builtin:read', { q: 'x' })).rejects.toThrow(/unsupported address/i);
   });
 
   it('rejects/cancels the call when opts.signal is aborted', async () => {
@@ -149,6 +151,76 @@ describe('callTool', () => {
 
     expect(h.connectCount()).toBe(1);
     await h.close();
+  });
+});
+
+// ── the `oc.<plugin>:<tool>` lane → the reserved `openclaw` MCP server + the RAW tool name ──────────
+// A gateway-coupled OpenClaw tool compiles to `callTool("oc.<plugin>:<tool>", …)`. parseAddress maps it
+// to the reserved `openclaw` server + the raw tool (the <plugin> is provenance only), and the bridge MUST
+// send that raw name on the wire — these tests prove BOTH the parse and the real round-trip.
+
+describe('parseAddress — the oc.<plugin>:<tool> family', () => {
+  it('maps an oc address to the reserved openclaw server + the RAW tool (plugin is provenance)', () => {
+    expect(parseAddress('oc.memory-core:memory_get')).toEqual({ server: 'openclaw', tool: 'memory_get' });
+    // The reserved-name constant is the same one parse returns.
+    expect(parseAddress('oc.firecrawl:firecrawl_search').server).toBe(OPENCLAW_SERVER);
+    expect(parseAddress('oc.firecrawl:firecrawl_search').tool).toBe('firecrawl_search');
+  });
+
+  it('throws malformed-address for an oc address with no colon / no tool', () => {
+    // No colon at all.
+    let err: unknown;
+    try { parseAddress('oc.x'); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(BridgeError);
+    expect((err as BridgeError).code).toBe('malformed-address');
+    // Colon present but empty tail.
+    expect(() => parseAddress('oc.plugin:')).toThrow(/malformed/i);
+  });
+});
+
+describe('callTool — the oc.<plugin>:<tool> lane executes through the openclaw gateway', () => {
+  /** A real in-process MCP server exposing a BARE `memory_get` tool, recording the raw name it is called with. */
+  async function standUpOpenClawGateway(): Promise<{ clientTransport: Transport; lastCalledTool: () => string | undefined; close: () => Promise<void> }> {
+    let lastCalledTool: string | undefined;
+    const server = new McpServer({ name: 'openclaw-tools-serve', version: '1.0.0' });
+    // tools-serve exposes the BARE tool name `memory_get` (NOT plugin-prefixed) — exactly what the oc lane must send.
+    server.registerTool(
+      'memory_get',
+      { description: 'Read a memory entry', inputSchema: { path: z.string() } },
+      async ({ path: p }) => {
+        lastCalledTool = 'memory_get';
+        return { content: [{ type: 'text', text: `memory:${p}` }], structuredContent: { path: p } };
+      },
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    return { clientTransport, lastCalledTool: () => lastCalledTool, close: () => server.close() };
+  }
+
+  it('routes oc.memory-core:memory_get to the `openclaw` server and sends the RAW tool name', async () => {
+    const gw = await standUpOpenClawGateway();
+    // The host configures the gateway under the reserved server name.
+    configureBridge({ servers: { [OPENCLAW_SERVER]: { transport: 'inMemory', transportInstance: gw.clientTransport } } });
+
+    const result = await callTool('oc.memory-core:memory_get', { path: 'MEMORY.md' });
+
+    // The gateway received the RAW bare name — NOT a plugin-prefixed (`memory-core_memory_get`) or sanitized variant.
+    expect(gw.lastCalledTool()).toBe('memory_get');
+    const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('');
+    expect(text).toContain('memory:MEMORY.md');
+    expect(result.isError).toBeFalsy();
+    await gw.close();
+  });
+
+  it('throws unknown-server (not unsupported-address) when the `openclaw` gateway is unconfigured', async () => {
+    // The oc lane is now SUPPORTED — an oc address with no openclaw server fails as a missing-server, proving
+    // it got past the address gate and into resolution (a regression to unsupported-address would be caught here).
+    configureBridge({ servers: {} });
+    let err: unknown;
+    try { await callTool('oc.memory-core:memory_get', { path: 'x' }); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(BridgeError);
+    expect((err as BridgeError).code).toBe('unknown-server');
+    expect((err as Error).message).toMatch(/openclaw/);
   });
 });
 
