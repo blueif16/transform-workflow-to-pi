@@ -1,24 +1,27 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// DRAFT — DaytonaSandbox / DaytonaSandboxProvider (the CLOUD backend).
+// DaytonaSandbox / DaytonaSandboxProvider — the CLOUD backend, LIVE-WIRED VIA AN ADAPTER.
 //
-// THIS IS AN UNCOMPILED-AGAINST-LIVE-SDK DRAFT, written to VALIDATE the run-scope
-// seam (types.ts: Sandbox / SandboxProvider / RunScope / OpenRunOpts) against a
-// real cloud provider. It is NOT wired: it is not exported from index.ts and not
-// registered anywhere. `@daytonaio/sdk` is NOT a dependency of this package, so
-// every SDK touch-point is expressed against a minimal LOCAL `interface DaytonaSdk`
-// (the subset this file actually calls) and tagged `// DRAFT:`. To make it live:
-//   1. `npm i @daytonaio/sdk`, 2. delete the local interfaces below, 3. import the
-//   real `Daytona` class, 4. pass `new Daytona({ apiKey })` where this file takes a
-//   `DaytonaSdk`, 5. re-check each `// DRAFT:` site against the live signatures.
+// This file is dependency-FREE on purpose: it imports only node builtins + `../types.js`,
+// and talks to Daytona through a small dependency-inversion seam, `interface DaytonaSdk`
+// (+ DaytonaVm/DaytonaFs/DaytonaProcess and the response types). The REAL `@daytona/sdk`
+// is mapped onto that seam by `realDaytonaSdk()` in `./daytona-sdk.ts` (the ONLY file that
+// imports the SDK); the convenience factory `createDaytonaProvider()` lives there too. This
+// keeps the provider unit-testable with a fake SDK — see `test/sandbox-cloud-parity.test.ts`,
+// which drives this exact provider against a real-fs-backed fake and proves local↔cloud share
+// one lifecycle.
 //
-// SDK shapes were grounded via Context7 (/daytonaio/daytona) on 2026-06-21. The
-// real names this draft mirrors: `daytona.create({image, envVars, resources, ...})`,
-// `sandbox.fs.uploadFile/downloadFile/createFolder/findFiles`,
-// `sandbox.process.executeCommand(cmd, cwd?, env?, timeoutSec?)` → {exitCode,result},
-// `sandbox.process.createSession / executeSessionCommand({command,runAsync}) /
-// getSessionCommandLogs(id, cmdId, onStdout, onStderr)`, `daytona.delete(sandbox)`.
-// Where the live API diverges from the seam, the gap is documented inline AND in the
-// accompanying seam-friction report (see the return message), not papered over.
+// The seam is GROUNDED against the live `@daytona/sdk@0.185.0` signatures (see
+// docs/research/daytona-sdk-2026-06-21.md). The real names it mirrors:
+//   `daytona.create({ image, envVars, resources, autoStopInterval, ... })` → `Sandbox`,
+//   `sandbox.fs.uploadFile(Buffer, remotePath)` / `downloadFile(remotePath) → Buffer` /
+//   `createFolder(path, mode)` / `searchFiles(path, pattern) → { files: string[] }`,
+//   `sandbox.process.executeCommand(cmd, cwd?, env?, timeoutSec?)` → { exitCode, result },
+//   `createSession(id)` / `executeSessionCommand(id, { command, runAsync }) → { cmdId }` /
+//   `getSessionCommandLogs(id, cmdId, onStdout, onStderr): Promise<void>` (streaming form
+//   resolves VOID — callbacks own the bytes) / `getSessionCommand(id, cmdId) → { exitCode? }`
+//   (the real exit code after a runAsync command) / `deleteSession(id)`, `daytona.delete(vm)`.
+// Where the live API diverges from the Sandbox/ExecOpts contract, the gap is documented inline
+// (search "SEAM FRICTION") AND in the research note — not papered over.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import path from 'node:path';
@@ -34,58 +37,67 @@ import type {
   OpenRunOpts,
 } from '../types.js';
 
-// ── minimal local SDK surface (the subset this file calls) ─────────────────────
-// DRAFT: replace this whole block with `import { Daytona } from '@daytonaio/sdk'`.
-// These interfaces are deliberately the SMALLEST shape that typechecks against how
-// this file uses the SDK — they mirror the real names so the swap is mechanical.
+// ── the SDK seam (the subset of @daytona/sdk this file calls) ──────────────────
+// A dependency-inversion adapter: these interfaces are the SMALLEST shape that
+// typechecks against how this file uses the SDK, and they mirror the real
+// `@daytona/sdk@0.185.0` names so `realDaytonaSdk()` (in ./daytona-sdk.ts) maps the
+// live client onto them 1:1. They are EXPORTED so the adapter and the parity test can
+// name them. Grounded in docs/research/daytona-sdk-2026-06-21.md.
 
-/** DRAFT: mirrors `daytona.create({...})` params (image/envVars/resources/autoStop). */
-interface DaytonaCreateParams {
+/** Mirrors `daytona.create({...})` params — `CreateSandboxFromImageParams` subset. */
+export interface DaytonaCreateParams {
   /** Container image ref (real SDK also accepts an `Image` builder or a `snapshot`). */
   image?: string;
-  /** Per-VM environment. The real field name is `envVars`. */
+  /** Per-VM environment (real field: `envVars`). */
   envVars?: Record<string, string>;
-  /** VM sizing — the real SDK shape is `{ cpu, memory, disk }`. */
+  /** VM sizing — real `Resources` shape `{ cpu, memory, disk }` (memory/disk in GiB). */
   resources?: { cpu?: number; memory?: number; disk?: number };
-  /** Idle auto-stop guard (minutes) so a crashed run can't leak a billed VM forever. */
+  /** Idle auto-stop guard in MINUTES (0 = disabled, real default 15) so a crashed run can't leak a billed VM. */
   autoStopInterval?: number;
 }
 
-/** DRAFT: mirrors `sandbox.process.executeCommand(...)` return. ONE combined `result`. */
-interface DaytonaExecResponse {
+/** Mirrors `sandbox.process.executeCommand(...)` return (`ExecuteResponse`). `result` == stdout. */
+export interface DaytonaExecResponse {
   exitCode: number;
-  /** Combined stdout+stderr — the real SDK returns a single `result` string. */
+  /** The command's stdout — the real SDK returns this as `result`. */
   result: string;
 }
 
-/** DRAFT: mirrors `executeSessionCommand(...)` return — a handle to a backgrounded cmd. */
-interface DaytonaSessionCommand {
+/** Mirrors `executeSessionCommand(...)` return (`SessionExecuteResponse`) — a handle to a backgrounded cmd. */
+export interface DaytonaSessionCommand {
+  /** Non-optional on the real response, but a runAsync start is the only thing we read off it. */
   cmdId?: string;
 }
 
-/** DRAFT: mirrors `getSessionCommandLogs(...)` buffered return. */
-interface DaytonaSessionLogs {
-  stdout: string;
-  stderr: string;
+/**
+ * Mirrors the real `getSessionCommand(sessionId, cmdId)` → `Command` — how the real exit code of a
+ * finished `runAsync` command is recovered (the streaming-logs promise does NOT carry it).
+ */
+export interface DaytonaSessionCommandInfo {
+  exitCode?: number;
 }
 
-/** DRAFT: mirrors `sandbox.fs` — the filesystem facet of a Daytona sandbox. */
-interface DaytonaFs {
+/** Mirrors `sandbox.fs` — the filesystem facet of a Daytona sandbox. */
+export interface DaytonaFs {
   /** Upload bytes to `remotePath` inside the VM. Real: `uploadFile(file: Buffer, remotePath)`. */
   uploadFile(data: Uint8Array, remotePath: string): Promise<void>;
   /** Download `remotePath` from the VM as bytes. Real: `downloadFile(remotePath) => Buffer`. */
   downloadFile(remotePath: string): Promise<Uint8Array>;
-  /** mkdir -p inside the VM. Real: `createFolder(path, mode)`. */
+  /** mkdir -p inside the VM. Real: `createFolder(path, mode)` — `mode` is required there; the adapter defaults it. */
   createFolder(remotePath: string, mode?: string): Promise<void>;
-  /** Recursively list files under `root` matching `pattern`. Real: `findFiles(root, pattern)`. */
-  findFiles(root: string, pattern: string): Promise<{ file: string }[]>;
+  /**
+   * Search for files under `root` whose NAME matches the glob `pattern`, returning their paths.
+   * Real: `searchFiles(path, pattern) => { files: string[] }`. (Note: the real `findFiles` is a GREP
+   * over file CONTENT — wrong tool for collection — so the seam uses `searchFiles`.)
+   */
+  searchFiles(root: string, pattern: string): Promise<{ files: string[] }>;
 }
 
-/** DRAFT: mirrors `sandbox.process` — the command facet of a Daytona sandbox. */
-interface DaytonaProcess {
+/** Mirrors `sandbox.process` — the command facet of a Daytona sandbox. */
+export interface DaytonaProcess {
   /**
    * Buffered exec. Real signature is POSITIONAL: `executeCommand(command, cwd?, env?, timeoutSec?)`.
-   * NOTE: no AbortSignal, no streaming callbacks, timeout is in SECONDS. See report §(e).
+   * NOTE: no AbortSignal, no streaming callbacks, timeout is in SECONDS. See "SEAM FRICTION" below.
    */
   executeCommand(
     command: string,
@@ -101,30 +113,32 @@ interface DaytonaProcess {
     req: { command: string; runAsync?: boolean },
   ): Promise<DaytonaSessionCommand>;
   /**
-   * Stream (or, with no callbacks, buffer-and-return) a session command's logs. The streaming
-   * form invokes `onStdout`/`onStderr` and resolves when the command ENDS — this draft uses it
-   * as the cancellable, streaming exec path. See report §(e).
+   * STREAMING form of the session-command logs: invokes `onStdout`/`onStderr` per chunk and resolves
+   * VOID when the command ENDS. The callbacks own the bytes (the real streaming overload returns
+   * `Promise<void>`, NOT a `{stdout,stderr}` object). The cancellable, streaming exec path.
    */
   getSessionCommandLogs(
     sessionId: string,
     cmdId: string,
     onStdout?: (chunk: string) => void,
     onStderr?: (chunk: string) => void,
-  ): Promise<DaytonaSessionLogs>;
+  ): Promise<void>;
+  /** Fetch a finished session command's info — the real exit code (real: `getSessionCommand`). */
+  getSessionCommand(sessionId: string, cmdId: string): Promise<DaytonaSessionCommandInfo>;
   /** Best-effort interrupt of a running session command (used to honor ExecOpts.signal). */
   deleteSession(sessionId: string): Promise<void>;
 }
 
-/** DRAFT: mirrors a live Daytona sandbox/VM handle (`daytona.create(...)` result). */
-interface DaytonaVm {
+/** Mirrors a live Daytona sandbox/VM handle (`daytona.create(...)` result, a `Sandbox`). */
+export interface DaytonaVm {
   /** Stable id the SDK assigns (used for labels/logging). */
   readonly id: string;
   fs: DaytonaFs;
   process: DaytonaProcess;
 }
 
-/** DRAFT: mirrors the `Daytona` client. Construct with `new Daytona({ apiKey })`. */
-interface DaytonaSdk {
+/** Mirrors the `Daytona` client. Construct the real one with `new Daytona({ apiKey })`. */
+export interface DaytonaSdk {
   /** Boot ONE cloud VM. */
   create(params?: DaytonaCreateParams): Promise<DaytonaVm>;
   /** Destroy a VM. Real API exposes both `daytona.delete(vm)` and `vm.delete()`. */
@@ -187,7 +201,7 @@ export class DaytonaSandbox implements Sandbox {
   ): Promise<DaytonaSandbox> {
     const workdir = path.posix.join(rootDir, opts.workdir || '.');
     const outputDir = opts.outputDir || 'out';
-    // DRAFT: createFolder is `mkdir -p` in the VM — make the node's subtree + its output dir.
+    // createFolder is `mkdir -p` in the VM — make the node's subtree + its output dir.
     await vm.fs.createFolder(workdir);
     await vm.fs.createFolder(path.posix.join(workdir, outputDir));
     return new DaytonaSandbox(sdk, vm, workdir, outputDir, opts.env ?? {}, opts.timeoutMs, ownsVm);
@@ -204,10 +218,10 @@ export class DaytonaSandbox implements Sandbox {
 
   async writeFile(p: string, data: Uint8Array | string): Promise<void> {
     const target = this.abs(p);
-    // DRAFT: ensure the parent dir exists in the VM (the runner stages reads at nested rel paths).
+    // Ensure the parent dir exists in the VM (the runner stages reads at nested rel paths).
     const dir = path.posix.dirname(target);
     if (dir && dir !== '.' && dir !== '/') await this.vm.fs.createFolder(dir);
-    // DRAFT: sandbox.fs.uploadFile(Buffer, remotePath).
+    // sandbox.fs.uploadFile(Buffer, remotePath).
     await this.vm.fs.uploadFile(toBytes(data), target);
   }
 
@@ -221,10 +235,10 @@ export class DaytonaSandbox implements Sandbox {
    *   and that we can interrupt (by tearing the session down on abort).
    * - Otherwise → the simpler buffered `executeCommand`.
    *
-   * MAPPING GAPS (see report §e): Daytona returns ONE combined `result` string, so `stderr` is left
-   * '' and everything lands in `stdout` (the seam explicitly allows this — see ExecResult's doc:
-   * "Combined-output backends fill `stdout` and leave `stderr` ''"). And `timeoutMs` becomes a
-   * SECONDS arg; sub-second precision is lost.
+   * SEAM FRICTION (see research note §5): the buffered `executeCommand` returns ONE `result` string
+   * (== stdout), so `stderr` is left '' and everything lands in `stdout` (the seam explicitly allows
+   * this — ExecResult's doc: "Combined-output backends fill `stdout` and leave `stderr` ''"). And
+   * `timeoutMs` becomes a SECONDS arg; sub-second precision is lost.
    */
   exec(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
     const cwd = opts.cwd ? this.abs(opts.cwd) : this.workdir;
@@ -236,7 +250,7 @@ export class DaytonaSandbox implements Sandbox {
     return this.execBuffered(cmd, cwd, env);
   }
 
-  /** Buffered exec — the simple path. DRAFT: executeCommand(cmd, cwd, env, timeoutSec). */
+  /** Buffered exec — the simple path. executeCommand(cmd, cwd, env, timeoutSec). */
   private async execBuffered(
     cmd: string,
     cwd: string,
@@ -251,11 +265,19 @@ export class DaytonaSandbox implements Sandbox {
   }
 
   /**
-   * Streaming + cancellable exec via a session. DRAFT: this is the closest Daytona offers to the
+   * Streaming + cancellable exec via a session. This is the closest Daytona offers to the
    * InMemorySandbox/Seatbelt process-group kill the seam's `signal` doc demands — but it is NOT the
-   * same primitive (see report §e). On abort we tear down the SESSION, which stops the streamed
-   * command; Daytona exposes no documented per-process-group SIGTERM→SIGKILL, so the runner's
-   * killGrace liveness fallback (runner.ts defaultExecRunner) is what ultimately bounds a hung exec.
+   * same primitive (SEAM FRICTION, research note §5). On abort we tear down the SESSION, which stops
+   * the streamed command; Daytona exposes no documented per-process-group SIGTERM→SIGKILL, so the
+   * runner's killGrace liveness fallback (runner.ts defaultExecRunner) is what ultimately bounds a
+   * hung exec.
+   *
+   * Output: the real `getSessionCommandLogs(id, cmdId, onStdout, onStderr)` STREAMING overload resolves
+   * VOID — the callbacks own the bytes. So we wrap the caller's `onStdout`/`onStderr` to ALSO accumulate
+   * into local buffers, giving a faithful `{stdout, stderr}` even though the SDK returns nothing.
+   * Exit code: recovered via `getSessionCommand(id, cmdId)` AFTER the logs promise resolves (the only
+   * way to learn a finished `runAsync` command's real code). On abort, or if that lookup can't answer,
+   * we fall back to 124 (runner kill convention) / 1.
    */
   private async execSession(
     cmd: string,
@@ -264,8 +286,8 @@ export class DaytonaSandbox implements Sandbox {
     opts: ExecOpts,
   ): Promise<ExecResult> {
     const sessionId = `pi-${this.vm.id}-${process.pid}-${sessionSeq++}`;
-    // DRAFT: Daytona sessions have no per-session cwd/env; bake them into the command line so the
-    // command runs where the buffered path would. (`cd` then exec under one `sh -c`.)
+    // Daytona sessions have no per-session cwd/env; bake them into the command line so the command runs
+    // where the buffered path would. (`cd` then exec under one `sh -c`.)
     const envPrefix = Object.entries(env)
       .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
       .join(' ');
@@ -275,8 +297,8 @@ export class DaytonaSandbox implements Sandbox {
     let aborted = false;
     const onAbort = (): void => {
       aborted = true;
-      // DRAFT: best-effort interrupt — tearing the session down stops the running command. This is a
-      // SOFT cancel, not the seam's promised SIGTERM→SIGKILL process-group kill. See report §e.
+      // Best-effort interrupt — tearing the session down stops the running command. This is a SOFT
+      // cancel, not the seam's promised SIGTERM→SIGKILL process-group kill (research note §5).
       this.vm.process.deleteSession(sessionId).catch(() => { /* already gone */ });
     };
     const signal = opts.signal;
@@ -285,39 +307,49 @@ export class DaytonaSandbox implements Sandbox {
       else signal.addEventListener('abort', onAbort, { once: true });
     }
 
+    // The streaming overload returns void — we accumulate the bytes ourselves while forwarding to the
+    // caller's callbacks, so ExecResult carries a faithful stdout/stderr.
+    let stdout = '';
+    let stderr = '';
+    const collectStdout = (chunk: string): void => { stdout += chunk; opts.onStdout?.(chunk); };
+    const collectStderr = (chunk: string): void => { stderr += chunk; opts.onStderr?.(chunk); };
+
     try {
-      // DRAFT: runAsync starts the command and returns a cmdId; we then stream its logs.
+      // runAsync starts the command and returns a cmdId; we then stream its logs to completion.
       const started = await this.vm.process.executeSessionCommand(sessionId, {
         command: wrapped,
         runAsync: true,
       });
       const cmdId = started.cmdId ?? '';
-      // DRAFT: streaming form — callbacks fire per chunk; resolves when the command ENDS.
-      const logs = await this.vm.process.getSessionCommandLogs(
-        sessionId,
-        cmdId,
-        opts.onStdout,
-        opts.onStderr,
-      );
-      // NOTE: the SDK's streaming logs return does NOT carry an exit code (see report §e). We can't
-      // know the real code without a second `executeCommand 'echo $?'`, which a torn-down/aborted
-      // session can't answer — so an aborted exec reports 124 (matching the runner's kill convention)
-      // and a clean finish reports 0. A production impl would poll session-command status for the code.
-      const code = aborted ? 124 : 0;
-      return { stdout: logs.stdout, stderr: logs.stderr, code };
+      // Streaming form — callbacks fire per chunk; resolves (void) when the command ENDS.
+      await this.vm.process.getSessionCommandLogs(sessionId, cmdId, collectStdout, collectStderr);
+      // Real exit code: query the finished command. An aborted run reports 124 (runner kill
+      // convention); if the post-finish lookup can't answer (e.g. session already torn down), 1.
+      let code: number;
+      if (aborted) {
+        code = 124;
+      } else {
+        try {
+          const info = await this.vm.process.getSessionCommand(sessionId, cmdId);
+          code = info.exitCode ?? 0;
+        } catch {
+          code = 1;
+        }
+      }
+      return { stdout, stderr, code };
     } catch (err) {
-      return { stdout: '', stderr: String(err), code: aborted ? 124 : 1 };
+      return { stdout, stderr: stderr || String(err), code: aborted ? 124 : 1 };
     } finally {
       if (signal) signal.removeEventListener('abort', onAbort);
       if (!aborted) {
-        // DRAFT: clean up the session (the abort path already deleted it).
+        // Clean up the session (the abort path already deleted it).
         await this.vm.process.deleteSession(sessionId).catch(() => { /* already gone */ });
       }
     }
   }
 
   async readFile(p: string, opts: { encoding?: 'utf8' } = {}): Promise<Uint8Array | string> {
-    // DRAFT: sandbox.fs.downloadFile(remotePath) => bytes.
+    // sandbox.fs.downloadFile(remotePath) => bytes.
     const bytes = await this.vm.fs.downloadFile(this.abs(p));
     return decode(bytes, opts.encoding);
   }
@@ -325,15 +357,16 @@ export class DaytonaSandbox implements Sandbox {
   /**
    * Collect an output dir back to the host. The seam's portable contract: copy `<remote>` (in-VM) to
    * `<local>` (on the host run dir). Daytona has no "download a whole folder" call, so we enumerate
-   * with `findFiles` and `downloadFile` each, re-rooting onto the host. DRAFT: at scale this is N
-   * round-trips (see report §f) — a tar-on-VM-then-single-download would be the production shape.
+   * with `searchFiles` (a name-glob search returning paths) and `downloadFile` each, re-rooting onto
+   * the host. SEAM FRICTION (research note §5): at scale this is N round-trips — a tar-on-VM-then-
+   * single-download would be the production shape.
    */
   async downloadDir(remote: string, local: string): Promise<void> {
     const remoteRoot = this.abs(remote);
     const localRoot = path.resolve(process.cwd(), local);
-    // DRAFT: findFiles(root, '*') → every file under the output dir.
-    const found = await this.vm.fs.findFiles(remoteRoot, '*');
-    for (const { file } of found) {
+    // searchFiles(root, '*') → paths of every file under the output dir.
+    const { files } = await this.vm.fs.searchFiles(remoteRoot, '*');
+    for (const file of files) {
       // Re-root each in-VM path under the host `local` dir, preserving the subtree.
       const rel = path.posix.relative(remoteRoot, file);
       if (!rel || rel.startsWith('..')) continue; // defensive: skip anything outside the root
@@ -351,7 +384,7 @@ export class DaytonaSandbox implements Sandbox {
    */
   async dispose(): Promise<void> {
     if (this.ownsVm) {
-      // DRAFT: daytona.delete(vm) — only when THIS view owns a throwaway VM (non-scoped path).
+      // daytona.delete(vm) — only when THIS view owns a throwaway VM (non-scoped path).
       await this.sdk.delete(this.vm);
     }
     // else: run-scoped view — do NOT touch the shared VM. RunScope.dispose owns its lifetime.
@@ -394,7 +427,7 @@ class DaytonaRunScope implements RunScope {
    * in try/catch), but we MUST attempt the delete or the VM leaks (billed).
    */
   async dispose(): Promise<void> {
-    // DRAFT: daytona.delete(vm) — the single destroy of the per-run VM.
+    // daytona.delete(vm) — the single destroy of the per-run VM.
     await this.sdk.delete(this.vm);
   }
 }
@@ -407,7 +440,8 @@ class DaytonaRunScope implements RunScope {
  *   - `create` (the non-scoped fallback, parity with inmemory/seatbelt): boot a THROWAWAY VM for one
  *     node and hand back a view that OWNS it (so its `dispose` destroys it).
  *
- * The constructor takes a `DaytonaSdk` (DRAFT: `new Daytona({ apiKey })`) so the file is dependency-
+ * The constructor takes a `DaytonaSdk` seam (the real client is mapped on via `realDaytonaSdk()` in
+ * `./daytona-sdk.ts`; `createDaytonaProvider()` is the convenience factory) so the file is dependency-
  * free and unit-testable with a fake SDK.
  */
 export class DaytonaSandboxProvider implements SandboxProvider {
@@ -416,7 +450,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
   constructor(
     private readonly sdk: DaytonaSdk,
     /**
-     * Run-level VM defaults the per-node CreateOpts can't carry (see report §b/§c). OpenRunOpts has
+     * Run-level VM defaults the per-node CreateOpts can't carry (research note §3/§5). OpenRunOpts has
      * no image/region/resources, so these come from provider construction (env/config) instead.
      */
     private readonly vmDefaults: {
@@ -431,11 +465,11 @@ export class DaytonaSandboxProvider implements SandboxProvider {
 
   /** Boot ONE VM for the whole run and return a scope whose per-node views live inside it. */
   async openRun(opts: OpenRunOpts): Promise<RunScope> {
-    // DRAFT: boot the per-run VM. NOTE the seam mismatch (report §c): CreateOpts.image/env/timeoutMs
+    // Boot the per-run VM. NOTE the seam mismatch (research note §5): CreateOpts.image/env/timeoutMs
     // are PER-NODE, but the VM is created HERE from OpenRunOpts (which has none of them). So the VM's
     // image/resources come from `vmDefaults` (provider config), and per-node `env`/`image` are applied
     // LATER, at the node level — `env` per `exec`, and a per-node `image` is simply UNSUPPORTED in the
-    // shared-VM model (you can't reimage a running VM per node). See report §c.
+    // shared-VM model (you can't reimage a running VM per node).
     const vm = await this.sdk.create({
       image: this.vmDefaults.image,
       resources: this.vmDefaults.resources,
@@ -446,7 +480,7 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     // The run's in-VM root: nest under the VM home so node subtrees are siblings (a worktree analogue).
     const home = this.vmDefaults.homeDir ?? '/home/daytona';
     const rootDir = path.posix.join(home, 'pi', opts.run);
-    // DRAFT: createFolder the run root once so every node's create() nests cleanly.
+    // createFolder the run root once so every node's create() nests cleanly.
     await vm.fs.createFolder(rootDir);
     return new DaytonaRunScope(this.sdk, vm, opts, rootDir);
   }
@@ -456,8 +490,8 @@ export class DaytonaSandboxProvider implements SandboxProvider {
    * runner's per-node `dispose` destroys it (no RunScope teardown in this path).
    */
   async create(opts: CreateOpts): Promise<Sandbox> {
-    // DRAFT: a per-node VM CAN honor CreateOpts.image (unlike the shared-VM path) — this is the only
-    // path where per-node image actually works (report §c).
+    // A per-node VM CAN honor CreateOpts.image (unlike the shared-VM path) — this is the only path
+    // where per-node image actually works (research note §5).
     const vm = await this.sdk.create({
       image: opts.image ?? this.vmDefaults.image,
       resources: this.vmDefaults.resources,

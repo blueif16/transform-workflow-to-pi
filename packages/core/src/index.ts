@@ -29,6 +29,21 @@ export type { BindReport } from './tools/verify.js';
 export { InMemorySandbox, InMemorySandboxProvider, NotImplementedProvider } from './sandbox/index.js';
 // Seatbelt read-scope provider (macOS) + worktree stub (ROADMAP M1)
 export { SeatbeltSandbox, SeatbeltSandboxProvider, WorktreeSandboxProvider, buildSeatbeltProfile } from './sandbox/seatbelt.js';
+// Daytona cloud provider (run-scoped VM lifecycle) + its dependency-inversion SDK seam.
+export { DaytonaSandbox, DaytonaSandboxProvider } from './sandbox/daytona.js';
+export type {
+  DaytonaSdk,
+  DaytonaVm,
+  DaytonaFs,
+  DaytonaProcess,
+  DaytonaCreateParams,
+  DaytonaExecResponse,
+  DaytonaSessionCommand,
+  DaytonaSessionCommandInfo,
+} from './sandbox/daytona.js';
+// Live wiring: the real `@daytona/sdk` adapter + convenience factory (the ONLY SDK-importing module).
+export { realDaytonaSdk, createDaytonaProvider } from './sandbox/daytona-sdk.js';
+export type { CreateDaytonaProviderOpts } from './sandbox/daytona-sdk.js';
 
 // Deterministic hook runner
 export { runHooks } from './hooks/index.js';

@@ -19,5 +19,8 @@
   ],
   "scripts": {
     "build": "tsc -b"
+  },
+  "dependencies": {
+    "@daytona/sdk": "^0.185.0"
   }
 }
