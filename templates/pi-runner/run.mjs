@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pi-runner driver — runs a Claude Code Workflow by spawning one `pi` per node, on an efficient
+// pi-runner driver — runs a Claude Code Workflow by spawning one `pi` per node, on an efficient non-Claude
 // non-Claude coding-plan model, orchestrated entirely from Claude Code (the user runs nothing).
 //
 // SOURCE OF TRUTH = your `.claude/workflows/<name>.js` (the Claude Code Workflow). This driver
@@ -44,7 +44,7 @@
 //   --node-timeout N   hard-kill a node after N seconds (default $PI_RUNNER_NODE_TIMEOUT or 1800).
 //   --dry-run          extract + build prompts + print the exact pi commands; invoke no model.
 
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFileSync, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createRequire } from "node:module";
 import fs from "node:fs";
@@ -87,7 +87,7 @@ loadDefaults();
 //                    model. Set it (e.g. "MiniMax-M3") to pin THIS repo's model alongside PI_RUNNER_PROVIDER.
 // PI_RUNNER_NODE_TIMEOUT  optional default node hard-kill seconds (--node-timeout overrides).
 //                    Set generously: heavy nodes (long TTS / build / render steps) run long on a
-//                    non-Claude coding-plan model. Default 1800 (30 min); 600 was too tight.
+//                    cheap coding-plan model. Default 1800 (30 min); 600 was too tight.
 // PI_RUNNER_ESCALATE  "1" to enable the escalation gate (default off). On a VERIFIED failure, consult
 //                    PI_RUNNER_ESCALATE_MODEL (optionally on PI_RUNNER_ESCALATE_PROVIDER) once, after
 //                    PI_RUNNER_MAX_RETRIES (default 1) same-model transient retries. Consult model
@@ -169,8 +169,8 @@ const TOOL_REPEAT_KILL = process.env.PI_RUNNER_TOOL_REPEAT_KILL !== undefined ? 
 
 // ESCALATION (advisor inversion) — opt-in. On a VERIFIED failure (artifact-contract breach, stuck
 // loop, timeout, degenerate output — NEVER self-confidence) consult a stronger, ideally different-
-// family model ONCE, fed the non-Claude attempt's failure evidence (not a blind retry). Transient infra
-// noise gets an efficient same-model retry; a missing UPSTREAM input halts (escalation can't manufacture
+// family model ONCE, fed the cheap attempt's failure evidence (not a blind retry). Transient infra
+// noise gets a cheap same-model retry; a missing UPSTREAM input halts (escalation can't manufacture
 // it). All per-repo selection is wiring in .env; the consult model lives in ~/.pi/agent/models.json.
 // Spec: reference/escalation.md. (cp's qwen3.7-max is already its top tier → escalate CROSS-family.)
 const ESCALATE = /^(1|true|on)$/i.test(process.env.PI_RUNNER_ESCALATE || "");
@@ -364,26 +364,630 @@ function artifactStateAbs(p) {
 }
 
 // DRIVER-SEED: <dest> <= <src> — deterministically PRE-STAGE a node's STARTING artifact before pi
-// spawns (driver plumbing, never the model). The classic case: copy the per-archetype blueprint
-// template into spec/blueprint.json so HARDEN fills <FILL:…> leaves via `edit` instead of composing
-// the whole structure. <src> may carry {jsonfile:field} tokens resolved from on-disk JSON (the
-// archetype is frozen into spec/classification.json by W0, before HARDEN). Copies ONLY when the dest is
-// absent/empty AND the resolved src exists — idempotent (a resume never clobbers a filled artifact; a
-// no-template archetype falls through to the node's own §0.5 hand-build). Generic: any workflow opts a
-// node in via the contract() `seed` field. No-op when the marker is absent.
+// spawns (driver plumbing, never the model). Two classic cases: (a) copy the per-archetype blueprint
+// FILE into spec/blueprint.json so HARDEN fills <FILL:…> leaves via `edit` instead of composing the
+// whole structure; (b) copy a template DIRECTORY tree (the engine base / a module's src) into the
+// project so a scaffold node only does the design-dependent merge/materialize, never the mechanical
+// copy + tree-explore. A node may declare MULTIPLE DRIVER-SEED lines (each <dest> <= <src>); they are
+// staged in the ORDER written, so a base copy can precede an overlay that wins on conflict. <src> may
+// carry {jsonfile:field} tokens resolved from on-disk JSON (the archetype is frozen into
+// spec/classification.json by W0, before any consumer) — and a token may be NESTED inside another
+// (resolved inner→outer to a fixpoint), with the field a DOTTED PATH (incl. array indices, e.g.
+// `genres.0.coreBase`). Each entry stages ONLY when its dest is absent/empty (file: missing/size 0;
+// dir: missing or an empty readdir) AND the resolved src exists — idempotent (a resume never clobbers a
+// filled artifact; a missing template falls through to the node's own hand-build). A directory src is
+// copied RECURSIVELY (so an overlay merges over the base = "second wins"); a file src is copied as a
+// file. Generic: any workflow opts a node in via the contract() `seed` field (object OR array). Returns
+// an ARRAY of {to,from} (empty when the marker is absent).
 function driverSeed(prompt) {
-  const m = /(?:^|\n)\s*DRIVER-SEED:\s*(\S+)\s*<=\s*(\S+)\s*(?:\n|$)/.exec(prompt || "");
-  return m ? { to: m[1], from: m[2] } : null;
+  // Per-line, multi-match. The trailing boundary is a LOOKAHEAD (?=\n|$), never a consumed \n — three
+  // ADJACENT DRIVER-SEED lines must all match, and consuming the separator would eat the next line's
+  // leading anchor and skip every other one. (^...$ with the m flag is the same idea, lookahead is explicit.)
+  const re = /(?:^|\n)[ \t]*DRIVER-SEED:[ \t]*(\S+)[ \t]*<=[ \t]*(\S+)[ \t]*(?=\n|$)/g;
+  const seeds = [];
+  let m;
+  while ((m = re.exec(prompt || ""))) seeds.push({ to: m[1], from: m[2] });
+  return seeds;
 }
 function resolveSeedTokens(spec) {
-  // {relpath.json:field} → the top-level `field` of the JSON at relpath (resolved vs RUN_CWD).
-  return spec.replace(/\{([^:{}]+):([^{}]+)\}/g, (whole, file, field) => {
-    try {
-      const abs = path.isAbsolute(file) ? file : path.resolve(RUN_CWD, file);
-      const v = JSON.parse(fs.readFileSync(abs, "utf8"))[field];
-      return v == null ? whole : String(v);
-    } catch { return whole; }
-  });
+  // {relpath.json:field} → the JSON at relpath (resolved vs RUN_CWD), drilled by `field` as a DOTTED
+  // PATH (`a.b.0.c`, array indices allowed). Tokens NEST: an inner {…} is resolved first, so an outer
+  // token's file/field may be COMPUTED (e.g. {templates/modules/{spec/classification.json:archetype}/
+  // genre.json:genres.0.coreBase} → inner resolves the archetype, then the outer reads coreBase). We
+  // iterate to a fixpoint over the INNERMOST tokens (those with no nested brace) so resolution is
+  // archetype-agnostic — no literal ever appears here. Bounded passes guard against a cycle.
+  const drill = (obj, dotted) => dotted.split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
+  const oneToken = /\{([^:{}]+):([^{}]+)\}/; // only INNERMOST tokens (no braces inside) match
+  let out = spec;
+  for (let pass = 0; pass < 8 && oneToken.test(out); pass++) {
+    out = out.replace(new RegExp(oneToken, "g"), (whole, file, field) => {
+      try {
+        const abs = path.isAbsolute(file) ? file : path.resolve(RUN_CWD, file);
+        const v = drill(JSON.parse(fs.readFileSync(abs, "utf8")), field.trim());
+        return v == null ? whole : String(v);
+      } catch { return whole; }
+    });
+  }
+  return out;
+}
+
+// DRIVER-PROJECT: <source> => genre:<token> @ <mapRef> — the POST/DERIVE sibling of DRIVER-SEED. Where
+// DRIVER-SEED PRE-STAGES a node's starting artifact before the model (copy a skeleton/tree to FILL), this
+// DERIVES a node's mechanical outputs AFTER the model exits — outputs that are a fixed function of an
+// already-frozen on-disk input (e.g. a frozen spec → its runtime data file / a config-merge / a derived
+// manifest). Run in the driver, it makes that projection a TESTED CODE PATH instead of a per-run non-Claude-model
+// gamble, removes the explore-forever/mis-project thrash surface, makes the output un-hallucinatable, and cuts
+// tokens. It is the AUTHORITY for its outputs → it OVERWRITES them each run.
+//
+// 100% GENERIC — zero game-omni/voxel/blueprint vocabulary. The marker carries only { source, mapRef,
+// genreToken }; the projection OPS are generic JSON transforms declared as DATA in the registry (the mapRef
+// genre record's `projections`), so adding a game type needs ZERO engine edit. ABSENT marker ⇒ inert (every
+// other repo/node unaffected). UNREADABLE map / missing record ⇒ warn + skip (degrade like the optional schema
+// gate), never crash a run. Returns null when no marker; else { source, mapRef, genreToken } (token resolved).
+function driverProject(prompt) {
+  const m = /(?:^|\n)[ \t]*DRIVER-PROJECT:[ \t]*(\S+)[ \t]*=>[ \t]*genre:(\S+)[ \t]*@[ \t]*(\S+)[ \t]*(?=\n|$)/.exec(prompt || "");
+  if (!m) return null;
+  return { source: m[1], genreToken: resolveSeedTokens(m[2]), mapRef: m[3] };
+}
+// Conventional asset sub-dir by slot `type` (the generic asset-path convention W2's index.json uses — NOT
+// game-specific: a sprite lives under sprites/, an image under images/, etc.). Used by the `union` op to fill
+// a slot's conventional default `path` (the asset lane confirms/overwrites it later).
+const ASSET_DIR_BY_TYPE = { sprite: "sprites", animation: "sprites", image: "images", tileset: "tiles", background: "backgrounds", audio: "audio", model: "models" };
+const ASSET_EXT_BY_TYPE = { audio: "mp3", model: "glb" };
+// Pretty-print JSON the way the existing artifacts are formatted (2-space indent + trailing newline) so a
+// projected file is byte-identical to a hand/LLM-written one.
+const projJson = (obj) => JSON.stringify(obj, null, 2) + "\n";
+const drillPath = (obj, dotted) => String(dotted).split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
+// Apply ONE generic projection op against the source JSON (`spec`), resolving the absolute target from the
+// project-relative `to` the same way DRIVER-SEED resolves its dest (RUN_CWD/PROJECT_BASE-relative or absolute).
+// Returns { to, op, wrote, skipped? } for the digest. Op kinds:
+//   copy:  "<dotted.path>"                         → write spec drilled at the path to `to` (a pure subtree copy)
+//   merge: { wrapInto, from, literals }            → START from the SEEDED target on disk, overwrite the
+//                                                     `.value` of each spec[from] key that already has a home
+//                                                     under target[wrapInto], set each literal (name→a dotted
+//                                                     spec path, OR an ARRAY of paths = first-present-wins
+//                                                     COALESCE, "" when all absent) at top level, KEEP template
+//                                                     defaults, write back.
+//   union: { union:[paths], row:{const}, schema? } → derive one slot row per id in the UNION of the named spec
+//                                                     arrays (a bare name → each entry's `.slot`; `entities[].assetSlot`
+//                                                     → each entity's assetSlot), each row built from that source
+//                                                     entry's own fields + a conventional `path` + the const `row`
+//                                                     fields; validate against `schema` (best-effort) and write.
+//   assemble: { spread, fields }                   → the PARTIAL-projection op (the multi-source / non-1:1-copy case,
+//                                                     e.g. a platformer LevelData assembled from layout + systems +
+//                                                     effects + a config default). SPREAD the source object at the
+//                                                     dotted `spread` path (its keys become the file's base), then set
+//                                                     each `fields` entry: a STRING → a dotted spec path pulled verbatim;
+//                                                     an OBJECT {from,default} → that path with a fallback when absent; a
+//                                                     LITERAL {value:v} → the constant v; a STRING beginning "@entity:" →
+//                                                     a NON-DETERMINISTIC transform the driver CANNOT resolve (the
+//                                                     entity-binding weave), so the driver OMITS it AND deletes any
+//                                                     same-named key the spread injected — leaving it genuinely ABSENT
+//                                                     for the model to fill (the partial-bypass fallback). The result is
+//                                                     the deterministic skeleton; the model weaves only the @entity:
+//                                                     fields. GENERIC — no game vocabulary; the field map is registry DATA.
+async function applyProjectionOp(name, opSpec, spec, projectBase) {
+  const toRel = opSpec.to;
+  const toAbs = path.isAbsolute(toRel) ? toRel : path.join(projectBase, toRel);
+  ensureDir(path.dirname(toAbs));
+
+  if (typeof opSpec.copy === "string") {
+    const subtree = drillPath(spec, opSpec.copy);
+    if (subtree === undefined) return { to: toRel, op: "copy", wrote: false, skipped: `source path "${opSpec.copy}" not found` };
+    fs.writeFileSync(toAbs, projJson(subtree));
+    return { to: toRel, op: "copy", wrote: true };
+  }
+
+  if (opSpec.assemble && typeof opSpec.assemble === "object") {
+    const { spread, fields = {} } = opSpec.assemble;
+    // POST-hook authority semantics: the driver is the authority for the DETERMINISTIC fields (it re-derives +
+    // OVERWRITES them every run, defeating drift), while the @entity: WEAVE belongs to the MODEL — so we START
+    // from the model's on-disk file (preserving its woven player/goal/rewards/threats/background), then
+    // overwrite ONLY the deterministic fields. On a fresh run the model already built the whole file (skeleton
+    // + weave) per the prompt fallback; here we re-assert the deterministic mass authoritatively on top. If the
+    // file is somehow absent we start from the spread skeleton alone (a valid partial file the model/JOIN reads).
+    let onDisk = {};
+    try { onDisk = JSON.parse(fs.readFileSync(toAbs, "utf8")); } catch {}
+    if (!onDisk || typeof onDisk !== "object" || Array.isArray(onDisk)) onDisk = {};
+    // Spread source = the deterministic geometry block (e.g. layout). Its OWN keys may include some the model
+    // weaves (layout.goal/rewards/threats are the BARE source form, not the runtime form) — those are listed as
+    // @entity: fields below, so they are NEVER written from the spread; the model's woven version is preserved.
+    const base = spread ? drillPath(spec, spread) : undefined;
+    const det = {};                                                          // the deterministic fields the driver owns
+    const entityKeys = new Set();                                            // the @entity: keys the model owns
+    for (const [outKey, fieldSpec] of Object.entries(fields)) {
+      if (typeof fieldSpec === "string" && fieldSpec.startsWith("@entity:")) { entityKeys.add(outKey); continue; }
+      if (typeof fieldSpec === "string") {                                    // "<dotted.path>" → verbatim pull
+        const v = drillPath(spec, fieldSpec);
+        if (v !== undefined) det[outKey] = v;
+      } else if (fieldSpec && typeof fieldSpec === "object" && "value" in fieldSpec) {
+        det[outKey] = fieldSpec.value;                                        // {value:v} → a constant literal
+      } else if (fieldSpec && typeof fieldSpec === "object" && "from" in fieldSpec) {
+        const v = drillPath(spec, fieldSpec.from);                            // {from:"<path>", default:v} → pull w/ fallback
+        if (v !== undefined) det[outKey] = v; else if ("default" in fieldSpec) det[outKey] = fieldSpec.default;
+      }
+    }
+    // The deterministic geometry the spread contributes = its keys MINUS the model-owned @entity: keys.
+    const spreadDet = {};
+    if (base && typeof base === "object" && !Array.isArray(base)) for (const k of Object.keys(base)) if (!entityKeys.has(k)) spreadDet[k] = base[k];
+    // Compose: START from the model's on-disk file (it sets the KEY ORDER and owns the @entity: WEAVE), then
+    // OVERWRITE every deterministic field with the frozen value — object-spread updates an existing key IN PLACE
+    // (preserving the model's ordering) and only APPENDS a deterministic key the model omitted. So the driver is
+    // the AUTHORITY for the deterministic mass (a model that DRIFTS a spread/explicit field is corrected here),
+    // the model is the authority for the @entity: fields, and the file's shape follows the model's intent.
+    const out = { ...onDisk, ...spreadDet, ...det };
+    fs.writeFileSync(toAbs, projJson(out));
+    return { to: toRel, op: "assemble", wrote: true, ...(entityKeys.size ? { modelOwns: [...entityKeys] } : {}) };
+  }
+
+  if (opSpec.merge && typeof opSpec.merge === "object") {
+    const { wrapInto, from, literals = {} } = opSpec.merge;
+    // Start from the SEEDED target already on disk (the template-default file DRIVER-SEED staged); fall back to
+    // an empty object only if it is somehow absent (then the projection still produces a valid merged file).
+    let target = {};
+    try { target = JSON.parse(fs.readFileSync(toAbs, "utf8")); } catch {}
+    const group = (target[wrapInto] && typeof target[wrapInto] === "object") ? target[wrapInto] : (target[wrapInto] = {});
+    const src = (spec[from] && typeof spec[from] === "object") ? spec[from] : {};
+    // Overwrite the .value of each src key that ALREADY has a home in the template group (so a key the
+    // template doesn't house under wrapInto — e.g. one that lives in another group — is left to its own
+    // template default, never dropped here). KEEPS the template's type/description.
+    for (const k of Object.keys(src)) {
+      if (group[k] && typeof group[k] === "object" && "value" in group[k]) group[k].value = src[k];
+    }
+    // Set each literal at the TOP level from a dotted spec path; absent → "" (matches the known-good, e.g. an
+    // open-ended game with no winCondition.description renders objective:"").  COALESCE form (additive,
+    // generic): a literal value may be an ARRAY of dotted paths — the FIRST present (non-undefined) wins, the
+    // rest fall back; all absent → "". This is the source-of-truth-with-fallback case (e.g. objective sources
+    // meta.objective for a creative-objective build target, falling back to winCondition.description for a
+    // win-lose game). A plain string is unchanged.
+    for (const [key, spec_path] of Object.entries(literals)) {
+      const paths = Array.isArray(spec_path) ? spec_path : [spec_path];
+      let v;
+      for (const p of paths) { const got = drillPath(spec, p); if (got !== undefined) { v = got; break; } }
+      target[key] = v === undefined ? "" : v;
+    }
+    fs.writeFileSync(toAbs, projJson(target));
+    return { to: toRel, op: "merge", wrote: true };
+  }
+
+  if (Array.isArray(opSpec.union)) {
+    const constRow = opSpec.row || {};
+    const rows = [];
+    const seen = new Set();
+    for (const ref of opSpec.union) {
+      const mEnt = /^(.+?)\[\]\.(.+)$/.exec(ref); // "entities[].assetSlot" → collect each entity's assetSlot
+      if (mEnt) {
+        const arr = drillPath(spec, mEnt[1]);
+        if (Array.isArray(arr)) for (const ent of arr) {
+          const slot = ent && ent[mEnt[2]];
+          if (!slot || seen.has(slot)) continue;
+          seen.add(slot);
+          const type = ent.type || "sprite";
+          rows.push({ slot, type, path: assetDefaultPath(slot, type), width: ent.width || 32, height: ent.height || 32, ...(ent.description ? { description: ent.description } : {}), ...constRow });
+        }
+      } else {
+        const arr = drillPath(spec, ref);
+        if (Array.isArray(arr)) for (const e of arr) {
+          const slot = e && e.slot;
+          if (!slot || seen.has(slot)) continue;
+          seen.add(slot);
+          const type = e.type || "sprite";
+          const r = { slot, type, path: assetDefaultPath(slot, type), width: e.width || 32, height: e.height || 32 };
+          if (typeof e.depth === "number") r.depth = e.depth; // 3D model slot: carry the Z extent for the runtime fit-to-box
+          if (Array.isArray(e.frames)) r.frames = e.frames;
+          if (Array.isArray(e.entityIds)) r.entityIds = e.entityIds;
+          if (e.description) r.description = e.description;
+          rows.push({ ...r, ...constRow });
+        }
+      }
+    }
+    const out = { archetype: drillPath(spec, "meta.archetype"), assetsDir: "public/assets", slots: rows };
+    // Best-effort schema validation (degrades like the engine's own schema gate): a present validator + a
+    // declared schema HARD-fail an invalid projection (the guardrail); a missing validator warns + writes.
+    if (opSpec.schema) {
+      const factory = await loadSchemaValidatorFactory();
+      if (factory) {
+        const schemaAbs = path.isAbsolute(opSpec.schema)
+          ? opSpec.schema
+          : [path.join(RUN_CWD, opSpec.schema), path.join(ROOT, opSpec.schema)].find((c) => { try { return fs.statSync(c).size > 0; } catch { return false; } }) || path.join(RUN_CWD, opSpec.schema);
+        try {
+          const validate = factory(JSON.parse(fs.readFileSync(schemaAbs, "utf8")));
+          const r = validate(out);
+          if (!r.ok) return { to: toRel, op: "union", wrote: false, skipped: `projected slots violate ${path.basename(opSpec.schema)}: ${(r.errors || []).slice(0, 4).map((e) => `${e.instancePath || "/"} ${e.message}`).join("; ")}` };
+        } catch (e) { console.warn(`    ⚠ DRIVER-PROJECT union: schema "${opSpec.schema}" unreadable/uncompilable — writing without validation (${e.message})`); }
+      } else {
+        console.warn(`    ⚠ DRIVER-PROJECT union: no draft-2020-12 validator resolved — writing ${toRel} WITHOUT schema validation`);
+      }
+    }
+    fs.writeFileSync(toAbs, projJson(out));
+    return { to: toRel, op: "union", wrote: true, rows: rows.length };
+  }
+
+  return { to: toRel, op: "unknown", wrote: false, skipped: `no recognized op (copy|merge|union) for "${name}"` };
+}
+function assetDefaultPath(slot, type) {
+  const dir = ASSET_DIR_BY_TYPE[type] || "sprites";
+  const ext = ASSET_EXT_BY_TYPE[type] || "png";
+  return `${dir}/${slot}.${ext}`;
+}
+// Run a node's DRIVER-PROJECT map (POST-node, the authority for its outputs). Resolves the genre record in the
+// mapRef by id===genreToken, reads its `projections` object, and applies each op. Returns a summary the digest
+// records ({ map, genre, ops:[...] }); a null marker / unreadable map / missing record returns null|skip so a
+// run is never crashed by it (graceful degrade — the engine law).
+async function runProjection(proj, projectBase) {
+  if (!proj) return null;
+  const mapAbs = path.isAbsolute(proj.mapRef)
+    ? proj.mapRef
+    : [path.join(RUN_CWD, proj.mapRef), path.join(ROOT, proj.mapRef)].find((c) => { try { return fs.statSync(c).size > 0; } catch { return false; } });
+  if (!mapAbs) { console.warn(`    ⚠ DRIVER-PROJECT — mapRef "${proj.mapRef}" not found; skipping projection`); return { skipped: `mapRef not found: ${proj.mapRef}` }; }
+  let map;
+  try { map = JSON.parse(fs.readFileSync(mapAbs, "utf8")); }
+  catch (e) { console.warn(`    ⚠ DRIVER-PROJECT — mapRef "${proj.mapRef}" unreadable (${e.message}); skipping`); return { skipped: `mapRef unreadable: ${e.message}` }; }
+  const record = (map.genres || []).find((g) => g.id === proj.genreToken);
+  if (!record) { console.warn(`    ⚠ DRIVER-PROJECT — no genre record "${proj.genreToken}" in ${proj.mapRef}; skipping`); return { skipped: `no genre record: ${proj.genreToken}` }; }
+  const projections = record.projections;
+  if (!projections || typeof projections !== "object") return { genre: proj.genreToken, ops: [], note: "no projections declared for this genre (inert)" };
+  // Read the source JSON ONCE (the frozen spec the projection derives from).
+  const srcAbs = path.isAbsolute(proj.source) ? proj.source
+    : [path.join(projectBase, proj.source), path.join(RUN_CWD, proj.source), path.join(ROOT, proj.source)].find((c) => { try { return fs.statSync(c).size > 0; } catch { return false; } });
+  let spec;
+  try { spec = JSON.parse(fs.readFileSync(srcAbs, "utf8")); }
+  catch (e) { console.warn(`    ⚠ DRIVER-PROJECT — source "${proj.source}" unreadable (${e.message}); skipping`); return { skipped: `source unreadable: ${e.message}` }; }
+  const ops = [];
+  for (const [name, opSpec] of Object.entries(projections)) {
+    try { ops.push(await applyProjectionOp(name, opSpec, spec, projectBase)); }
+    catch (e) { ops.push({ to: opSpec && opSpec.to, op: name, wrote: false, skipped: `error: ${e.message}` }); console.warn(`    ⚠ DRIVER-PROJECT op "${name}" errored: ${e.message}`); }
+  }
+  return { genre: proj.genreToken, map: proj.mapRef, ops };
+}
+
+// DRIVER-MERGE — a SECOND post-node DERIVE family (sibling of DRIVER-PROJECT), for the deterministic
+// FILESYSTEM merges that are NOT a per-archetype projection of one frozen spec but the SAME mechanical
+// reconcile for EVERY archetype: concatenate per-node fragments into one canonical file, and reconcile
+// one JSON's per-key fields onto another's matching rows. It lifts a whole would-be LLM merge node into a
+// TESTED CODE PATH. 100% GENERIC — zero game-omni/voxel/blueprint vocabulary; the SPEC is DATA declared in
+// the workflow's contract() (a `merge:{ ops:[...] }` field), rendered as ONE base64-encoded DRIVER-MERGE
+// marker (the ops carry arbitrary headings/globs/field lists, so a whitespace-tolerant single line keeps the
+// marker parser trivial and collision-free). ABSENT marker ⇒ inert; a missing INPUT file degrades GRACEFULLY
+// (the same skip/partial the old LLM merge had — e.g. an absent manifest still lets the concat run).
+//
+// THREE generic ops:
+//   concat:    { glob, to, heading }   — concat every file matching `glob` (project-relative) into `to`, each
+//                                         under a formatted `heading` (a template with {name}=basename, {path}=
+//                                         project-relative path), in STABLE lexical-by-path order; idempotent
+//                                         (overwrites `to`). A missing/empty source set writes nothing-but-still
+//                                         a (possibly empty) file is avoided — 0 files ⇒ skip (record count).
+//   reconcile: { from, to, key, fields, schema? } — project `from`'s per-key entries' `fields` onto `to`'s
+//                                         matching-key ROWS (mutating ONLY those fields of EXISTING rows;
+//                                         keys/order/count untouched), then optional best-effort schema
+//                                         re-validate (degrade like the projection schema gate). `from` is the
+//                                         source JSON whose `.<key-collection>` is an object keyed by id;
+//                                         `to` is the JSON whose `.slots` (or the array under `arrayAt`) holds
+//                                         the rows keyed by row[key]. A field copies ALWAYS, or CONDITIONALLY
+//                                         when listed as { name, when:{field,equals} } (e.g. path/width/height
+//                                         only when status=="generated").
+//   fold:      { from, to, into }      — SET to[into] = the parsed JSON object at `from` (a section fragment),
+//                                         then write `to`. SYNCHRONOUS read-modify-write (no await) → two parallel
+//                                         lanes folding DISTINCT keys (v1.6 chrome: shell vs guidance) cannot lose
+//                                         an update. Graceful: an absent/unreadable fragment skips the fold.
+function driverMerge(prompt) {
+  // base64 line (the contract() encodes the ops object so headings/globs with spaces ride one marker line).
+  const m = /(?:^|\n)[ \t]*DRIVER-MERGE:[ \t]*([A-Za-z0-9+/=]+)[ \t]*(?=\n|$)/.exec(prompt || "");
+  if (!m) return null;
+  try { return JSON.parse(Buffer.from(m[1], "base64").toString("utf8")); }
+  catch (e) { console.warn(`    ⚠ DRIVER-MERGE — marker payload unreadable (${e.message}); skipping`); return null; }
+}
+function mergeResolveAbs(rel, projectBase) {
+  if (path.isAbsolute(rel)) return rel;
+  return [path.join(projectBase, rel), path.join(RUN_CWD, rel), path.join(ROOT, rel)].find((c) => { try { return fs.statSync(c).size >= 0; } catch { return false; } }) || path.join(projectBase, rel);
+}
+async function applyMergeOp(opSpec, projectBase) {
+  // ---- concat: glob → to, each under a heading, stable lexical-by-path, idempotent overwrite ----
+  if (opSpec.concat && typeof opSpec.concat === "object") {
+    const { glob, to, heading = "## {name}" } = opSpec.concat;
+    const toAbs = path.isAbsolute(to) ? to : path.join(projectBase, to);
+    // Resolve the glob in the SAME dir family as `to` (a single dir + a filename pattern — no deep walk
+    // needed; the fragments live beside the canonical file). Support a leading dir and a `*` wildcard.
+    const dir = path.dirname(glob);
+    const pat = path.basename(glob);
+    const reSrc = "^" + pat.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$";
+    const re = new RegExp(reSrc);
+    const dirAbs = path.isAbsolute(dir) ? dir : path.join(projectBase, dir);
+    let names = [];
+    try { names = fs.readdirSync(dirAbs); } catch {}
+    // STABLE lexical-by-path order; EXCLUDE the destination itself (never fold MEMORY.md into MEMORY.md).
+    const toBase = path.basename(toAbs);
+    const matched = names.filter((n) => re.test(n) && n !== toBase).sort();
+    if (!matched.length) return { op: "concat", to, wrote: false, skipped: `no files match ${glob}`, merged: 0 };
+    const parts = [];
+    for (const n of matched) {
+      const relPath = path.join(dir, n).replace(/^\.\//, "");
+      let body = "";
+      try { body = fs.readFileSync(path.join(dirAbs, n), "utf8"); } catch { continue; }
+      const head = heading.replaceAll("{name}", n).replaceAll("{path}", relPath);
+      parts.push(`${head}\n\n${body.replace(/\s+$/, "")}`);
+    }
+    ensureDir(path.dirname(toAbs));
+    fs.writeFileSync(toAbs, parts.join("\n\n") + "\n");
+    return { op: "concat", to, wrote: true, merged: matched.length };
+  }
+
+  // ---- reconcile: from.<keys> → to.slots[].<fields> on matching key; keys/order untouched ----
+  if (opSpec.reconcile && typeof opSpec.reconcile === "object") {
+    const { from, to, key = "slot", fields = [], arrayAt = "slots", fromAt = "slots", schema } = opSpec.reconcile;
+    const toAbs = path.isAbsolute(to) ? to : path.join(projectBase, to);
+    let toJson;
+    try { toJson = JSON.parse(fs.readFileSync(toAbs, "utf8")); }
+    catch (e) { return { op: "reconcile", to, wrote: false, skipped: `target unreadable: ${e.message}` }; }
+    const fromAbs = mergeResolveAbs(from, projectBase);
+    let fromMap = null;
+    try { fromMap = drillPath(JSON.parse(fs.readFileSync(fromAbs, "utf8")), fromAt); }
+    catch (e) { /* graceful: a missing/absent source ⇒ no reconcile, target left as-is (the LLM JOIN's partial) */
+      return { op: "reconcile", to, wrote: false, skipped: `source unreadable: ${e.message} (target left unchanged)` }; }
+    if (!fromMap || typeof fromMap !== "object") return { op: "reconcile", to, wrote: false, skipped: `source "${from}" has no .${fromAt} object` };
+    const rows = drillPath(toJson, arrayAt);
+    if (!Array.isArray(rows)) return { op: "reconcile", to, wrote: false, skipped: `target has no .${arrayAt} array` };
+    let reconciled = 0;
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const id = row[key];
+      const src = id != null ? fromMap[id] : undefined;
+      if (!src || typeof src !== "object") continue; // a row with no source entry keeps its existing fields
+      let touched = false;
+      for (const f of fields) {
+        const name = typeof f === "string" ? f : f.name;
+        if (!name) continue;
+        if (typeof f === "object" && f.when) {
+          // conditional copy: only when the SOURCE's gating field equals the expected value (e.g. status=="generated")
+          if (src[f.when.field] !== f.when.equals) continue;
+        }
+        if (name in src) { row[name] = src[name]; touched = true; }
+      }
+      if (touched) reconciled++;
+    }
+    // optional best-effort schema re-validate (degrade like the projection schema gate — never crash a run)
+    if (schema) {
+      const factory = await loadSchemaValidatorFactory();
+      if (factory) {
+        const schemaAbs = path.isAbsolute(schema) ? schema
+          : [path.join(RUN_CWD, schema), path.join(ROOT, schema)].find((c) => { try { return fs.statSync(c).size > 0; } catch { return false; } }) || path.join(RUN_CWD, schema);
+        try {
+          const validate = factory(JSON.parse(fs.readFileSync(schemaAbs, "utf8")));
+          const r = validate(toJson);
+          if (!r.ok) return { op: "reconcile", to, wrote: false, skipped: `reconciled ${to} violates ${path.basename(schema)}: ${(r.errors || []).slice(0, 4).map((e) => `${e.instancePath || "/"} ${e.message}`).join("; ")}` };
+        } catch (e) { console.warn(`    ⚠ DRIVER-MERGE reconcile: schema "${schema}" unreadable/uncompilable — writing without validation (${e.message})`); }
+      } else {
+        console.warn(`    ⚠ DRIVER-MERGE reconcile: no draft-2020-12 validator resolved — writing ${to} WITHOUT schema validation`);
+      }
+    }
+    fs.writeFileSync(toAbs, projJson(toJson));
+    return { op: "reconcile", to, wrote: true, reconciled };
+  }
+
+  // ---- fold: a fragment JSON object → to.<into> (a section-fold/union; v1.6 chrome — contracts-v1.md Contract 5).
+  // SET to[into] = the parsed fragment, then write `to`. The read-modify-write is FULLY SYNCHRONOUS (no await), so
+  // when two parallel chrome lanes' fold post-hooks fire back-to-back on the Node event loop, each runs atomically
+  // and they touch DISTINCT keys (e.g. shell vs guidance) → no lost update. Graceful: a missing/unreadable fragment
+  // skips the fold (the section stays absent; the build tier Array.isArray-guards an absent chrome section). ----
+  if (opSpec.fold && typeof opSpec.fold === "object") {
+    const { from, to, into } = opSpec.fold;
+    if (!from || !to || !into) return { op: "fold", to, wrote: false, skipped: "fold needs { from, to, into }" };
+    const toAbs = path.isAbsolute(to) ? to : path.join(projectBase, to);
+    let toJson;
+    try { toJson = JSON.parse(fs.readFileSync(toAbs, "utf8")); }
+    catch (e) { return { op: "fold", to, wrote: false, skipped: `target unreadable: ${e.message}` }; }
+    const fromAbs = mergeResolveAbs(from, projectBase);
+    let frag;
+    try { frag = JSON.parse(fs.readFileSync(fromAbs, "utf8")); }
+    catch (e) { /* graceful: an absent/unreadable fragment ⇒ no fold, target left unchanged */
+      return { op: "fold", to, wrote: false, skipped: `fragment "${from}" unreadable: ${e.message} (target left unchanged)` }; }
+    toJson[into] = frag;
+    fs.writeFileSync(toAbs, projJson(toJson));
+    return { op: "fold", to, wrote: true, into };
+  }
+
+  // ---- run: execute a declared command — a deterministic GENERATION/derive step that does NOT deserve an LLM
+  // node (the node authors the INPUT, the driver RUNS the tool). This is the realization of the MECHANICAL→
+  // DRIVER-HOOK law for an EXEC step (e.g. the asset image generator): a programmatic tool invocation is a
+  // tested code path here, not a per-run non-Claude-model bash gamble. Tokens {project}/{root} in `cmd`/`args[]`/`cwd`
+  // are substituted with the resolved projectBase / ROOT (absolute) — so a repo-rooted tool ({root}/…, where the
+  // venv/tooling lives, NOT the worktree) reads/writes the run's project tree ({project}/…) worktree-safely. cwd
+  // defaults to ROOT. A non-zero exit returns { failed:true, exit } (runMerge records it + warns); the node is
+  // HARD-FAILED via its DRIVER-ARTIFACTS gate — declare the tool's required OUTPUT (e.g. its manifest) as a
+  // required artifact, so a failed/absent generation is a contract breach (status=blocked). That is the
+  // "real generation mandatory, no placeholder floor" rule enforced by the EXISTING gate, never a model branch.
+  if (opSpec.run && typeof opSpec.run === "object") {
+    const { cmd, args = [], cwd, note } = opSpec.run;
+    if (!cmd) return { op: "run", wrote: false, skipped: "run needs { cmd }" };
+    const sub = (s) => typeof s === "string" ? s.replace(/\{project\}/g, projectBase).replace(/\{root\}/g, ROOT) : s;
+    const cmdAbs = path.isAbsolute(sub(cmd)) ? sub(cmd) : path.join(ROOT, sub(cmd));
+    const argv = (Array.isArray(args) ? args : []).map(sub);
+    const runCwd = cwd ? (path.isAbsolute(sub(cwd)) ? sub(cwd) : path.join(ROOT, sub(cwd))) : ROOT;
+    const res = spawnSync(cmdAbs, argv, { cwd: runCwd, stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    const out = (res.stdout || "").toString().trim().split("\n").slice(-3).join(" | ");
+    const err = (res.stderr || "").toString().trim().split("\n").slice(-3).join(" | ");
+    if (res.error) { console.warn(`    ⚠ DRIVER-MERGE run: spawn error (${res.error.message})`); return { op: "run", wrote: false, failed: true, skipped: `spawn error: ${res.error.message}`, cmd: path.relative(ROOT, cmdAbs) }; }
+    if (res.status !== 0) { console.warn(`    ⚠ DRIVER-MERGE run: ${path.basename(cmdAbs)} exited ${res.status} — ${err || out}`); return { op: "run", wrote: false, failed: true, exit: res.status, stderr: err.slice(0, 400), cmd: path.relative(ROOT, cmdAbs) }; }
+    return { op: "run", wrote: true, exit: 0, cmd: path.relative(ROOT, cmdAbs), stdout: out.slice(0, 200), note: note || undefined };
+  }
+
+  return { op: "unknown", wrote: false, skipped: "no recognized op (concat|reconcile|fold|run)" };
+}
+// Run a node's DRIVER-MERGE ops (POST-node, the AUTHORITY for its merged outputs — it OVERWRITES each run).
+// Each op degrades gracefully (a missing input ⇒ skip that op, others still run). Returns { ops:[...] }; a
+// null marker returns null. Generic: any workflow opts a node in via the contract() `merge` field.
+async function runMerge(spec, projectBase) {
+  if (!spec || !Array.isArray(spec.ops)) return null;
+  const ops = [];
+  for (const opSpec of spec.ops) {
+    try { ops.push(await applyMergeOp(opSpec, projectBase)); }
+    catch (e) { ops.push({ op: Object.keys(opSpec || {})[0] || "?", wrote: false, skipped: `error: ${e.message}` }); console.warn(`    ⚠ DRIVER-MERGE op errored: ${e.message}`); }
+  }
+  return { ops };
+}
+
+// PROMOTE-UPSTREAM (local-first, flagged per the engine law): this DRIVER-SEED-CONTRACT family + its catalog-driven
+// interpreter is a NEW generic op added LOCALLY in this repo's pi-runner/. It carries ZERO repo-specific literals
+// (it is driven entirely by the catalog DATA + the marker), so it is a candidate for promotion into the canonical
+// transform-workflow-to-pi template (reference/artifact-contract.md's marker family + the run.mjs template) once
+// proven on a real run — alongside the existing DRIVER-SEED/DRIVER-PROJECT/DRIVER-MERGE families. Until promoted it
+// lives here only; the engine stays byte-identical for repos that don't render the marker (it is inert when absent).
+// DRIVER-SEED-CONTRACT — a THIRD post-node DERIVE family (sibling of DRIVER-PROJECT / DRIVER-MERGE), for the
+// deterministic per-node SEEDED CONTRACT projection: AFTER the producing node freezes a `source` JSON, the driver
+// PROJECTS a basic contract per downstream node into `source.<into>.<node> = { owns, bind, demand, tone, ... }`,
+// resolving each node-TYPE's DECLARATIVE bind-template (from a drift-gated `catalog` JSON) against the frozen
+// source. It is the AUTHORITY for that field → it OVERWRITES it each run. (Why a hook, not the model: the
+// resolution is a deterministic function of frozen sections + a data catalog — un-hallucinatable, keeps the
+// producer to one job. MECHANICAL→DRIVER-HOOK.) 100% GENERIC — zero game-omni/blueprint/archetype vocabulary;
+// the marker carries only { source, catalog, into? }, and the bind-templates + observable palette live as DATA in
+// the catalog, so adding a node-TYPE or a game type needs ZERO engine edit. ABSENT marker ⇒ inert (every other
+// repo/node unaffected). UNREADABLE catalog / source ⇒ warn + skip (degrade like the optional schema gate), never
+// crash a run. Returns null when no marker; else { source, catalog, into }.
+function driverSeedContract(prompt) {
+  // base64 line (the contract() encodes {source,catalog,into} so paths with any char ride one marker line, the
+  // same trivial-parser convention as DRIVER-MERGE).
+  const m = /(?:^|\n)[ \t]*DRIVER-SEED-CONTRACT:[ \t]*([A-Za-z0-9+/=]+)[ \t]*(?=\n|$)/.exec(prompt || "");
+  if (!m) return null;
+  try { const o = JSON.parse(Buffer.from(m[1], "base64").toString("utf8")); return { into: "contracts", ...o }; }
+  catch (e) { console.warn(`    ⚠ DRIVER-SEED-CONTRACT — marker payload unreadable (${e.message}); skipping`); return null; }
+}
+// ---- the bind-template interpreter (generic primitives; the catalog declares which to run, in order) ----
+// drillPath() (above) drills a DOTTED path; these add the array-projection + dedup-sort the bind segments need.
+// "a[].b" → collect each element's drilled `b`; a plain dotted path with a non-array value → [value]; an array
+// value → the array. Used by `events`/`slots`/`tokens` segments. GENERIC — no field name is hard-coded.
+function drillArrayField(obj, spec) {
+  const m = /^(.+?)\[\]\.(.+)$/.exec(spec);
+  if (m) {
+    const arr = drillPath(obj, m[1]);
+    if (!Array.isArray(arr)) return [];
+    return arr.map((e) => (e == null ? undefined : drillPath(e, m[2]))).filter((v) => v != null);
+  }
+  const v = drillPath(obj, spec);
+  return v == null ? [] : Array.isArray(v) ? v : [v];
+}
+const dedupSort = (xs) => [...new Set(xs.map(String))].sort();
+// The CORE OBSERVABLE set, computed ONCE per source from the catalog's `observables` palette (base + the meta-
+// scalar-gated additions). The ONLY archetype knowledge — the failModel→observable map / scoringModel→maxScore —
+// is DATA in the catalog, never here. Returns a deduped (insertion-order) array.
+function coreObservables(spec, palette) {
+  if (!palette || typeof palette !== "object") return [];
+  const out = [...(Array.isArray(palette.base) ? palette.base : [])];
+  for (const [scalarPath, rule] of Object.entries(palette.whenScalar || {})) {
+    const val = drillPath(spec, scalarPath);
+    if (rule && Array.isArray(rule.unless)) { if (!rule.unless.includes(val)) for (const a of (rule.add || [])) out.push(a); }
+    else if (rule && rule.map && typeof rule.map === "object") { const mapped = rule.map[val]; if (mapped != null) out.push(mapped); }
+  }
+  return [...new Set(out.map(String))];
+}
+// Gather the POSITIONED entity ids from a list of dotted paths (each a single object with `.id`, e.g. layout.goal,
+// OR an array of {id}, e.g. layout.rewards/threats) — in path order, then array order. The diegetic-cue handles.
+function gatherEntityIds(spec, paths) {
+  const ids = [];
+  for (const p of (paths || [])) {
+    const v = drillPath(spec, p);
+    if (v == null) continue;
+    if (Array.isArray(v)) { for (const e of v) if (e && e.id != null) ids.push(String(e.id)); }
+    else if (v.id != null) ids.push(String(v.id));
+  }
+  return ids;
+}
+// Resolve ONE node-TYPE's catalog entry against the frozen source → its contract object { owns, bind, demand, tone,
+// ...scalars }. Pure data-interpretation: every concrete value is drilled from `spec`; the catalog supplies only the
+// SHAPE. The bind list is assembled from ordered `segments` (each a typed producer), exactly mirroring the hand-sim.
+function resolveNodeContract(spec, entry, palette) {
+  const out = {};
+  if (Array.isArray(entry.owns)) out.owns = entry.owns.slice();
+  // ---- bind: ordered segments → one concatenated handle list ----
+  const obs = coreObservables(spec, palette);
+  const bind = [];
+  for (const seg of (entry.bind && entry.bind.segments) || []) {
+    if (seg.kind === "observables") {
+      let xs = obs.slice();
+      if (typeof seg.with === "string") xs.push(seg.with);
+      else if (Array.isArray(seg.with)) xs.push(...seg.with);
+      if (seg.sort === "dedup-sort") xs = dedupSort(xs);
+      bind.push(...xs);
+    } else if (seg.kind === "literals") {
+      bind.push(...(seg.values || []));
+    } else if (seg.kind === "events") {
+      let xs = drillArrayField(spec, seg.from).map(String);
+      if (seg.sort === "dedup-sort") xs = dedupSort(xs);
+      bind.push(...xs);
+    } else if (seg.kind === "anchors") {
+      const ids = gatherEntityIds(spec, seg.entityIdsFrom);
+      bind.push(...ids.map((i) => `near:${i}`), ...ids.map((i) => `${i}.position`));
+    } else if (seg.kind === "tokens") {
+      const xs = drillArrayField(spec, seg.from).map(String);
+      bind.push(...xs.map((v) => `${seg.prefix}${v}`));
+    } else if (seg.kind === "slots") {
+      const xs = [];
+      for (const f of (seg.from || [])) for (const v of drillArrayField(spec, f)) xs.push(String(v));
+      bind.push(...[...new Set(xs)]);
+    }
+  }
+  out.bind = bind;
+  // ---- scalars: extra top-level fields copied/derived verbatim (nodeContract is additionalProperties:true) ----
+  for (const [field, sc] of Object.entries(entry.scalars || {})) {
+    if (sc && Array.isArray(sc.fromEntityIds)) out[field] = gatherEntityIds(spec, sc.fromEntityIds);
+    else if (sc && typeof sc.from === "string") { const v = drillPath(spec, sc.from); out[field] = v == null ? (sc.default ?? "") : v; }
+  }
+  // ---- the templated demand + tone context (generic token grammar; values all drilled from spec) ----
+  const scoringModel = drillPath(spec, "meta.scoringModel") ?? "none";
+  const failModel = drillPath(spec, "meta.failModel") ?? "none";
+  const ctx = {
+    coreVerb: drillPath(spec, "meta.coreVerb") ?? "",
+    goalId: (drillPath(spec, "layout.goal") || {}).id ?? "",
+    firstMilestone: (() => { const ms = drillArrayField(spec, "milestones[].id"); return ms.length ? ms[0] : "M1"; })(),
+    slotCount: (() => { let n = 0; for (const seg of (entry.bind && entry.bind.segments) || []) if (seg.kind === "slots") n = out.bind.length; return n; })(),
+  };
+  const renderDemand = (tmpl) => String(tmpl || "")
+    // {scoring?A:B} — ternary on scoringModel != 'none'
+    .replace(/\{scoring\?([^:}]*):([^}]*)\}/g, (_, a, b) => (scoringModel !== "none" ? a : b))
+    // {failResource} — ' + the <fm> resource' iff failModel not in {none,respawn} (a HUD resource exists)
+    .replace(/\{failResource\}/g, () => (["none", "respawn"].includes(failModel) ? "" : ` + the ${failModel} resource`))
+    // {gameOver?} — 'out' iff failModel cannot reach a terminal lose (none/respawn) → 'without a gameOver branch'
+    .replace(/\{gameOver\?\}/g, () => (["none", "respawn"].includes(failModel) ? "out" : ""))
+    // {coreVerb}/{goalId}/{firstMilestone}/{slotCount} — plain context substitutions
+    .replace(/\{(coreVerb|goalId|firstMilestone|slotCount)\}/g, (_, k) => String(ctx[k] ?? ""));
+  if (entry.demand && typeof entry.demand.template === "string") out.demand = renderDemand(entry.demand.template);
+  // ---- tone: first-present coalesce over dotted paths, with a default ----
+  if (entry.tone && Array.isArray(entry.tone.from)) {
+    let tone;
+    for (const p of entry.tone.from) { const v = drillPath(spec, p); if (v != null && v !== "") { tone = v; break; } }
+    out.tone = tone == null ? (entry.tone.default ?? "") : tone;
+  }
+  return out;
+}
+// Run a node's DRIVER-SEED-CONTRACT (POST-node, the AUTHORITY for source.<into>): read the drift-gated `catalog`
+// (its `nodes` map of bind-templates + the `observables` palette), resolve each node-TYPE against the frozen
+// `source` JSON, and write source.<into>.<node> = the resolved contract — then write the source back. Returns a
+// summary the digest records ({ source, catalog, into, nodes:[...] }); a null marker / unreadable catalog|source
+// returns null|skip so a run is never crashed by it (graceful degrade — the engine law).
+async function runSeedContract(proj, projectBase) {
+  if (!proj) return null;
+  const catalogAbs = path.isAbsolute(proj.catalog)
+    ? proj.catalog
+    : [path.join(RUN_CWD, proj.catalog), path.join(ROOT, proj.catalog)].find((c) => { try { return fs.statSync(c).size > 0; } catch { return false; } });
+  if (!catalogAbs) { console.warn(`    ⚠ DRIVER-SEED-CONTRACT — catalog "${proj.catalog}" not found; skipping`); return { skipped: `catalog not found: ${proj.catalog}` }; }
+  let catalog;
+  try { catalog = JSON.parse(fs.readFileSync(catalogAbs, "utf8")); }
+  catch (e) { console.warn(`    ⚠ DRIVER-SEED-CONTRACT — catalog "${proj.catalog}" unreadable (${e.message}); skipping`); return { skipped: `catalog unreadable: ${e.message}` }; }
+  if (!catalog || typeof catalog.nodes !== "object") return { skipped: "catalog has no `nodes` map (inert)" };
+  const srcAbs = path.isAbsolute(proj.source) ? proj.source
+    : [path.join(projectBase, proj.source), path.join(RUN_CWD, proj.source), path.join(ROOT, proj.source)].find((c) => { try { return fs.statSync(c).size > 0; } catch { return false; } });
+  let spec;
+  try { spec = JSON.parse(fs.readFileSync(srcAbs, "utf8")); }
+  catch (e) { console.warn(`    ⚠ DRIVER-SEED-CONTRACT — source "${proj.source}" unreadable (${e.message}); skipping`); return { skipped: `source unreadable: ${e.message}` }; }
+  const into = proj.into || "contracts";
+  if (!spec[into] || typeof spec[into] !== "object" || Array.isArray(spec[into])) spec[into] = {};
+  const done = [];
+  for (const [node, entry] of Object.entries(catalog.nodes)) {
+    if (node.startsWith("$")) continue; // skip $comment-style keys
+    try { spec[into][node] = resolveNodeContract(spec, entry, catalog.observables); done.push(node); }
+    catch (e) { console.warn(`    ⚠ DRIVER-SEED-CONTRACT — node "${node}" failed (${e.message}); skipping that node`); }
+  }
+  fs.writeFileSync(srcAbs, projJson(spec));
+  return { source: proj.source, catalog: proj.catalog, into, nodes: done };
 }
 
 // ===== WORKTREE ISOLATION (opt-in) =========================================================
@@ -585,6 +1189,75 @@ function withinOwned(p, globs) {
   });
 }
 
+// ── DECLARATIVE INTEGRITY CHECKS — the unified node contract (DRIVER-CHECKS / DRIVER-POLICY / DRIVER-RETURN) ──
+// A node declares its CHECKS (pure predicates over its artifacts) SEPARATELY from the verdict→ACTION POLICY,
+// so detection and consequence stay disentangled: flip an action in DRIVER-POLICY without touching a check,
+// or add a check without touching the policy. Each check is { kind, path, param?, severity? }; the engine runs
+// CHECK_KINDS[kind] (a pure fn of the file's bytes) and folds the verdicts into the node status. base64-on-one-
+// line (the DRIVER-MERGE convention) carries arbitrary regex/params collision-free. ALL inert when their marker
+// is absent — an undeclared node is byte-identical to before. Spec: reference/artifact-contract.md.
+function decodeB64Marker(prompt, key) {
+  const v = markerValue(prompt, key);
+  if (!v) return null;
+  try { return JSON.parse(Buffer.from(v.trim(), "base64").toString("utf8")); }
+  catch { try { return JSON.parse(v); } catch { return null; } } // tolerate inline JSON for a hand-authored marker
+}
+const driverChecks = (prompt) => { const c = decodeB64Marker(prompt, "DRIVER-CHECKS"); return Array.isArray(c) ? c : null; };
+const driverPolicy = (prompt) => { const p = decodeB64Marker(prompt, "DRIVER-POLICY"); return p && typeof p === "object" ? p : null; };
+function resolveArtifactPath(p) { // forgiving RUN_CWD/ROOT/PROJECT_BASE resolve, like the existence/schema gates
+  if (path.isAbsolute(p)) return p;
+  const cands = [path.join(RUN_CWD, p), path.join(ROOT, p), ...(PROJECT_BASE ? [path.join(PROJECT_BASE, p)] : [])];
+  return cands.find((c) => { try { return fs.statSync(c).size >= 0; } catch { return false; } }) || cands[0];
+}
+const fieldAt = (obj, dotted) => String(dotted).split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
+function escapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function lastFencedBlock(text, lang) { // extract+parse the LAST fenced ```<lang> block; undefined=none, null=unparseable
+  const re = new RegExp("```" + (lang || "json") + "\\s*([\\s\\S]*?)```", "g");
+  let m, last; while ((m = re.exec(text || ""))) last = m[1];
+  if (last == null) return undefined;
+  try { return JSON.parse(last.trim()); } catch { return null; }
+}
+// CHECK_KINDS — pure predicates over a read file { bytes, size }. Each returns { ok, reason }. NEVER judges
+// GOODNESS (count-floor asserts "≥N items EXIST", never "the items are good"). Unknown kind → graceful skip.
+const CHECK_KINDS = {
+  "exists":        (f) => ({ ok: f.bytes != null, reason: f.bytes != null ? "present" : "missing" }),
+  "non-empty":     (f) => ({ ok: (f.size || 0) > 0, reason: `${f.size || 0} bytes` }),
+  "regex-absent":  (f, p) => { const hit = new RegExp(p).test(f.bytes || ""); return { ok: !hit, reason: hit ? `/${p}/ present (incomplete)` : `/${p}/ absent` }; },
+  "regex-present": (f, p) => { const hit = new RegExp(p).test(f.bytes || ""); return { ok: hit, reason: hit ? `/${p}/ present` : `/${p}/ absent` }; },
+  "json-parses":   (f) => { try { JSON.parse(f.bytes); return { ok: true, reason: "valid JSON" }; } catch (e) { return { ok: false, reason: `invalid JSON: ${e.message}` }; } },
+  "field-present": (f, p) => { let v; try { v = fieldAt(JSON.parse(f.bytes), p); } catch { return { ok: false, reason: "unparseable JSON" }; } return { ok: v != null, reason: v != null ? `${p} present` : `${p} missing` }; },
+  "count-floor":   (f, p) => { let v; try { v = fieldAt(JSON.parse(f.bytes), p.path); } catch { return { ok: false, reason: "unparseable JSON" }; } const n = Array.isArray(v) ? v.length : -1; return { ok: n >= p.min, reason: `${p.path}: ${n} (min ${p.min})` }; },
+  "fenced-tail":   (f, p) => { const o = lastFencedBlock(f.bytes, p.lang); if (o === undefined) return { ok: false, reason: `no fenced ${p.lang || "json"} block` }; if (o === null) return { ok: false, reason: "fenced tail does not parse" }; const v = p.field ? o[p.field] : o; const n = Array.isArray(v) ? v.length : v != null ? 1 : -1; const min = p.minItems ?? 1; return { ok: n >= min, reason: `${p.field || "tail"}: ${n} (min ${min})` }; },
+};
+function runChecks(checkList) { // → [{ kind, path, verdict:pass|warn|fail, reason, severity }] (reads each file once)
+  if (!checkList || !checkList.length) return [];
+  return checkList.map((c) => {
+    const sev = c.severity || "fail";
+    const fn = CHECK_KINDS[c.kind];
+    if (!fn) return { kind: c.kind, path: c.path || null, verdict: "warn", reason: `unknown check kind '${c.kind}' (skipped)`, severity: "warn" };
+    let bytes = null, size = 0;
+    try { const abs = resolveArtifactPath(c.path); const stt = fs.statSync(abs); size = stt.size; bytes = fs.readFileSync(abs, "utf8"); } catch {}
+    const r = fn({ bytes, size }, c.param);
+    return { kind: c.kind, path: c.path || null, verdict: r.ok ? "pass" : sev, reason: r.reason, severity: sev };
+  });
+}
+// Effective checks = explicit DRIVER-CHECKS ∪ the AUTO fill-sentinel completeness check (a DRIVER-FILL-SENTINEL'd
+// node whose required artifact STILL contains the sentinel is incomplete → fail). This makes "contract satisfied"
+// mean USABLE, not merely present — so the return-block release below is safe (real corruption is still caught).
+function effectiveChecks(prompt) {
+  const explicit = driverChecks(prompt) || [];
+  const sentinel = markerValue(prompt, "DRIVER-FILL-SENTINEL");
+  const reqs = (sentinel && markerPaths(prompt, "DRIVER-ARTIFACTS")) || [];
+  const auto = reqs.map((p) => ({ kind: "regex-absent", path: p, param: escapeRe(sentinel), severity: "fail" }));
+  return [...auto, ...explicit];
+}
+// Map a non-pass verdict → an engine action via the node's DRIVER-POLICY (default: fail→block, warn→warn).
+// block|warn|stop are honored in wave 1; retry-once|subagent-fix parse but fall back to block (wave 2).
+function actionForVerdict(verdict, policy) {
+  const a = (policy && policy[verdict]) || (verdict === "warn" ? "warn" : "block");
+  return a === "warn" || a === "stop" ? a : "block";
+}
+
 // pi has no schema-forced return, so each node ends with a fenced JSON block the driver parses;
 // the driver ALSO stat()s the reported artifacts on disk (verified, not trusted).
 function returnProtocol(label) {
@@ -769,32 +1442,53 @@ async function runNode(node, opts = {}) {
     return n;
   }
 
-  // DRIVER-SEED pre-stage (see driverSeed): deterministically stage this node's STARTING artifact
-  // before pi spawns — e.g. copy the per-archetype blueprint template so HARDEN fills leaves via
-  // `edit` rather than re-composing the structure. Copy ONLY when dest is absent/empty AND src exists.
-  const seed = driverSeed(node.prompt);
-  if (seed) {
+  // DRIVER-SEED pre-stage (see driverSeed): deterministically stage this node's STARTING artifact(s)
+  // before pi spawns — e.g. copy the per-archetype blueprint template (a FILE) so HARDEN fills leaves
+  // via `edit`, or copy the engine base + module-src + contract (DIRECTORY trees) so a scaffold node
+  // skips the mechanical copy + tree-explore. Each entry stages ONLY when its dest is absent/empty AND
+  // its resolved src exists; entries apply in ORDER (a base copy before an overlay that wins). A dir src
+  // is copied RECURSIVELY (overlay merges over base = second wins); a file src is copied as a file.
+  for (const seed of driverSeed(node.prompt)) {
     const toAbs = path.isAbsolute(seed.to) ? seed.to : path.resolve(RUN_CWD, seed.to);
     const fr = resolveSeedTokens(seed.from);
     const fromAbs = path.isAbsolute(fr) ? fr : path.resolve(RUN_CWD, fr);
-    let destBytes = -1; try { destBytes = fs.statSync(toAbs).size; } catch {}
-    if (destBytes > 0) {
+    let srcIsDir = false, srcExists = false;
+    try { srcIsDir = fs.statSync(fromAbs).isDirectory(); srcExists = true; } catch {}
+    // Idempotency — never clobber an already-staged copy on a resume:
+    //   FILE dest: "filled" when it exists with size > 0.
+    //   DIR  dest: "filled" when EVERY top-level entry of the SOURCE already exists under the dest.
+    // The dir test is per-SOURCE (not "dest non-empty"): a seed whose dest is the PROJECT ROOT shares
+    // that dir with sibling artifacts (spec/, _pi/, asset-prompts.json) the upstream nodes wrote — a
+    // bare "non-empty" test would wrongly skip the base copy because spec/ exists. Checking the source's
+    // own entries is generic (any tree, any archetype) and correctly stages a base into a populated root
+    // while still skipping a genuine re-stage of the same tree.
+    let destFilled = false;
+    try {
+      const ds = fs.statSync(toAbs);
+      if (srcIsDir && ds.isDirectory()) {
+        const want = fs.readdirSync(fromAbs);
+        destFilled = want.length > 0 && want.every((e) => fs.existsSync(path.join(toAbs, e)));
+      } else if (!srcIsDir) {
+        destFilled = ds.size > 0;
+      } // src is a dir but dest is a file (or vice-versa) → not "filled"; the copy below resolves it
+    } catch {}
+    if (destFilled) {
       console.log(`    ⇪ DRIVER-SEED ${node.id} — dest present (${path.relative(RUN_CWD, toAbs)}); not re-staging`);
-    } else if (!fs.existsSync(fromAbs)) {
+    } else if (!srcExists) {
       console.log(`    ⇪ DRIVER-SEED ${node.id} — no template at ${path.relative(RUN_CWD, fromAbs)} (node hand-builds)`);
     } else if (args.dryRun) {
-      console.log(`    DRY: DRIVER-SEED ${node.id} — would stage ${path.relative(RUN_CWD, toAbs)} from ${path.relative(RUN_CWD, fromAbs)}`);
+      console.log(`    DRY: DRIVER-SEED ${node.id} — would stage ${path.relative(RUN_CWD, toAbs)}${srcIsDir ? "/" : ""} from ${path.relative(RUN_CWD, fromAbs)}${srcIsDir ? "/ (recursive)" : ""}`);
     } else {
-      ensureDir(path.dirname(toAbs));
-      fs.copyFileSync(fromAbs, toAbs);
-      n.seeded = path.relative(BASE_RUN_CWD, toAbs);
-      console.log(`    ⇪ DRIVER-SEED ${node.id} — staged ${path.relative(RUN_CWD, toAbs)} from ${path.relative(RUN_CWD, fromAbs)}`);
+      if (srcIsDir) { ensureDir(toAbs); fs.cpSync(fromAbs, toAbs, { recursive: true, force: true }); }
+      else { ensureDir(path.dirname(toAbs)); fs.copyFileSync(fromAbs, toAbs); }
+      n.seeded = (n.seeded ? n.seeded + " " : "") + path.relative(BASE_RUN_CWD, toAbs);
+      console.log(`    ⇪ DRIVER-SEED ${node.id} — staged ${path.relative(RUN_CWD, toAbs)}${srcIsDir ? "/" : ""} from ${path.relative(RUN_CWD, fromAbs)}${srcIsDir ? "/ (recursive)" : ""}`);
     }
   }
 
   ensureDir(promptDir);
   const promptFile = path.join(promptDir, `${node.id}.prompt.md`);
-  // promptPrefix carries the escalation CONSULT preamble (the prior non-Claude attempt's failure evidence)
+  // promptPrefix carries the escalation CONSULT preamble (the prior cheap attempt's failure evidence)
   // on a re-run; empty on attempt 0.
   fs.writeFileSync(promptFile, (opts.promptPrefix || "") + node.prompt + returnProtocol(node.label));
   // Per-node TOOL GATING (DRIVER-TOOLS / DRIVER-EXCLUDE-TOOLS markers): shrink the non-Claude model's
@@ -852,7 +1546,7 @@ async function runNode(node, opts = {}) {
     let assistantText = "", stderr = "", toolCalls = 0, eventCount = 0;
     let lastEventAt = Date.now(), lastWrite = 0, finished = false;
     // Distilled per-node telemetry — computed live from the stream, lands in the digest in BOTH
-    // modes (efficient). These are the SIGNAL that the raw archive below buries in bulk.
+    // modes (cheap). These are the SIGNAL that the raw archive below buries in bulk.
     const toolBreakdown = {};                                       // toolName -> count
     let thinkingChars = 0, thinkingDeltas = 0, thinkFirstAt = 0, thinkLastAt = 0;
     let lastDelta = null, repeatRun = 0;                            // consecutive identical-delta run (stuck-loop guard)
@@ -864,7 +1558,7 @@ async function runNode(node, opts = {}) {
     // the point the driver RECEIVES each line. We stamp every event with a node-relative `_t` ms (and
     // the slimmed archive line also gets an absolute `_rt`), then pair tool_execution_start→end by the
     // native `toolCallId` and turn_start/message_start→message_end for turns — accumulating ONE compact
-    // per-node timeline. All driver-side, all additive (no pi change). Lands in BOTH modes (efficient;
+    // per-node timeline. All driver-side, all additive (no pi change). Lands in BOTH modes (cheap;
     // bounded by tool-call + turn count, not by delta volume), so production keeps the x-ray too.
     const tlTools = [];                                  // [{ id, name, tStartMs, durMs }] — pi tool calls, start→end paired by toolCallId
     const tlTurns = [];                                  // [{ tStartMs, durMs, tokIn, tokOut, tokBillable }] — model turns, start→message_end
@@ -1075,6 +1769,54 @@ async function runNode(node, opts = {}) {
       // parser. So enabling the extension is non-breaking: if the model didn't call the tool, we still
       // recover the return block exactly as before.
       const parsed = submittedResult || lastJsonBlock(assistantText);
+      // DRIVER-PROJECT post-hook (see runProjection): the DERIVE sibling of the DRIVER-SEED pre-hook. AFTER the
+      // model exits, DERIVE this node's MECHANICAL outputs (a fixed function of the frozen on-disk source) in
+      // the driver — the AUTHORITY for them, so it OVERWRITES each run, strictly BEFORE the artifact/schema
+      // gates below verify them and (in this DAG) BEFORE the later serial JOIN stage, so no concurrent writer.
+      // Skipped on a killed/error exit (a half-run node's source may be stale — don't project off it). Inert
+      // when the node declares no DRIVER-PROJECT marker; graceful-degrade (warn+skip) on an unreadable map.
+      const projMarker = driverProject(node.prompt);
+      if (projMarker && !(n.killedTimeout || n.killedRepeat || n.killedStall || n.killedToolLoop || code !== 0)) {
+        try {
+          const projBase = PROJECT_BASE || RUN_CWD;
+          n.projected = await runProjection(projMarker, projBase);
+          const wrote = (n.projected && n.projected.ops || []).filter((o) => o.wrote).map((o) => o.to);
+          const skipped = (n.projected && n.projected.ops || []).filter((o) => o.skipped);
+          if (wrote.length) console.log(`    ⇲ DRIVER-PROJECT ${node.id} — derived ${wrote.join(", ")}`);
+          for (const s of skipped) console.warn(`    ⚠ DRIVER-PROJECT ${node.id} — op "${s.op}" → ${s.to || "?"} skipped: ${s.skipped}`);
+        } catch (e) { console.warn(`    ⚠ DRIVER-PROJECT ${node.id} — projection failed (${e.message}); node continues`); n.projected = { skipped: e.message }; }
+      }
+      // DRIVER-MERGE post-hook (see runMerge): the SECOND post-node DERIVE family — the deterministic FILESYSTEM
+      // merges (concat per-node fragments → one canonical file; reconcile a manifest's per-key fields onto another
+      // JSON's matching rows) that replace a would-be LLM merge node. Same gate as DRIVER-PROJECT (skip on a
+      // killed/error exit — a half-run lane's fragments may be stale). Inert when unmarked; each op degrades
+      // gracefully on a missing input (an absent manifest still lets the fragment concat run — the JOIN's behavior).
+      const mergeSpec = driverMerge(node.prompt);
+      if (mergeSpec && !(n.killedTimeout || n.killedRepeat || n.killedStall || n.killedToolLoop || code !== 0)) {
+        try {
+          const projBase = PROJECT_BASE || RUN_CWD;
+          n.merged = await runMerge(mergeSpec, projBase);
+          const wrote = (n.merged && n.merged.ops || []).filter((o) => o.wrote).map((o) => o.to);
+          const skipped = (n.merged && n.merged.ops || []).filter((o) => o.skipped);
+          if (wrote.length) console.log(`    ⇲ DRIVER-MERGE ${node.id} — merged ${wrote.join(", ")}`);
+          for (const s of skipped) console.warn(`    ⚠ DRIVER-MERGE ${node.id} — op "${s.op}" → ${s.to || "?"} skipped: ${s.skipped}`);
+        } catch (e) { console.warn(`    ⚠ DRIVER-MERGE ${node.id} — merge failed (${e.message}); node continues`); n.merged = { skipped: e.message }; }
+      }
+      // DRIVER-SEED-CONTRACT post-hook (see runSeedContract): the THIRD post-node DERIVE family — project a basic
+      // per-node SEEDED CONTRACT (source.contracts.<node> = {owns,bind,demand,tone,...}) from the frozen source +
+      // the drift-gated node-catalog. Same gate as DRIVER-PROJECT/MERGE (skip on a killed/error exit — a half-run
+      // node's source may be stale). Inert when unmarked; graceful-degrade on an unreadable catalog/source. Runs
+      // BEFORE the artifact/schema gates below, so the contracts land before the produced source is validated.
+      const seedContractSpec = driverSeedContract(node.prompt);
+      if (seedContractSpec && !(n.killedTimeout || n.killedRepeat || n.killedStall || n.killedToolLoop || code !== 0)) {
+        try {
+          const projBase = PROJECT_BASE || RUN_CWD;
+          n.seedContracts = await runSeedContract(seedContractSpec, projBase);
+          if (n.seedContracts && Array.isArray(n.seedContracts.nodes) && n.seedContracts.nodes.length)
+            console.log(`    ⇲ DRIVER-SEED-CONTRACT ${node.id} — seeded ${seedContractSpec.into || "contracts"}.{${n.seedContracts.nodes.join(",")}} into ${seedContractSpec.source}`);
+          else if (n.seedContracts && n.seedContracts.skipped) console.warn(`    ⚠ DRIVER-SEED-CONTRACT ${node.id} — skipped: ${n.seedContracts.skipped}`);
+        } catch (e) { console.warn(`    ⚠ DRIVER-SEED-CONTRACT ${node.id} — projection failed (${e.message}); node continues`); n.seedContracts = { skipped: e.message }; }
+      }
       n.artifacts = ((parsed && parsed.outputArtifacts) || []).map(artifactState);
       // Suspect ONLY when the node DECLARED artifacts that are missing. A node that declares
       // none (a check/preflight/gate node legitimately writes nothing) is judged by its
@@ -1115,15 +1857,32 @@ async function runNode(node, opts = {}) {
         ownsBreach = n.artifacts.filter((a) => !withinOwned(a.path, ownedGlobs)).map((a) => a.path);
         if (ownsBreach.length) n.ownsBreach = ownsBreach;
       }
+      // DECLARATIVE INTEGRITY CHECKS (the unified contract) folded through the verdict→action POLICY.
+      const checkResults = runChecks(effectiveChecks(node.prompt));
+      if (checkResults.length) n.checks = checkResults;
+      const policy = driverPolicy(node.prompt);
+      const failedChecks = checkResults.filter((c) => c.verdict !== "pass");
+      const blocking = failedChecks.filter((c) => actionForVerdict(c.verdict, policy) !== "warn");
+      const warning = failedChecks.filter((c) => actionForVerdict(c.verdict, policy) === "warn");
+      // RETURN-BLOCK expectation — GENERALIZED default: a node that declares a (satisfied) DRIVER-ARTIFACTS
+      // contract proves its work by the FILE on disk, so a missing return handshake is advisory (optional). A
+      // node that declares NO artifact (its structured return IS its only output) still REQUIRES the handshake.
+      // DRIVER-RETURN overrides per node. This releases the redundant handshake that falsely error'd a node whose
+      // required artifact was present + complete (the W1-class defect), GENERALLY — while REAL corruption (missing
+      // / schema-invalid / sentinel-unfilled / malformed-tail) is still caught by the gates + checks above.
+      const returnMode = markerValue(node.prompt, "DRIVER-RETURN") || ((requiredPaths && requiredPaths.length) ? "optional" : "required");
+      n.returnMode = returnMode;
       let st;
       if (n.killedTimeout || n.killedRepeat || n.killedStall || n.killedToolLoop || code !== 0) st = "error";
       else if (contractMissing.length) st = "blocked"; // CONTRACT: a required artifact is missing — driver-verified, beats any self-report
       else if (schemaInvalid.length) st = "blocked"; // CONTRACT: a required artifact is present but VIOLATES its declared schema — driver-verified breach, beats any self-report
+      else if (blocking.length) st = "blocked"; // DECLARATIVE INTEGRITY breach — a declared check failed at block severity (incomplete/unfilled/malformed artifact), driver-verified
       else if (parsed && parsed.status && parsed.status !== "ok") st = parsed.status; // gap/blocked self-report honored
-      else if (declaredMissing && !(requiredPaths && requiredPaths.length)) st = "blocked"; // a missing/empty SELF-REPORTED file blocks ONLY a node with NO DRIVER-ARTIFACTS contract. When a contract WAS declared and is satisfied (contractMissing empty, above), it is the authority — a noisy self-report (a stripped path, or an intentionally size-0 file like .gitkeep) must NOT override it. "Verified, not trusted" cuts both ways: trust the driver-verified contract over the model's self-report.
-      else if (!parsed) st = "error"; // clean exit but NO return-protocol block = degenerate run (agent derailed / its output was lost). Fail LOUDLY here — never silently pass it as ok. (A derailed W2c that wandered into another lesson's file + wrote nothing was slipping through as ok and only surfacing one node downstream when its consumer couldn't find the input.)
+      else if (declaredMissing && !(requiredPaths && requiredPaths.length)) st = "blocked"; // a missing/empty SELF-REPORTED file blocks ONLY a node with NO DRIVER-ARTIFACTS contract. When a contract WAS declared and is satisfied (contractMissing empty, above), it is the authority — a noisy self-report (a stripped path, or an intentionally size-0 file like .gitkeep) must NOT override it.
+      else if (!parsed && returnMode === "required") st = "error"; // NO return-protocol block ⇒ error ONLY when the handshake is REQUIRED (a node with no satisfied artifact contract to prove its work). The release: an artifact-backed node missing ONLY its handshake is `ok` (advisory). A truly derailed node that wrote nothing is already caught above by contractMissing/blocking.
       else st = "ok";
       n.status = st;
+      n.verdict = { status: st, returnMode, parsed: !!parsed, checks: checkResults.map((c) => ({ kind: c.kind, path: c.path, verdict: c.verdict, reason: c.reason })) }; // structured per-node verdict — drives control flow AND is the companion-mode stream payload
       n.exitCode = code;
       n.toolCalls = toolCalls;
       n.toolBreakdown = toolBreakdown;
@@ -1157,7 +1916,10 @@ async function runNode(node, opts = {}) {
         : (parsed && parsed.summary) || assistantText.trim().slice(-240) || "";
       n.issues = (parsed && parsed.issues) || [];
       n.pipelineFindings = (parsed && parsed.pipelineFindings) || [];
-      if (!parsed) (n.issues = n.issues || []).push("no return JSON block parsed from pi output");
+      if (!parsed && returnMode === "required") (n.issues = n.issues || []).push("no return JSON block parsed from pi output (return:required)");
+      else if (!parsed) (n.issues = n.issues || []).push("no return-protocol block (return:optional — the artifact contract is the authority; advisory only)");
+      if (blocking.length) (n.issues = n.issues || []).push(`integrity check FAILED — ${blocking.map((c) => `${c.kind} ${c.path || ""}: ${c.reason}`).join(" | ")}`);
+      if (warning.length) (n.issues = n.issues || []).push(`integrity warn — ${warning.map((c) => `${c.kind} ${c.path || ""}: ${c.reason}`).join(" | ")}`);
       if (contractMissing.length) (n.issues = n.issues || []).push(`contract breach — required artifact(s) missing: ${contractMissing.join(", ")}`);
       if (schema.invalid.length) (n.issues = n.issues || []).push(`contract breach — artifact(s) violate the declared schema: ${schema.invalid.map((x) => `${x.path} [${x.errors.join("; ")}]`).join(" | ")}`);
       if (schema.skipped) (n.issues = n.issues || []).push(`schema gate skipped — ${schema.skipped}`);
@@ -1187,6 +1949,7 @@ function classifyFailure(n) {
   if ((n.status === "blocked" || n.status === "gap") && /upstream|missing input/i.test(issueText)) return "HALT"; // escalation can't manufacture a missing input
   if (n.contractMissing && n.contractMissing.length) return "ESCALATE"; // contract breach — ground-truth trigger
   if (n.schemaInvalidPaths && n.schemaInvalidPaths.length) return "ESCALATE"; // schema breach — ground-truth trigger (artifact present but malformed)
+  if (n.verdict && n.verdict.checks && n.verdict.checks.some((c) => c.verdict === "fail")) return "ESCALATE"; // declarative integrity breach — a stronger model may repair an incomplete/malformed artifact
   if (n.killedRepeat) return "ESCALATE";                                 // stuck loop — a same-model retry just loops again (correlated blind spots)
   if (n.killedToolLoop) return "ESCALATE";                               // no-progress tool thrash — a same-model retry thrashes the same way
   if (n.killedStall) return "ESCALATE";                                  // model went silent/dead — a stronger model is the move, not a blind retry
@@ -1195,7 +1958,7 @@ function classifyFailure(n) {
   if (!n.parsedOk) return "DEGENERATE";                                  // no return block — retry once, then escalate
   return "ESCALATE";                                                     // any other capability failure
 }
-// The consult is NOT blind: prepend the non-Claude attempt's VERIFIED failure evidence (not a score).
+// The consult is NOT blind: prepend the cheap attempt's VERIFIED failure evidence (not a score).
 function consultPreamble(n) {
   const cls = (n.contractMissing && n.contractMissing.length) ? "contract"
     : (n.schemaInvalidPaths && n.schemaInvalidPaths.length) ? "schema"
@@ -1211,7 +1974,7 @@ function consultPreamble(n) {
   if (!n.parsedOk) ev.push("produced no parseable return-protocol block");
   if (n.stderrTail) ev.push(`stderr: ${n.stderrTail.slice(-160)}`);
   return [
-    "CONSULT — a more efficient model attempted this node and FAILED; do not repeat its mistake.",
+    "CONSULT — the prior model attempted this node and FAILED; do not repeat its mistake.",
     `Failure class: ${cls}`,
     `Evidence: ${ev.join(" | ") || "(none captured)"}`,
     "Produce EVERY required artifact and end with the return-protocol JSON block.",
@@ -1225,7 +1988,7 @@ function consultPreamble(n) {
 // PI_RUNNER_ESCALATE is on. Needs NO pi extension — it is a per-node --model/--provider override.
 async function runNodeWithEscalation(node) {
   const snap = (x) => ({ model: x.modelUsed, provider: x.providerUsed, status: x.status, durationMs: x.durationMs, tokens: x.tokens });
-  let n = await runNode(node);                                            // attempt 0 — non-Claude default
+  let n = await runNode(node);                                            // attempt 0 — cheap default
   if (!ESCALATE || args.dryRun) return n;
   const attempts = [snap(n)];
   let retriesLeft = MAX_RETRIES, escalatedYet = false;

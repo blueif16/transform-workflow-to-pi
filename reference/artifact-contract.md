@@ -41,6 +41,9 @@ DRIVER-OWNS:          <space-separated ABSOLUTE paths/globs this node may write;
 DRIVER-READ-SCOPE:    <space-separated ABSOLUTE roots this node may READ; OS-enforced under --sandbox>
 DRIVER-SCHEMA:        <one PATH to a JSON-Schema the produced DRIVER-ARTIFACTS must validate against>
 DRIVER-FILL-SENTINEL: <a template-fill sentinel string (e.g. "<FILL:") a seeded skeleton must not retain>
+DRIVER-CHECKS:        <base64 JSON [{kind,path,param?,severity?}] — declarative integrity predicates over the artifacts>
+DRIVER-POLICY:        <base64 JSON {fail|warn: block|warn|stop} — the verdict→action policy, SEPARATE from the checks>
+DRIVER-RETURN:        <"optional" | "required" — is the fenced-JSON/submit_result return handshake mandatory?>
 ```
 
 The workflow author never hand-writes those lines. A single `contract({...})` declaration —
@@ -49,8 +52,9 @@ Definition-of-Done prose (which the model reads) **and** the two markers (which 
 
 ```js
 // in .claude/workflows/<name>.js, next to discipline()
-function contract({ artifacts = [], owns = [], readScope = [], schema = '', fillSentinel = '', note = '' }) {
+function contract({ artifacts = [], owns = [], readScope = [], schema = '', fillSentinel = '', checks = [], on = null, return: ret = '', note = '' }) {
   const abs = (p) => `${REPO}/${p}`
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64')
   return [
     'OUTPUT CONTRACT — you are DONE only when EVERY file below exists and is non-empty at EXACTLY ' +
     'its path. Write NOTHING outside the owned paths. If you cannot, set status="blocked" and say ' +
@@ -60,6 +64,9 @@ function contract({ artifacts = [], owns = [], readScope = [], schema = '', fill
     readScope.length ? `DRIVER-READ-SCOPE: ${readScope.join(' ')}` : '',
     schema ? `DRIVER-SCHEMA: ${schema}` : '',                   // POST-node: validate the artifact's SHAPE
     fillSentinel ? `DRIVER-FILL-SENTINEL: ${fillSentinel}` : '',// the seeded-skeleton-not-yet-filled guard
+    checks.length ? `DRIVER-CHECKS: ${b64(checks.map(c => c.path ? { ...c, path: abs(c.path) } : c))}` : '', // POST: declarative integrity predicates
+    on ? `DRIVER-POLICY: ${b64(on)}` : '',                      // the verdict→action policy (kept SEPARATE from the checks)
+    ret ? `DRIVER-RETURN: ${ret}` : '',                         // override the return-handshake requirement (default below)
     note ? `OWNED-PATH NOTE: ${note}` : '',
   ].filter(Boolean).join('\n')
 }
@@ -94,8 +101,27 @@ const rPed = await agent([
   PATH (repo-relative or absolute) joined AS-IS, like `readScope`. See **The post-node schema gate** below.
 - `fillSentinel` — the template-fill sentinel string (e.g. `'<FILL:'`). Renders `DRIVER-FILL-SENTINEL`,
   which the **in-loop** write-first gate (the node-contract extension, when armed) refuses to
-  `submit_result` over while a required artifact still contains it — the in-loop complement of the
-  post-node schema gate (a leftover sentinel breaks the schema's type/enum and is caught post-hoc too).
+  `submit_result` over while a required artifact still contains it — AND, **post-node, the driver
+  auto-synthesizes a `regex-absent` completeness CHECK from it**: a required artifact that STILL holds the
+  sentinel is a BREACH (`blocked`), even when the model skipped the handshake. So "contract satisfied" means
+  the artifact is USABLE, not merely present.
+- `checks` — **declarative integrity predicates** over the artifacts: an array of `{ kind, path, param?,
+  severity? }`. Renders `DRIVER-CHECKS` (base64 — carries arbitrary regex/params on one marker line). The
+  driver runs each PURE predicate post-node; a failed `severity:'fail'` check is a BREACH (`blocked`),
+  `severity:'warn'` is advisory. Kinds: `exists`, `non-empty`, `regex-absent`/`regex-present`, `json-parses`,
+  `field-present`, `count-floor`, `fenced-tail` (extract+parse the LAST fenced ```` ```<lang> ```` block and
+  assert a named field has ≥N items — e.g. a markdown doc's JSON milestones tail). A check NEVER judges
+  GOODNESS — only structural integrity (judging goodness is the verify node's / human's job).
+- `on` — the **verdict→action POLICY**, kept SEPARATE from the checks (detection ⊥ consequence): `{ fail:
+  'block'|'warn'|'stop', warn: ... }`. Renders `DRIVER-POLICY`. Flip what a failed check DOES without
+  touching its predicate, or add a predicate without touching the policy. Default: `fail→block`, `warn→warn`.
+- `return` — `'optional'` | `'required'`: is the fenced-JSON / `submit_result` return handshake mandatory?
+  Renders `DRIVER-RETURN`. **GENERALIZED default (the key rule): a node that declares a (satisfied)
+  `DRIVER-ARTIFACTS` contract defaults to `'optional'`** — the FILE on disk is the proof of work, so a
+  missing handshake is advisory, never an `error`. A node with NO artifact (its structured return IS its only
+  output — a pure verify/gate node) defaults to `'required'`. This releases the redundant handshake that used
+  to falsely `error` a node whose required artifact was present and complete (real corruption is still caught
+  by the existence / schema / integrity-check gates).
 - `note` — an optional extra owned-path caveat (e.g. a `LESSON-AGNOSTIC` rule).
 
 ## The node-contract LIFECYCLE — PRE-node and POST-node, declared in one place
@@ -110,9 +136,12 @@ node, not scattered across the driver:
 | **PRE — verify the inputs** | `DRIVER-PREFLIGHT: <paths>` (or the `--from` resume preflight over the skipped nodes' `DRIVER-ARTIFACTS`) | `stat()` the upstream inputs the node depends on; HALT if any is absent, so a node never runs on missing inputs. |
 | **POST — existence** | `DRIVER-ARTIFACTS: <paths>` | `stat()` each required path; a missing/empty one is a BREACH (`blocked`). |
 | **POST — shape** | `DRIVER-SCHEMA: <schema>` | Validate each present required artifact against the JSON-Schema (draft-2020-12); an invalid one is a BREACH (`blocked`). |
-| **POST — filled** | `DRIVER-FILL-SENTINEL: <sentinel>` | (In-loop, when the node-contract extension is armed) block `submit_result` while a required artifact still holds the template sentinel — the unfilled-skeleton guard. |
+| **POST — filled** | `DRIVER-FILL-SENTINEL: <sentinel>` | In-loop (extension armed): block `submit_result` while a required artifact holds the sentinel. POST-node: auto-synthesizes a `regex-absent` integrity check — a sentinel still present is a BREACH (`blocked`). |
+| **POST — integrity** | `DRIVER-CHECKS` + `DRIVER-POLICY` | Run each declarative predicate over the artifacts; fold the verdicts through the policy. A failed `fail`-severity check ⇒ `blocked`; `warn` ⇒ advisory. Detection (`DRIVER-CHECKS`) is separate from consequence (`DRIVER-POLICY`). |
+| **POST — handshake** | `DRIVER-RETURN: optional\|required` | Is the fenced-JSON/`submit_result` return required? **Default: optional when `DRIVER-ARTIFACTS` is declared** (the file is the proof), required otherwise. A missing handshake errors ONLY a `required` node. |
 
-The shape: **PRE = seed the start + preflight the inputs; POST = existence + schema + filled.** The PRE
+The shape: **PRE = seed the start + preflight the inputs; POST = existence + schema + filled + integrity +
+handshake.** The verdict is one rolled-up `ok`/`blocked`/`error` the driver owns. The PRE
 half makes the node start from a known state; the POST half makes "done" a programmatic verdict the
 driver owns, not a self-report the model emits. All five markers are inert when absent, so a node opts
 into exactly the halves it needs — a pure check node declares only `DRIVER-PREFLIGHT`; a from-scratch
