@@ -21,6 +21,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@daytona/sdk": "^0.185.0"
+    "@daytona/sdk": "^0.185.0",
+    "esbuild": "^0.28.1"
   }
 }
