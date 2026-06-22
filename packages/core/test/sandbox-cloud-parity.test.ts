@@ -12,7 +12,7 @@
 // every in-VM absolute path the provider builds IS a real host path — no path rewriting, faithful fs +
 // shell). This is the unit-test the draft's header anticipates ("dependency-free and unit-testable with a
 // fake SDK"). It exercises daytona.ts's real lifecycle code: openRun (one VM/run), per-node views,
-// uploadFile/downloadFile/findFiles staging+collection, the session exec path, and run-scoped dispose.
+// uploadFile/downloadFile/searchFiles staging+collection, the session exec path, and run-scoped dispose.
 
 import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
@@ -32,6 +32,7 @@ interface SessionRec {
   child: ReturnType<typeof spawn>;
   stdout: string;
   stderr: string;
+  exitCode: number | null;
   done: Promise<void>;
 }
 
@@ -46,8 +47,8 @@ class FakeDaytonaFs {
   async createFolder(remotePath: string, _mode?: string): Promise<void> {
     await fs.mkdir(remotePath, { recursive: true });
   }
-  async findFiles(root: string, _pattern: string): Promise<{ file: string }[]> {
-    const out: { file: string }[] = [];
+  async searchFiles(root: string, _pattern: string): Promise<{ files: string[] }> {
+    const files: string[] = [];
     const walk = async (dir: string): Promise<void> => {
       let entries: Awaited<ReturnType<typeof fs.readdir>> = [];
       try {
@@ -58,11 +59,11 @@ class FakeDaytonaFs {
       for (const e of entries) {
         const full = path.join(dir, e.name);
         if (e.isDirectory()) await walk(full);
-        else out.push({ file: full });
+        else files.push(full);
       }
     };
     await walk(root);
-    return out;
+    return { files };
   }
 }
 
@@ -97,30 +98,36 @@ class FakeDaytonaProcess {
   ): Promise<{ cmdId?: string }> {
     // The provider bakes `cd <cwd> && <env> <cmd>` into req.command, so no cwd/env needed here.
     const child = spawn(req.command, { env: { ...process.env }, shell: true });
-    const rec: SessionRec = { child, stdout: '', stderr: '', done: Promise.resolve() };
+    const rec: SessionRec = { child, stdout: '', stderr: '', exitCode: null, done: Promise.resolve() };
     rec.done = new Promise<void>((res) => {
       child.stdout?.on('data', (d: Buffer) => { rec.stdout += d.toString(); });
       child.stderr?.on('data', (d: Buffer) => { rec.stderr += d.toString(); });
-      child.on('close', () => res());
-      child.on('error', () => res());
+      child.on('close', (code) => { rec.exitCode = code ?? 0; res(); });
+      child.on('error', () => { rec.exitCode = 1; res(); });
     });
     this.sessions.set(sessionId, rec);
     return { cmdId: 'cmd-1' };
   }
 
-  // Stream form: resolves when the command ENDS, replaying buffered output to the callbacks.
+  // Stream form: resolves VOID when the command ENDS, replaying buffered output to the callbacks
+  // (the callbacks own the bytes — mirroring the real streaming overload's `Promise<void>` return).
   async getSessionCommandLogs(
     sessionId: string,
     _cmdId: string,
     onStdout?: (chunk: string) => void,
     onStderr?: (chunk: string) => void,
-  ): Promise<{ stdout: string; stderr: string }> {
+  ): Promise<void> {
     const rec = this.sessions.get(sessionId);
-    if (!rec) return { stdout: '', stderr: '' };
+    if (!rec) return;
     await rec.done;
     if (onStdout && rec.stdout) onStdout(rec.stdout);
     if (onStderr && rec.stderr) onStderr(rec.stderr);
-    return { stdout: rec.stdout, stderr: rec.stderr };
+  }
+
+  // The finished command's real exit code (mirrors `getSessionCommand → Command { exitCode? }`).
+  async getSessionCommand(sessionId: string, _cmdId: string): Promise<{ exitCode?: number }> {
+    const rec = this.sessions.get(sessionId);
+    return { exitCode: rec?.exitCode ?? undefined };
   }
 
   async deleteSession(sessionId: string): Promise<void> {
