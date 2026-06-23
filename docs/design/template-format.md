@@ -43,15 +43,14 @@ run is a near-literal copy. The empty `io.json`/`events.jsonl`/`state.json` stub
   "prompt": { "skill": "packages/skills/write-gdd/SKILL.md", "file": "prompt.md" },
   "tools":  { "allow": ["read","write","edit","submit_result"], "deny": [] },   // → DRIVER-TOOLS / --exclude-tools
   "mcp":    { "servers": { /* … */ } },    // SEPARATE field, SAME file (§11); or { "ref": "..." }; omitted ⇒ none
-  "reads": [                               // declared INPUTS + per-input delivery (§6a); omit ⇒ engine heuristic
-    { "path": "{{RUN}}/spec/classification.json", "deliver": "inject" },   // small · always-needed · stable
-    { "path": "{{WORKSPACE}}/templates/modules/{{state.archetype}}", "deliver": "tool" }  // large/optional ⇒ pi read tool
+  "inject": [                              // KIND 1 — FORCED reads, auto-injected into the prompt (§6a).
+    "{{RUN}}/spec/classification.json"     //   small · always-needed · stable; the model is GUARANTEED to see these
   ],
   "contract": {                            // the WRITE/READ contract → DRIVER-ARTIFACTS/OWNS/READ-SCOPE/SCHEMA + DoD prose
     "artifacts": ["spec/gdd.md"],          // REQUIRED outputs, {{RUN}}-relative (driver stat()s them → blocked if missing)
     "owns":      ["spec/**"],              // write authority
-    "readScope": ["{{RUN}}", "{{WORKSPACE}}/packages/skills/write-gdd",
-                  "{{WORKSPACE}}/templates/modules/{{state.archetype}}"],   // the OS allow-list (what it MAY read)
+    "readScope": ["{{RUN}}", "{{WORKSPACE}}/packages/skills/write-gdd",     // KIND 2 — EXPOSED scope: dirs the model
+                  "{{WORKSPACE}}/templates/modules/{{state.archetype}}"],   //   EXPLORES via pi `read` (§6a) + OS allow-list
     "schema":      "{{WORKSPACE}}/.../gdd.schema.json",    // optional, validated off-disk after the node
     "returnMode":  "optional",             // optional (default when artifacts declared) | required (zero-artifact gate nodes)
     "fillSentinel": null                   // optional write-first sentinel
@@ -127,24 +126,27 @@ The engine produces each node's realized prompt from its def — replacing the o
    driver at node launch from `{{RUN}}/.pi/state.json`).
 The output is byte-equivalent to what extraction recovers from a `.js` — but from authored DATA, single-sourced.
 
-### 6a. Input delivery — INJECT small/stable inputs; PATH + tool-read for large/mutable
-Because we have `readScope` and can compose the full path to every input, the engine decides PER INPUT how it
-reaches the model (researched 2026-06-23 — Claude Code injects user-pointed files, pi hands paths to its `read`
-tool; brief in `docs/research/`):
-- **INJECT (default for small · always-needed · stable inputs).** The engine pre-reads the file and embeds it in
-  the prompt, wrapped exactly like Claude Code so the model treats it as authoritative system context:
-  `<system-reminder>` + a `Contents of {{abs-path}}:` preamble + the numbered contents. This GUARANTEES the
-  model sees the input and removes the read decision — directly defusing the cheap-executor "explore-forever /
-  over-read" failure (piflow's FILL-don't-explore lesson; pi's own read-bloat issue #3432). The path is ALSO
-  passed so a re-read stays possible.
-- **PATH + tool-read (for large · optional · mutable inputs).** Pass only the path and let pi's `read` tool pull
-  it (paged via offset/limit). Required when the file is big (injection would pin it in context for the whole
-  node), when the model should CHOOSE what to read, or when a producer may rewrite it mid-run (injection freezes
-  a stale copy; tool-read always sees current bytes).
-- **The line:** inject iff `small (≲300–500 lines / well under pi's per-call cap) AND always-needed AND stable
-  when the prompt is composed`; otherwise path + tool-read. A node may override per input via `reads[].deliver`
-  (§3). `readScope` stays the OS allow-list (what the node MAY read at all); delivery is a separate axis on the
-  subset it actually consumes.
+### 6a. Two KINDS of read scope — FORCED (inject) vs EXPOSED (explore)
+A node's reads split into two kinds (researched 2026-06-23 — Claude Code INJECTS user-pointed files, pi hands
+PATHS to its `read` tool; brief in `docs/research/file-ingestion-claude-pi-2026-06-23.md`):
+
+- **KIND 1 — FORCED reads → auto-INJECTED (`inject`, §3).** Specific files the node ALWAYS needs, pre-read and
+  embedded in the prompt, wrapped exactly like Claude Code so the model treats them as authoritative system
+  context: `<system-reminder>` + a `Contents of {{abs-path}}:` preamble + the numbered contents. The model is
+  GUARANTEED to see them — no read decision, no explore-forever (defuses the cheap-executor over-read failure;
+  piflow's FILL-don't-explore lesson + pi issue #3432). For small · always-needed · stable inputs (a spec, the
+  classification, a config). The path is also passed so a re-read stays possible.
+
+- **KIND 2 — EXPOSED scope → EXPLORE via the `read` tool (`contract.readScope`, §3).** Directory paths handed to
+  the model to NAVIGATE itself — **the skill systems, the registry, archetype modules**, large/optional trees.
+  You do NOT inject a whole skill system; you expose its DIR and let the model pull the `SKILL.md` + the
+  references it needs (paged via offset/limit). This IS `readScope` (also the OS allow-list under the sandbox).
+  Required for large · optional · mutable inputs (a producer's artifact a later node consumes is EXPOSED, not
+  injected — tool-read sees current bytes; injection would freeze a stale copy).
+
+**The line:** force-inject iff `small (≲300–500 lines / well under pi's per-call cap) · always-needed · stable
+when the prompt is composed`; everything else is EXPOSED-and-explored. `readScope` is the OS allow-list for BOTH
+kinds (a node may only read what's in scope — the `inject` set must be inside it).
 
 ## 7. Vocabulary (the only path/value tokens — one resolver, every field)
 `${WORKSPACE}` (canonical, read-only) · `${RUN}` (per-thread) · `${state.<channel>}` (RunState, deferred). The
@@ -216,10 +218,11 @@ folder without knowing the node.
   deps are the source; the compile step (§8) auto-discovers nodes, chains deps, and **(re)writes `workflow.json`
   on every build** so it's always synced from the node set (never hand-edit edges; a `check` gate fails if
   stale). `phase` is DECORATIVE (deps + `owns` drive order/parallelism). (§5/§8.)
-- **Input delivery — RESOLVED: HYBRID, inject-biased** (§6a; researched 2026-06-23). INJECT small · always-needed ·
-  stable inputs into the prompt (Claude-Code-style `<system-reminder>` + `Contents of {{path}}:` + numbered
-  body) to guarantee sight + defuse the cheap-model over-read; PATH + pi `read` tool for large · optional ·
-  mutable inputs. Per-input override via `reads[].deliver`; `readScope` stays the OS allow-list (a separate axis).
+- **Read scope — RESOLVED: TWO KINDS** (§6a; researched 2026-06-23). **KIND 1 FORCED → `inject`**: specific
+  small · always-needed · stable files auto-injected (Claude-Code-style `<system-reminder>` + `Contents of
+  {{path}}:`) — guaranteed sight, defuses cheap-model over-read. **KIND 2 EXPOSED → `readScope`**: directory
+  paths (skill systems · registry · modules · large/optional/mutable trees) the model EXPLORES via pi `read`.
+  `readScope` is the OS allow-list for both; the `inject` set must sit inside it.
 - **Pre/post hooks + checks + policy — RESOLVED: ALL self-contained in the one `node.json`** (§3/§4): `hooks`
   (seed=PRE; project/merge/promote=POST) + `checks` (pre/post integrity DETECTION) + `policy` (verdict→action
   CONSEQUENCE; detection ⊥ consequence) + `returnMode`/`fillSentinel`. Nothing scattered across files.
