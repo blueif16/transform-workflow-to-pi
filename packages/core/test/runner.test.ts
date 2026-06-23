@@ -15,6 +15,7 @@ import {
   type SecretResolver,
 } from '../src/runner/index.js';
 import type { NodeSpec, Sandbox, SandboxProvider, CreateOpts, OpenRunOpts } from '../src/types.js';
+import { runJsonFile } from '../src/runner/layout.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -131,8 +132,8 @@ describe('runWorkflow — end-to-end on InMemorySandboxProvider (no live pi)', (
       expect(await fs.readFile(path.join(outDir, f), 'utf8')).toBeTruthy();
     }
 
-    // run-status.json written with the right shape.
-    const onDisk = JSON.parse(await fs.readFile(path.join(outDir, 'run-status.json'), 'utf8'));
+    // the canonical .pi/run.json written with the right shape (D7 layout).
+    const onDisk = JSON.parse(await fs.readFile(runJsonFile(outDir), 'utf8'));
     expect(onDisk).toMatchObject({ run: 'e2e', done: true, ok: true, totals: { nodes: 3, ok: 3, failed: 0 } });
     expect(onDisk.startedAt).toBeTruthy();
     expect(onDisk.nodes.gamma.artifacts[0]).toMatchObject({ path: 'gamma.txt', exists: true });
@@ -943,7 +944,7 @@ describe('runWorkflow — lane isolation (parallel-lane failures are contained, 
     expect(errored?.summary).toMatch(/sandbox create failed/i);
 
     // The terminal status is DURABLE on disk (finishNode awaits the write) and equals memory.
-    const onDisk = JSON.parse(await fs.readFile(path.join(outDir, 'run-status.json'), 'utf8'));
+    const onDisk = JSON.parse(await fs.readFile(runJsonFile(outDir), 'utf8'));
     expect(onDisk.done).toBe(true);
     expect(onDisk.ok).toBe(false);
 
@@ -978,7 +979,7 @@ describe('runWorkflow — lane isolation (parallel-lane failures are contained, 
 describe('writeStatus — concurrent-writer safety (atomic publish, ordered, no torn reads)', () => {
   it('never yields a torn/partial file to a concurrent reader and lands the last-enqueued value', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-status-'));
-    const file = path.join(dir, 'run-status.json');
+    const file = runJsonFile(dir);
     const mk = (i: number): RunStatus => ({
       run: 'r', startedAt: 'x', updatedAt: 'x', done: false, ok: null, durationMs: i, stage: null, totals: null,
       // a large payload so a non-atomic write spans multiple syscalls (maximizes the torn-read window).
@@ -1015,6 +1016,29 @@ describe('writeStatus — concurrent-writer safety (atomic publish, ordered, no 
     // Serialized chain ⇒ the last-ENQUEUED value is the one on disk (ordering preserved).
     const finalOnDisk = JSON.parse(await fs.readFile(file, 'utf8'));
     expect(finalOnDisk.durationMs).toBe(199);
+
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  // ── the writer re-point: writeStatus publishes the CANONICAL `.pi/run.json` (D7 layout) ───────────
+  // The status is the SINGLE source of truth the observe pipeline (readRunModel/watchRun) + the cli/tui
+  // consumers poll — and they read the engine-owned `.pi/run.json` via runJsonFile(), NEVER the legacy
+  // `run-status.json`. So the writer must publish THERE.
+  it('publishes to <dir>/.pi/run.json (runJsonFile), parseable to the RunStatus shape', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-repoint-'));
+    const status: RunStatus = {
+      run: 'rp', startedAt: 'x', updatedAt: 'x', done: true, ok: true, durationMs: 5,
+      stage: null, totals: { nodes: 1, ok: 1, failed: 0 },
+      nodes: { a: { id: 'a', label: 'A', status: 'ok', artifacts: [], issues: [] } },
+    };
+    await writeStatus(dir, status);
+
+    // It lands at the CANONICAL .pi/run.json path (the consumers' read surface), parseable.
+    const onDisk = JSON.parse(await fs.readFile(runJsonFile(dir), 'utf8'));
+    expect(onDisk).toMatchObject({ run: 'rp', done: true, ok: true, totals: { nodes: 1, ok: 1, failed: 0 } });
+    expect(onDisk.nodes.a.id).toBe('a');
+    // And NOT at the legacy run-status.json path (that surface is retired in @piflow/core).
+    await expect(fs.access(path.join(dir, 'run-status.json'))).rejects.toThrow();
 
     await fs.rm(dir, { recursive: true, force: true });
   });
