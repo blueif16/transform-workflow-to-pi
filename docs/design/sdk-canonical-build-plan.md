@@ -53,12 +53,20 @@
   couples value · producer-filename/shape · physical location; it resolves only in-place (`resolveSeedTokens`
   → `path.resolve(RUN_CWD, …)`, game-omni `run.mjs:398`) and survives worktree relocation only via a
   `BASE_ROOT→wtRoot` string regex (`run.mjs:331`) that does not cover remote providers. **Fix:** the thread
-  carries a LangGraph-style state-channel object (`${RUN}/_state.json`); a POST-hook `promote` op lifts a
+  carries a LangGraph-style state-channel object (`${RUN}/.pi/state.json`); a POST-hook `promote` op lifts a
   node's output into a channel; consumers reference `${state.<channel>}` plus two engine-resolved logical
   roots — `${WORKSPACE}` (canonical, read-only, OUT-OF-THREAD: skills + registry + components) and `${RUN}`
   (per-thread, mutable, collected). State drives VALUES only (paths/scope/interpolation), resolved at launch
   → static-DAG- and extraction-safe; it never drives ROUTING. **Reshapes U6 + U7.** Full model: the
   *Per-thread RunState* section below.
+- **D7 — one engine-owned run layout + a per-node I/O ledger, identical across projects.** The filesystem must
+  NOT be project-defined (one repo's `out/` ≠ another's). The SDK OWNS the run layout: `${RUN}` (location
+  configurable, STRUCTURE fixed) holds the product tree at its semantic paths PLUS a hidden engine namespace
+  `${RUN}/.pi/` with `state.json`, the run digest, and a DEDICATED per-node folder `${RUN}/.pi/nodes/<id>/`
+  carrying the realized `prompt.md`/`tools`/`events` (U1's staging, homed here) AND an `io.json` — the
+  ALWAYS-RETRIEVABLE record of that node's RESOLVED reads, VERIFIED writes, and `promote`s. So for ANY node in
+  ANY project you open `nodes/<id>/io.json` and see its inputs+outputs WITHOUT knowing the node. Full model: the
+  *Uniform run layout* section below.
 
 ## Build order (each: additive · test-first · its own commit · mirrors the named test file)
 
@@ -105,19 +113,35 @@ logical roots are the ONLY path vocabulary:
 
 Every workflow path becomes `${WORKSPACE}/…` or `${RUN}/…`; absolute / `RUN_CWD`-relative literals and the
 `BASE_ROOT→wtRoot` regex are retired — re-rooting is just "resolve the two roots per provider."
+**Uniformity (elegant + simple — the bar):** ONE vocabulary (`${WORKSPACE}` · `${RUN}` · `${state.*}`) and ONE
+resolver applied to EVERY marker (artifacts · owns · readScope · seed · schema · merge · prompt) — no
+per-marker, no per-provider special-casing. The resolver is the SINGLE place a logical path/value is made
+physical; a provider only supplies what `${WORKSPACE}`/`${RUN}` resolve to. If a path isn't expressible in this
+vocabulary, that's a design smell, not a special case.
 
-**RunState.** `${RUN}/_state.json` — the per-thread channel object. The engine STAGES it into each node's
+**RunState.** `${RUN}/.pi/state.json` — the per-thread channel object. The engine STAGES it into each node's
 sandbox and COLLECTS the updated copy back after the node, so it rides the existing
 `create→stage→exec→collect→dispose` lifecycle (`types.ts:241`) and is portable across local/worktree/remote
 with no extra machinery. Per-channel reducer: `set` (default) · `append` · `deepMerge` (covers "reuse AND
 edit").
 
-**Produce — a POST-hook `promote` op** (the new sibling of `DRIVER-PROJECT`/`DRIVER-MERGE`, same POST family):
+**Produce — a POST-hook `promote` op** (LangGraph-grounded: a node EMITS a partial update and the DRIVER applies
+the channel's reducer — the node NEVER writes `state.json` itself, exactly the "mechanical → driver hook" law).
+The new sibling of `DRIVER-PROJECT`/`DRIVER-MERGE` (same POST family):
 `promote: [{ from: '<artifact>:<dotted.field>' | '@return:<field>', to: '<channel>', merge?: 'set'|'append'|'deepMerge' }]`.
-After the node exits, the engine lifts the value (from a produced file field OR the node's structured return)
-into the channel. W0: `promote: [{ from: 'spec/classification.json:archetype', to: 'archetype' }]`.
+After the node exits the engine lifts the value (a produced-file field OR the node's structured return) and
+MERGES it into the channel via the reducer. W0: `promote: [{ from: 'spec/classification.json:archetype', to: 'archetype' }]`.
 
-**Consume — a `${state.<channel>}` token** resolved by the driver at NODE LAUNCH from `${RUN}/_state.json` (the
+**Reducers & the barrier-merge (the robustness core, = LangGraph super-step semantics).** Each channel has a
+reducer: `set` (overwrite — DEFAULT, = LangGraph's no-reducer last-write) · `append` (list concat, =
+`operator.add`) · `deepMerge`. In a PARALLEL stage each node emits its update INDEPENDENTLY (to its own return /
+owned dir); the driver merges them into `${RUN}/.pi/state.json` at the STAGE BARRIER — serially,
+deterministically — so there is NEVER a concurrent write to the shared state file. A channel written by >1
+parallel node MUST declare `append`/`deepMerge`; a `set` channel with two concurrent writers is a conflict the
+driver flags (LangGraph raises `InvalidUpdateError`). `state.json` is the per-run (= per-thread) CHECKPOINT —
+staged in / collected out per node — so resume reads it back for free.
+
+**Consume — a `${state.<channel>}` token** resolved by the driver at NODE LAUNCH from `${RUN}/.pi/state.json` (the
 channel exists by then — upstream promoted it and the engine staged it in). Usable in seed `from`, schema,
 merge, read-scope, and prompt interpolation — replacing the `RUN_CWD`-relative `{file:field}` for all
 CROSS-NODE values. (Intra-node same-file drilling may keep `{file:field}`.)
@@ -161,7 +185,7 @@ already exists de-facto, just unnamed — `RunScope.root`/`RUN_CWD`/`wtPath` is 
 
 ### Revised U6 — RunState spine + the two logical roots (was: just `projectBase`)
 `HookContext` carries `workspace` (`${WORKSPACE}`) and `projectBase` (`${RUN}`) as the explicit logical roots;
-add RunState load/merge/persist helpers over `${RUN}/_state.json`; `makeHookCodec` gains the `promote` family;
+add RunState load/merge/persist helpers over `${RUN}/.pi/state.json`; `makeHookCodec` gains the `promote` family;
 the resolver understands `${state.*}`/`${WORKSPACE}`/`${RUN}`. Additive: with no `promote`/`${state}` in a
 workflow, `runHooks` + the existing tests stay green (empty state).
 
@@ -172,6 +196,48 @@ Promote the op executors AND: (a) the `${state.*}`/`${WORKSPACE}`/`${RUN}` token
 injection unchanged. **Read-scope narrowing is now just a consumer:**
 `readScope: [${RUN}, ${WORKSPACE}/packages/skills/write-gdd, ${WORKSPACE}/templates/modules/${state.archetype}]`.
 The within-archetype `src/`-deny remains a separate Seatbelt glob/deny enhancement.
+
+## Uniform run layout + per-node I/O ledger (D7)
+
+> The runtime, physical, per-RUN instance of the design-time node-I/O map the skill already advocates — made
+> uniform + engine-owned so it never drifts project to project. Composes with D6 (`state.json` lives here).
+
+**Problem.** Today a project picks its own out-dir (`PROJECT='out/game'`, `game-omni-v1.6.js:97`) and scatters
+outputs at project-chosen paths; per-node EXECUTION inputs land in `_pi/<id>/` (U1) but a node's DATA inputs +
+outputs are not uniformly recorded anywhere — you must know the workflow to know what a node read/wrote. Across
+projects nothing is the same, so tooling can't generically "find a node's I/O."
+
+**The layout (SDK-owned; a project sets only WHERE `${RUN}` roots, NEVER its internal shape):**
+```
+${RUN}/                         # per-thread workspace (= projectBase); the engine owns the convention
+  <product tree>                # spec/ src/ public/ dist/ … — the real artifacts at their semantic paths
+  .pi/                          # ENGINE-OWNED metadata namespace — IDENTICAL in every project
+    state.json                  # the RunState channels (D6 per-thread checkpoint)
+    run.json                    # the run-status digest (per-node status / timing / tokens)
+    nodes/<id>/                 # each node's DEDICATED named path
+      io.json                   # ALWAYS-RETRIEVABLE: { reads[], writes[], promotes[], status, timing }
+      prompt.md  tools.ts  mcp.json   # realized execution inputs (U1's per-node staging, homed here)
+      events.jsonl              # behavior stream (debug)
+```
+
+**`io.json` — the per-node ledger (the deliverable).** After every node the engine writes a uniform record:
+`{ id, label, phase, reads:[{path,via}], writes:[{path,verified,bytes}], promotes:[{to,merge,value}], status, startedAt, endedAt, durationMs }`.
+`reads`/`writes` are the contract's `readScope`/`io.reads` and `artifacts`/`owns` RESOLVED through the uniform
+resolver and (for writes) VERIFIED on disk — so `io.json` is the verified, physical instantiation of the node's
+contract. Written for EVERY node in EVERY project, so "find a node's inputs and outputs" is a GENERIC operation
+needing ZERO knowledge of the node's internals — the runtime sibling of `.agents/skill-system-io-map.md` (which
+stays the design-time, cross-run ledger).
+
+**Why product files stay at semantic paths (not buried per-node):** a build/tool (the gallery, `npm run build`)
+needs `${RUN}/spec/…`, `${RUN}/src/…`, `${RUN}/dist/…` at real paths. So bytes live at their semantic path and
+`io.json` RECORDS the resolved path (a pointer) — discoverability without relocating the product. `owns` is the
+write-authority; `io.json.writes` is the verified result.
+
+**Composition + unit impact.** D7 is the physical container D6 sits in. It formalizes + extends U1 (per-node
+`_pi/<id>/` → `${RUN}/.pi/nodes/<id>/` + `io.json`). The run-layout constants + the `io.json` writer are a
+runner/spine concern → fold into the U6 foundation; the `${state}`-resolution + ledger writing land with U7.
+**U6 likely SPLITS** — U6a (foundation: the `.pi/` layout + `${WORKSPACE}`/`${RUN}` roots + RunState
+type/reducers/load-persist) and U6b (codec + `extractSpec`) — finalize at dispatch.
 
 ## Out of scope (Phase 2)
 The consumer opt-in: game-omni's `pi-runner/sdk/*` switching to import from `@piflow/core` and deleting its
