@@ -1,0 +1,26 @@
+{
+  "id": "w2a-levels",
+  "phase": "build",
+  "deps": ["w0-classify"],
+  "prompt": { "skill": "{{WORKSPACE}}/packages/skills/levels/SKILL.md", "file": "prompt.md" },
+  "tools": { "allow": ["read", "write", "edit", "submit_result"], "deny": [] },
+  "contract": {
+    "artifacts": ["src/levels/level-1.json"],
+    "owns": ["src/levels/**"],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/levels",
+      "{{WORKSPACE}}/templates/modules/{{state.archetype}}"
+    ],
+    "schema": "{{WORKSPACE}}/packages/skills/levels/level.schema.json",
+    "returnMode": "optional"
+  },
+  "checks": {
+    "pre": [{ "kind": "exists", "path": "spec/level-skeleton.json" }],
+    "post": [{ "kind": "json-parses", "path": "src/levels/level-1.json" }]
+  },
+  "policy": { "fail": "block" },
+  "hooks": {
+    "seed": [{ "to": "spec/level-skeleton.json", "from": "{{WORKSPACE}}/templates/modules/{{state.archetype}}/level-skeleton.json" }]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "w0-classify",
+  "phase": "classify",
+  "deps": [],
+  "prompt": { "skill": "{{WORKSPACE}}/packages/skills/classify/SKILL.md", "file": "prompt.md" },
+  "tools": { "allow": ["read", "write", "submit_result"], "deny": ["bash"] },
+  "inject": ["{{RUN}}/spec/request.json"],
+  "contract": {
+    "artifacts": ["spec/classification.json"],
+    "owns": ["spec/classification.json"],
+    "readScope": ["{{RUN}}", "{{WORKSPACE}}/packages/skills/classify"],
+    "returnMode": "optional",
+    "fillSentinel": null
+  },
+  "checks": {
+    "post": [
+      { "kind": "json-parses", "path": "spec/classification.json" },
+      { "kind": "field-present", "path": "spec/classification.json", "param": "archetype", "severity": "fail" }
+    ]
+  },
+  "policy": { "fail": "block", "warn": "warn" },
+  "hooks": {
+    "promote": [{ "from": "spec/classification.json:archetype", "to": "archetype", "merge": "set" }]
+  }
+}

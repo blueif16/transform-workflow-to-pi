@@ -1,0 +1,6 @@
+{
+  "id": "template-min",
+  "name": "template-min",
+  "description": "Minimal valid piflow template fixture — one serial root + a 2-node parallel lane (disjoint owns).",
+  "phases": ["classify", "build"]
+}

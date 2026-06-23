@@ -14,6 +14,11 @@ export { compile, tryCompile, validate, inferEdges, stagesOf, slugify, WorkflowE
 export { extractWorkflow } from './workflow/extract.js';
 export type { ExtractedRecord, ExtractedStage, ExtractedMeta, ExtractResult } from './workflow/extract.js';
 
+// Template-format JSON Schemas (draft 2020-12): the on-disk AUTHORING contract for a workflow template
+// (docs/design/template-format.md §3/§5). A future loadTemplate/compile step validates node.json /
+// meta.json / the generated workflow.json against these fail-closed at author time.
+export { nodeSchema, metaSchema, workflowSchema } from './workflow/template/schema/index.js';
+
 // RunState (D6): the per-thread channel object + its reducers + the only state I/O. `RunState`/`Reducer`
 // types come via `export * from './types.js'` above. The `${state}` resolver / `promote` op land in U7.
 export { applyReducer, mergeUpdate, loadState, persistState } from './workflow/state.js';
