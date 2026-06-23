@@ -9,6 +9,11 @@ export * from './types.js';
 // DAG compiler (data-flow edge inference + topological staging + validation)
 export { compile, tryCompile, validate, inferEdges, stagesOf, slugify, WorkflowError } from './dag.js';
 
+// Workflow extraction: run a Claude Code Workflow .js under recording stubs → realized agent
+// records + structural DAG (the RAW recorded shape; the bridge maps it to a WorkflowSpec).
+export { extractWorkflow } from './workflow/extract.js';
+export type { ExtractedRecord, ExtractedStage, ExtractedMeta, ExtractResult } from './workflow/extract.js';
+
 // Contract-marker codec (DRIVER-*)
 export { emitMarkers, parseMarkers, markersFromNode } from './contract.js';
 export type { ContractMarkers } from './contract.js';
