@@ -396,7 +396,12 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
   // below, after the sandbox exists) and, injected here, `PIFLOW_MCP_CONFIG` (absolute in-sandbox path) +
   // the referenced secret env vars. CLOUD providers forward ONLY the referenced (allowlisted) vars — never
   // the host env.
-  const MCP_CONFIG_FILE = '_pi/mcp.json';
+  // Per-node staging dir: the prompt, the generated tool extension, and the MCP config all land under
+  // `_pi/<id>/` so parallel nodes that SHARE a workspace (the in-place local case) never clobber each
+  // other's staged files. This is the root fix for the OPEN-1 prompt-clobber that a consumer otherwise
+  // works around three ways (an execCwd split + an absolute @prompt ref + a per-node `wf.nodes` mutation).
+  const nodeStage = path.posix.join('_pi', node.id);
+  const MCP_CONFIG_FILE = path.posix.join(nodeStage, 'mcp.json');
   const stageMcp = Boolean(resolved.extension) && selectedBridgedTool(node) && Boolean(ctx.mcpConfig);
   let mcpEnv: Record<string, string> | undefined;
   if (stageMcp && ctx.mcpConfig) {
@@ -441,14 +446,14 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     // The prompt carries the machine-readable contract markers (artifacts/owns/read-scope/tools) so a
     // future node-contract extension can self-gate; we append them exactly as run.mjs does.
     const markers = emitMarkers(markersFromNode(node, resolved));
-    const promptFile = '_pi/prompt.md';
+    const promptFile = path.posix.join(nodeStage, 'prompt.md');
     await sandbox.writeFile(promptFile, node.prompt + (markers ? `\n\n${markers}` : ''));
 
     // Stage the generated tool `-e` extension (binds the node's declared sdk/mcp tools) and pass its
     // in-sandbox path to the command builder. Absent when the node selected only builtins.
     let extensionFile: string | undefined;
     if (resolved.extension) {
-      extensionFile = '_pi/tools.ts';
+      extensionFile = path.posix.join(nodeStage, 'tools.ts');
       await sandbox.writeFile(extensionFile, resolved.extension);
     }
 

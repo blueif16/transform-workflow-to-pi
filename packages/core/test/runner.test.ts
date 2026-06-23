@@ -321,9 +321,10 @@ describe('runWorkflow — tool binding (the per-node pre-check + the generated -
     expect(status.nodes.issue.status).toBe('ok');
     // the allowlist carries the builtin AND the prefixed MCP bare name; -e points at the staged file.
     expect(captured).toContain('--tools write,github_create_issue');
-    expect(captured).toContain("-e '_pi/tools.ts'");
-    // the generated extension was actually staged, and it BINDS the declared tool (registerTool + bridge).
-    const ext = writes.find((w) => w.path === '_pi/tools.ts');
+    expect(captured).toContain("-e '_pi/issue/tools.ts'");
+    // the generated extension was actually staged (at the node's per-node staging dir), and it BINDS the
+    // declared tool (registerTool + bridge).
+    const ext = writes.find((w) => w.path === '_pi/issue/tools.ts');
     expect(ext).toBeTruthy();
     expect(ext!.data).toContain('name: "github_create_issue"');
     // the staged extension is now the self-contained BUNDLE (the bundle seam): the @piflow/tool-bridge
@@ -332,6 +333,44 @@ describe('runWorkflow — tool binding (the per-node pre-check + the generated -
     expect(ext!.data).toContain('mcp.github:create_issue');
     const extImports = ext!.data.split('\n').filter((l) => /^\s*import\s/.test(l));
     expect(extImports.some((l) => /@piflow\/tool-bridge/.test(l))).toBe(false);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── per-node staging isolation: _pi/<id>/* (parallel nodes never clobber the staged prompt/ext) ───
+
+describe('runWorkflow — per-node staging isolation (parallel nodes never clobber _pi/*)', () => {
+  it('stages each node prompt at a per-node path _pi/<id>/prompt.md (distinct across a parallel stage)', async () => {
+    // A and B have no deps → ONE parallel stage. With a FIXED _pi/prompt.md, two nodes sharing an
+    // in-place workspace clobber each other's prompt (the OPEN-1 bug). Per-node namespacing prevents it.
+    const g = compile(wf([n('A', [], ['a.txt']), n('B', [], ['b.txt'])]));
+    const outDir = await tmpOut();
+
+    const writes: { path: string; data: string }[] = [];
+    const base = new InMemorySandboxProvider();
+    const recording: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+
+    const { status } = await runWorkflow(g, { run: 'stage-iso', outDir, provider: recording, buildCommand: stubBuilder() });
+    expect(status.ok).toBe(true);
+
+    // distinct, node-id-namespaced — NOT a shared '_pi/prompt.md' (the clobber the fix prevents).
+    const promptPaths = writes.filter((w) => w.path.endsWith('prompt.md')).map((w) => w.path).sort();
+    expect(promptPaths).toEqual(['_pi/a/prompt.md', '_pi/b/prompt.md']);
+    // …and each prompt kept ITS node's content (proves they did not overwrite one another).
+    expect(writes.find((w) => w.path === '_pi/a/prompt.md')!.data).toContain('do A');
+    expect(writes.find((w) => w.path === '_pi/b/prompt.md')!.data).toContain('do B');
 
     await fs.rm(outDir, { recursive: true, force: true });
   });
@@ -511,16 +550,16 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
 
       expect(status.nodes.issue.status).toBe('ok');
 
-      // (1) _pi/mcp.json was staged VERBATIM (the runner writes the loose JSON it was handed).
-      const cfg = writes.find((w) => w.path === '_pi/mcp.json');
+      // (1) the MCP config was staged VERBATIM at the node's per-node staging dir (_pi/<id>/mcp.json).
+      const cfg = writes.find((w) => w.path === '_pi/issue/mcp.json');
       expect(cfg).toBeTruthy();
       expect(JSON.parse(cfg!.data)).toEqual(mcpConfig);
 
-      // (2) PIFLOW_MCP_CONFIG is set to an ABSOLUTE path ending in _pi/mcp.json, plus the referenced secret.
+      // (2) PIFLOW_MCP_CONFIG is set to an ABSOLUTE path ending in the node's _pi/<id>/mcp.json, plus the secret.
       const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e);
       expect(env).toBeTruthy();
       expect(path.isAbsolute(env!.PIFLOW_MCP_CONFIG)).toBe(true);
-      expect(env!.PIFLOW_MCP_CONFIG.endsWith(path.join('_pi', 'mcp.json')) || env!.PIFLOW_MCP_CONFIG.endsWith('_pi/mcp.json')).toBe(true);
+      expect(env!.PIFLOW_MCP_CONFIG.endsWith('_pi/issue/mcp.json') || env!.PIFLOW_MCP_CONFIG.endsWith(path.join('_pi', 'issue', 'mcp.json'))).toBe(true);
       expect(env!.GH_TOKEN).toBe('ghp_runner_secret');
     } finally {
       delete process.env.GH_TOKEN;
@@ -537,7 +576,7 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
     const { status } = await runWorkflow(g, { run: 'mcp-none', outDir, provider, mcpConfig, buildCommand: stubBuilder() });
 
     expect(status.nodes.plain.status).toBe('ok');
-    expect(writes.find((w) => w.path === '_pi/mcp.json')).toBeUndefined();
+    expect(writes.find((w) => w.path.endsWith('mcp.json'))).toBeUndefined();
     // …and PIFLOW_MCP_CONFIG was NOT injected for a node with no MCP tools.
     expect(createEnvs.every((e) => !(e && 'PIFLOW_MCP_CONFIG' in e))).toBe(true);
 
@@ -564,7 +603,7 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
       });
 
       expect(status.nodes.issue.status).toBe('ok');
-      expect(writes.find((w) => w.path === '_pi/mcp.json')).toBeTruthy();
+      expect(writes.find((w) => w.path === '_pi/issue/mcp.json')).toBeTruthy();
 
       const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e)!;
       expect(env).toBeTruthy();
@@ -600,8 +639,8 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
       const { status } = await runWorkflow(g, { run: 'oc-stage', outDir, provider, registry, mcpConfig: ocMcpConfig, buildCommand: stubBuilder() });
 
       expect(status.nodes.recall.status).toBe('ok');
-      // _pi/mcp.json was staged VERBATIM (carries the openclaw server with its $VAR ref).
-      const cfg = writes.find((w) => w.path === '_pi/mcp.json');
+      // the config was staged VERBATIM at the node's per-node staging dir (carries the openclaw server $VAR ref).
+      const cfg = writes.find((w) => w.path === '_pi/recall/mcp.json');
       expect(cfg).toBeTruthy();
       expect(JSON.parse(cfg!.data)).toEqual(ocMcpConfig);
       // PIFLOW_MCP_CONFIG + the referenced secret were injected into the node env.
