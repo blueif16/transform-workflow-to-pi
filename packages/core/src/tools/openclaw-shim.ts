@@ -88,7 +88,7 @@ export function makeCaptureApi(): { api: CaptureApi; captured: CapturedTool[] } 
 }
 
 /** Unwrap an ESM-interop default: `{ default: entry }` → `entry`; a bare entry passes through. */
-function resolveEntry(mod: unknown): OpenClawPluginEntry {
+export function resolveEntry(mod: unknown): OpenClawPluginEntry {
   const candidate =
     mod && typeof mod === 'object' && 'default' in (mod as Record<string, unknown>)
       ? (mod as { default: unknown }).default
