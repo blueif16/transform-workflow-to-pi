@@ -2,7 +2,18 @@
 // reads to learn the node's artifacts / owned paths / read-scope / tools / seeds. Ported from the
 // `run.mjs` marker grammar; round-trippable (emit → parse → emit).
 
-import type { NodeSpec, ResolveResult, Check, Policy, ReturnMode } from './types.js';
+import type { NodeSpec, ResolveResult, Check, ChecksPrePost, Policy, ReturnMode } from './types.js';
+
+// ── POLICY VOCABULARY (decided T3) ─────────────────────────────────────────────────────────────────
+// The §3-prose policy actions (`block | retry | escalate`) and the RUNTIME `PolicyAction` enum
+// (`block | warn | stop`, types.ts) diverged. We align the codec to the ONE runtime enum — the
+// single source `actionForVerdict` (checks.ts) already honors, the only vocabulary the runner can act
+// on, and the one the node.json JSON-Schema (`$defs.policyAction`) already encodes. The prose words
+// `retry`/`escalate` have NO runtime equivalent, so they are NOT a codec vocabulary; `retry-once`/
+// `subagent-fix` are reserved and fall back to `block`. The codec carries `Policy` verbatim, so it
+// round-trips exactly whatever runtime action the node declared (`block`/`warn`/`stop`) — no mapping,
+// no second vocabulary. (Open: the §3 prose should be reconciled to this enum in a docs edit — flagged
+// for the doc owner; out of codec scope.)
 
 /** The structured marker set carried in (or extracted from) a node prompt. */
 export interface ContractMarkers {
@@ -15,10 +26,20 @@ export interface ContractMarkers {
   schema?: { path: string; schema: string }[];
   /** Declarative integrity checks (detection). Carried base64-on-one-line to hold arbitrary regex/params. */
   checks?: Check[];
-  /** Verdict→action policy (consequence). Carried base64-on-one-line. */
+  /**
+   * The AUTHORING-shape checks {pre, post} (node.json §3) — the pre/post STRUCTURE the flat `checks`
+   * above collapses. Carried base64-on-one-line (DRIVER-CHECKS-PREPOST), independent of `checks`.
+   */
+  checksPrePost?: ChecksPrePost;
+  /** Verdict→action policy (consequence). Carried base64-on-one-line. Runtime vocabulary: block|warn|stop. */
   policy?: Policy;
-  /** Return-handshake mode override. */
+  /** Return-handshake mode override (required|optional). */
   returnMode?: ReturnMode;
+  /**
+   * The node's structured-result JSON-Schema (node.json §3 `return`) — DISTINCT from `returnMode`.
+   * Carried base64-on-one-line (DRIVER-RETURN-SCHEMA) since it is an arbitrary schema object.
+   */
+  returnSchema?: Record<string, unknown>;
   /** Incompleteness sentinel string (drives the auto completeness check). */
   fillSentinel?: string;
 }
@@ -73,8 +94,12 @@ export function emitMarkers(m: ContractMarkers): string {
   for (const s of m.seed ?? []) lines.push(`DRIVER-SEED: ${s.to} <= ${s.from}`);
   for (const s of m.schema ?? []) lines.push(`DRIVER-SCHEMA: ${s.path} <= ${s.schema}`);
   if (m.checks?.length) lines.push(`DRIVER-CHECKS: ${encodeB64(m.checks)}`);
+  if (m.checksPrePost && (m.checksPrePost.pre?.length || m.checksPrePost.post?.length))
+    lines.push(`DRIVER-CHECKS-PREPOST: ${encodeB64(m.checksPrePost)}`);
   if (m.policy && Object.keys(m.policy).length) lines.push(`DRIVER-POLICY: ${encodeB64(m.policy)}`);
   if (m.returnMode) lines.push(`DRIVER-RETURN: ${m.returnMode}`);
+  if (m.returnSchema && Object.keys(m.returnSchema).length)
+    lines.push(`DRIVER-RETURN-SCHEMA: ${encodeB64(m.returnSchema)}`);
   if (m.fillSentinel) lines.push(`DRIVER-FILL-SENTINEL: ${m.fillSentinel}`);
   return lines.join('\n');
 }
@@ -106,6 +131,13 @@ export function parseMarkers(prompt: string): ContractMarkers {
     const c = decodeB64(checksRaw);
     if (Array.isArray(c)) out.checks = c as Check[];
   }
+  // DRIVER-CHECKS is a substring of DRIVER-CHECKS-PREPOST — but firstValue anchors `:` (^KEY:\s*), so
+  // the PREPOST line never matches the CHECKS regex (its key is `DRIVER-CHECKS-PREPOST`, not `DRIVER-CHECKS:`).
+  const prePostRaw = firstValue(prompt, 'DRIVER-CHECKS-PREPOST');
+  if (prePostRaw !== null) {
+    const cp = decodeB64(prePostRaw);
+    if (cp && typeof cp === 'object' && !Array.isArray(cp)) out.checksPrePost = cp as ChecksPrePost;
+  }
   const policyRaw = firstValue(prompt, 'DRIVER-POLICY');
   if (policyRaw !== null) {
     const p = decodeB64(policyRaw);
@@ -113,6 +145,11 @@ export function parseMarkers(prompt: string): ContractMarkers {
   }
   const ret = firstValue(prompt, 'DRIVER-RETURN');
   if (ret === 'optional' || ret === 'required') out.returnMode = ret;
+  const retSchemaRaw = firstValue(prompt, 'DRIVER-RETURN-SCHEMA');
+  if (retSchemaRaw !== null) {
+    const rs = decodeB64(retSchemaRaw);
+    if (rs && typeof rs === 'object' && !Array.isArray(rs)) out.returnSchema = rs as Record<string, unknown>;
+  }
   const fill = firstValue(prompt, 'DRIVER-FILL-SENTINEL');
   if (fill !== null) out.fillSentinel = fill;
   return out;
@@ -131,8 +168,11 @@ export function markersFromNode(node: NodeSpec, resolved?: ResolveResult): Contr
   if (node.sandbox.read.length) m.readScope = node.sandbox.read;
   if (resolved?.piTools.length) m.tools = resolved.piTools;
   if (node.io.checks?.length) m.checks = node.io.checks;
+  if (node.io.checksPrePost && (node.io.checksPrePost.pre?.length || node.io.checksPrePost.post?.length))
+    m.checksPrePost = node.io.checksPrePost;
   if (node.io.policy && Object.keys(node.io.policy).length) m.policy = node.io.policy;
   if (node.io.returnMode) m.returnMode = node.io.returnMode;
+  if (node.io.returnSchema && Object.keys(node.io.returnSchema).length) m.returnSchema = node.io.returnSchema;
   if (node.io.fillSentinel) m.fillSentinel = node.io.fillSentinel;
   return m;
 }

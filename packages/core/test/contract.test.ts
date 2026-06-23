@@ -120,3 +120,166 @@ describe('markersFromNode', () => {
     expect(parseMarkers(emitMarkers(markers))).toEqual(markers);
   });
 });
+
+// ── T3 (U6b): round-trip the three node.json fields the codec didn't cover ──────────────────────────
+// The marker grammar already carried a FLAT `checks: Check[]` (the runtime post-checks), `policy`, and
+// `returnMode` (the handshake). What it did NOT carry are the AUTHORING-shape fields of node.json
+// (template-format.md §3): the `checks: {pre, post}` STRUCTURE (the flat marker collapses pre/post), and
+// the `return` JSON-Schema for the structured fenced-JSON result (distinct from `returnMode`). These are
+// what `markersFromNode → parseMarkers` must now reproduce identically.
+describe('T3 codec — checks{pre,post} / policy / return round-trip', () => {
+  // (1) checks{pre,post} — the authoring STRUCTURE survives (a flat marker would lose which lane a check
+  // is in). Non-trivial: a pre-check AND a post-check, each with kind/path/param/severity.
+  it('round-trips a node with non-trivial checks{pre,post} (identity)', () => {
+    const spec: WorkflowSpec = {
+      meta: { name: 't', description: 'd' },
+      nodes: [
+        {
+          label: 'Harden',
+          prompt: 'harden it',
+          tools: {},
+          io: {
+            reads: [],
+            produces: ['spec/blueprint.json'],
+            artifacts: [{ path: 'spec/blueprint.json' }],
+            checksPrePost: {
+              pre: [{ kind: 'exists', path: 'spec/gdd.md', severity: 'fail' }],
+              post: [
+                { kind: 'count-floor', path: 'spec/blueprint.json', param: { path: 'milestones', min: 3 }, severity: 'fail' },
+                { kind: 'regex-absent', path: 'spec/blueprint.json', param: '<FILL:', severity: 'warn' },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const node = compile(spec).nodes['harden'];
+    const markers = markersFromNode(node!, { piTools: [] });
+    expect(markers.checksPrePost).toEqual({
+      pre: [{ kind: 'exists', path: 'spec/gdd.md', severity: 'fail' }],
+      post: [
+        { kind: 'count-floor', path: 'spec/blueprint.json', param: { path: 'milestones', min: 3 }, severity: 'fail' },
+        { kind: 'regex-absent', path: 'spec/blueprint.json', param: '<FILL:', severity: 'warn' },
+      ],
+    });
+    // the WHOLE thing survives emit → parse byte-for-byte
+    const round = parseMarkers(emitMarkers(markers));
+    expect(round.checksPrePost).toEqual(markers.checksPrePost);
+    expect(round).toEqual(markers);
+  });
+
+  // (4) Policy vocabulary: aligned to the runtime PolicyAction enum (block | warn | stop). `stop` (a
+  // runtime-only action with NO §3-prose equivalent) must round-trip — proving the chosen vocabulary.
+  it('round-trips policy in the runtime vocabulary (block | warn | stop), incl. `stop`', () => {
+    const m: ContractMarkers = { policy: { fail: 'stop', warn: 'warn' } };
+    expect(parseMarkers(emitMarkers(m)).policy).toEqual({ fail: 'stop', warn: 'warn' });
+    // every other runtime action too
+    expect(parseMarkers(emitMarkers({ policy: { fail: 'block' } })).policy).toEqual({ fail: 'block' });
+  });
+
+  // (1) return — the structured-result JSON-Schema (node.json `return`), DISTINCT from `returnMode`.
+  it('round-trips a node with a `return` JSON-Schema (identity)', () => {
+    const ret = {
+      type: 'object',
+      required: ['archetype', 'coreLoop'],
+      properties: {
+        archetype: { type: 'string', enum: ['platformer', 'voxel_sandbox'] },
+        coreLoop: { type: 'string' },
+        scopeCut: { type: 'array', items: { type: 'string' } },
+      },
+    };
+    const spec: WorkflowSpec = {
+      meta: { name: 't', description: 'd' },
+      nodes: [
+        {
+          label: 'Classify',
+          prompt: 'classify it',
+          tools: {},
+          io: {
+            reads: [],
+            produces: ['spec/classification.json'],
+            artifacts: [{ path: 'spec/classification.json' }],
+            returnSchema: ret,
+          },
+        },
+      ],
+    };
+    const node = compile(spec).nodes['classify'];
+    const markers = markersFromNode(node!, { piTools: [] });
+    expect(markers.returnSchema).toEqual(ret);
+    const round = parseMarkers(emitMarkers(markers));
+    expect(round.returnSchema).toEqual(ret);
+    expect(round).toEqual(markers);
+  });
+
+  // returnMode and the return SCHEMA are independent markers — both present, both survive, no collision.
+  it('keeps returnMode and the return schema as independent markers', () => {
+    const m: ContractMarkers = {
+      returnMode: 'required',
+      returnSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+    };
+    const round = parseMarkers(emitMarkers(m));
+    expect(round.returnMode).toBe('required');
+    expect(round.returnSchema).toEqual({ type: 'object', properties: { ok: { type: 'boolean' } } });
+    expect(round).toEqual(m);
+  });
+
+  // all three together on one node → markersFromNode → parseMarkers deep-equals the originals.
+  it('round-trips checks{pre,post} + policy + return all on one node (full identity)', () => {
+    const ret = { type: 'object', required: ['verdict'], properties: { verdict: { type: 'string' } } };
+    const spec: WorkflowSpec = {
+      meta: { name: 't', description: 'd' },
+      nodes: [
+        {
+          label: 'Verify',
+          prompt: 'verify it',
+          tools: {},
+          io: {
+            reads: ['spec/blueprint.json'],
+            externalInputs: ['spec/blueprint.json'],
+            produces: ['spec/DESIGN_REVIEW.md'],
+            artifacts: [{ path: 'spec/DESIGN_REVIEW.md' }],
+            checksPrePost: {
+              pre: [{ kind: 'json-parses', path: 'spec/blueprint.json', severity: 'fail' }],
+              post: [{ kind: 'regex-present', path: 'spec/DESIGN_REVIEW.md', param: 'DESIGN_(PASSED|FAILED)', severity: 'fail' }],
+            },
+            policy: { fail: 'stop', warn: 'warn' },
+            returnSchema: ret,
+          },
+        },
+      ],
+    };
+    const node = compile(spec).nodes['verify'];
+    const markers = markersFromNode(node!, { piTools: [] });
+    const round = parseMarkers(emitMarkers(markers));
+    expect(round.checksPrePost).toEqual(markers.checksPrePost);
+    expect(round.policy).toEqual({ fail: 'stop', warn: 'warn' });
+    expect(round.returnSchema).toEqual(ret);
+    expect(round).toEqual(markers);
+  });
+
+  // (3) Additive / no-regression: a node WITHOUT checks/policy/return emits NONE of the new markers and
+  // round-trips exactly as before — the base contract bytes for unrelated fields stay stable.
+  it('a node without checks{pre,post}/policy/return emits no new markers (no regression)', () => {
+    const spec: WorkflowSpec = {
+      meta: { name: 't', description: 'd' },
+      nodes: [
+        {
+          label: 'Plain',
+          prompt: 'plain',
+          tools: {},
+          sandbox: { read: ['/repo/src'], write: ['out/x'] },
+          io: { reads: [], produces: ['out/x/a.js'], artifacts: [{ path: 'out/x/a.js' }] },
+        },
+      ],
+    };
+    const node = compile(spec).nodes['plain'];
+    const markers = markersFromNode(node!, { piTools: ['read'] });
+    expect(markers.checksPrePost).toBeUndefined();
+    expect(markers.returnSchema).toBeUndefined();
+    const text = emitMarkers(markers);
+    expect(text).not.toContain('DRIVER-CHECKS-PREPOST');
+    expect(text).not.toContain('DRIVER-RETURN-SCHEMA');
+    expect(parseMarkers(text)).toEqual(markers);
+  });
+});
