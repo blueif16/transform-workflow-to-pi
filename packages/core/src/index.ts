@@ -44,6 +44,8 @@ export { OPENCLAW_COMMUNITY_CATALOG, OPENCLAW_PIN } from './tools/openclaw-commu
 
 // Sandbox providers (lifecycle; in-memory reference impl + not-implemented stubs)
 export { InMemorySandbox, InMemorySandboxProvider, NotImplementedProvider } from './sandbox/index.js';
+// Bounded stdout/stderr capture (guards every provider against the cumulative-snapshot string blow-up)
+export { tailAppend, DEFAULT_CAPTURE_MAX } from './sandbox/capture.js';
 // Seatbelt read-scope provider (macOS)
 export { SeatbeltSandbox, SeatbeltSandboxProvider, buildSeatbeltProfile } from './sandbox/seatbelt.js';
 // Worktree per-run git WRITE-isolation provider (run-scoped: branch pi/<run> + sibling .pi-worktrees/<run>)

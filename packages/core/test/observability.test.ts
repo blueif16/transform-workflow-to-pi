@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { NodeRecorder, recordingSandbox, slimEvent, type PiEvent } from '../src/runner/events.js';
 import { distillEvents, parseEventsFile, eventsPath } from '../src/runner/logs.js';
+import { tailAppend } from '../src/sandbox/capture.js';
 import type { Sandbox, ExecOpts, ExecResult } from '../src/types.js';
 
 const tmp = (): string => mkdtempSync(path.join(tmpdir(), 'piflow-obs-'));
@@ -63,10 +64,23 @@ describe('distillEvents — the firehose → one line per meaningful action', ()
 });
 
 describe('slimEvent — keep the signal, drop the bulk', () => {
-  it('drops the cumulative message_start snapshot entirely', () => {
-    expect(slimEvent({ type: 'message_start', message: { role: 'user' } })).toBeNull();
+  // THE bloat bug: pi re-embeds the whole accumulated transcript in `message` on EVERY delta. Left in,
+  // each message_update grows unbounded → a 20MB+ archive of truncated-invalid-JSON lines. Strip it.
+  it('strips the cumulative message snapshot + partial from a per-token message_update, keeping the delta', () => {
+    const ev = {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'thinking_delta', delta: 'tiny', partial: 'the WHOLE accumulated transcript so far …' },
+      message: { role: 'assistant', content: 'the WHOLE accumulated transcript so far …' },
+    };
+    expect(slimEvent(ev)).toEqual({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'thinking_delta', delta: 'tiny' },
+    });
   });
-  it('strips the body from message_end but keeps token/usage fields', () => {
+  it('strips the snapshot from a turn_end too (not just message_update)', () => {
+    expect(slimEvent({ type: 'turn_end', message: { content: 'huge' } })).toEqual({ type: 'turn_end' });
+  });
+  it('strips the body from message_end but keeps token/usage sibling fields', () => {
     expect(slimEvent({ type: 'message_end', message: { big: 1 }, usage: { tokens: 42 } }))
       .toEqual({ type: 'message_end', usage: { tokens: 42 } });
   });
@@ -82,13 +96,29 @@ describe('slimEvent — keep the signal, drop the bulk', () => {
   });
 });
 
+describe('tailAppend — bounded capture (the RangeError guard)', () => {
+  it('appends verbatim while under the cap', () => {
+    expect(tailAppend('abc', 'def', 100)).toBe('abcdef');
+  });
+  it('retains only the last `max` chars once over the cap (the snapshot-bloat blow-up)', () => {
+    // buf already AT cap, then a big chunk arrives → result is exactly the cap length, ending in the chunk's tail
+    const out = tailAppend('x'.repeat(10), 'y'.repeat(10), 10);
+    expect(out).toBe('y'.repeat(10));
+  });
+  it('clips a single chunk that itself exceeds the cap (bound holds regardless of input size)', () => {
+    const out = tailAppend('', 'z'.repeat(1000), 8);
+    expect(out).toBe('z'.repeat(8));
+  });
+});
+
 describe('NodeRecorder + recordingSandbox — the capture seam', () => {
   it('tees stdout into the slimmed archive AND still calls the caller onStdout (watchdog preserved)', async () => {
     const dir = tmp();
     const rec = new NodeRecorder(dir, 'w0-classify');
     const sb = fakeSandbox((onStdout) => {
-      onStdout('{"type":"message_start","message":{"big":"snapshot"}}\n'); // must be DROPPED
-      onStdout('{"type":"tool_execution_start","toolName":"write","args":{"path":"spec/x.json"}}\n'); // must be KEPT
+      // a per-token delta carrying the cumulative snapshot (the bloat) — the snapshot must be stripped
+      onStdout('{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"x"},"message":{"big":"cumulative snapshot"}}\n');
+      onStdout('{"type":"tool_execution_start","toolName":"write","args":{"path":"spec/x.json"}}\n');
     });
     const callerSpy = vi.fn();
     await recordingSandbox(sb, rec).exec('pi …', { onStdout: callerSpy });
@@ -97,12 +127,14 @@ describe('NodeRecorder + recordingSandbox — the capture seam', () => {
     // (1) the watchdog's own onStdout still fired for every chunk — recording is additive, not a regression.
     expect(callerSpy).toHaveBeenCalledTimes(2);
 
-    // (2) the archive kept only the tool event, slimmed + clock-stamped.
+    // (2) both events archived; the cumulative `message` snapshot stripped; clock-stamped.
     const evs = parseEventsFile(eventsPath(dir, 'w0-classify'));
-    expect(evs).toHaveLength(1);
-    expect(evs[0]).toMatchObject({ type: 'tool_execution_start', toolName: 'write' });
-    expect(typeof evs[0]._t).toBe('number');
-    expect(typeof evs[0]._rt).toBe('string');
+    expect(evs).toHaveLength(2);
+    expect(evs[0]).not.toHaveProperty('message');               // bloat stripped
+    expect(evs[0].assistantMessageEvent).toMatchObject({ delta: 'x' }); // delta preserved
+    expect(evs[1]).toMatchObject({ type: 'tool_execution_start', toolName: 'write' });
+    expect(typeof evs[1]._t).toBe('number');
+    expect(typeof evs[1]._rt).toBe('string');
   });
 
   it('close() flushes a trailing partial line (no terminating newline)', async () => {

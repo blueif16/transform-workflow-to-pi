@@ -25,24 +25,25 @@ const MAX_LINE = 8192;
 const MAX_RESULT = 2048;
 
 /**
- * Slim ONE parsed event for the archive. Drops the cumulative `message` snapshot that
- * `message_start`/`message_end` carry (the incremental deltas already reconstruct the text), and
- * truncates a large `tool_execution_end` result. Returns null to DROP the event. Everything else —
- * the deltas, tool starts, turn boundaries — passes through unchanged (small, all signal).
+ * Slim ONE parsed event for the archive. The killer of size is the cumulative `message` snapshot pi
+ * re-embeds on EVERY event (`message_update` per token, `turn_*`/`message_*` per turn) — the whole
+ * accumulated transcript, re-sent each delta; that redundancy is what makes a raw stream 100s of MB.
+ * The unique content lives in the per-event `delta` (and the bounded tool fields), so we strip the
+ * snapshot everywhere, drop the `assistantMessageEvent.partial` cumulative on a delta, and truncate a
+ * large `tool_execution_end` result. Returns `ev` UNCHANGED (same ref) when there is nothing to slim.
  */
 export function slimEvent(ev: PiEvent): PiEvent | null {
   if (!ev || typeof ev !== 'object') return null;
-  const t = ev.type;
-  if (t === 'message_start') return null; // pure cumulative snapshot, zero delta signal
-  if (t === 'message_end') {
-    const { message, ...rest } = ev as Record<string, unknown>; // keep usage/tokens, drop the body
-    void message;
-    return rest;
-  }
-  if (t === 'tool_execution_end' && 'result' in ev) {
-    return { ...ev, result: truncResult(ev.result) };
-  }
-  return ev;
+  const a = ev.assistantMessageEvent as Record<string, unknown> | undefined;
+  const hasMessage = 'message' in ev;
+  const hasPartial = !!a && typeof a === 'object' && 'partial' in a;
+  const bigResult = ev.type === 'tool_execution_end' && 'result' in ev;
+  if (!hasMessage && !hasPartial && !bigResult) return ev; // nothing to strip — pass through
+  const out: PiEvent = { ...ev };
+  if (hasMessage) delete out.message;
+  if (hasPartial) { const ae = { ...a }; delete ae.partial; out.assistantMessageEvent = ae; }
+  if (bigResult) out.result = truncResult(out.result);
+  return out;
 }
 
 function truncResult(result: unknown): unknown {

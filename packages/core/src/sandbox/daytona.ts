@@ -26,6 +26,7 @@
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { tailAppend } from './capture.js';
 import type {
   Sandbox,
   SandboxProvider,
@@ -342,8 +343,8 @@ export class DaytonaSandbox implements Sandbox {
     // caller's callbacks, so ExecResult carries a faithful stdout/stderr.
     let stdout = '';
     let stderr = '';
-    const collectStdout = (chunk: string): void => { stdout += chunk; opts.onStdout?.(chunk); };
-    const collectStderr = (chunk: string): void => { stderr += chunk; opts.onStderr?.(chunk); };
+    const collectStdout = (chunk: string): void => { stdout = tailAppend(stdout, chunk); opts.onStdout?.(chunk); };
+    const collectStderr = (chunk: string): void => { stderr = tailAppend(stderr, chunk); opts.onStderr?.(chunk); };
 
     try {
       // runAsync starts the command and returns a cmdId.
