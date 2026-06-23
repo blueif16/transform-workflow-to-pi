@@ -120,6 +120,17 @@ export type Policy = Partial<Record<Exclude<Verdict, 'pass'>, PolicyAction>>;
 /** Whether the node's fenced-JSON return handshake is required or advisory. */
 export type ReturnMode = 'optional' | 'required';
 
+/**
+ * The AUTHORING-shape integrity checks (template node.json §3 `checks`): the DETECTION predicates split
+ * into the two firing lanes — `pre` (validate staged inputs BEFORE the model) and `post` (validate the
+ * produced artifacts AFTER). The runtime collapses these to the flat `NodeIO.checks` (post is what the
+ * runner runs); this preserves the structure so the codec round-trips the node.json shape losslessly.
+ */
+export interface ChecksPrePost {
+  pre?: Check[];
+  post?: Check[];
+}
+
 /** One declarative integrity check over an artifact (detection only — never judges GOODNESS). */
 export interface Check {
   /** The predicate to run (see CheckKind). An unknown kind is skipped with a warn. */
@@ -149,8 +160,23 @@ export interface NodeIO {
   artifacts: ArtifactReq[];
   /** Declarative integrity checks over the artifacts (detection). Empty/undefined ⇒ none. */
   checks?: Check[];
+  /**
+   * The AUTHORING-shape checks (template node.json §3): the same DETECTION predicates split into the
+   * `pre` lane (over staged inputs, before the model) and the `post` lane (over produced artifacts).
+   * SEPARATE from the flat `checks` above: `checks` is the runner's collapsed post-check list (what
+   * `effectiveChecks`/the runner consume); `checksPrePost` preserves the pre/post STRUCTURE so the
+   * codec round-trips the node.json shape losslessly. Additive — the runner ignores it.
+   */
+  checksPrePost?: ChecksPrePost;
   /** Verdict→action policy for failed checks (consequence). Undefined ⇒ the default (fail→block). */
   policy?: Policy;
+  /**
+   * The node's structured-result JSON-Schema (template node.json §3 `return`) — the contract for the
+   * fenced-JSON tail the node returns. DISTINCT from `returnMode` (the required/optional handshake):
+   * `returnMode` says WHETHER a return is mandatory, `returnSchema` says what SHAPE it must take. An
+   * arbitrary draft-2020-12 schema object; carried verbatim. Undefined ⇒ no schema declared.
+   */
+  returnSchema?: Record<string, unknown>;
   /** Return-handshake mode. Default: 'optional' when `artifacts` is non-empty, else 'required'. */
   returnMode?: ReturnMode;
   /**
