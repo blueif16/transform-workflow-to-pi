@@ -16,13 +16,15 @@ seed.
 ## 2. On-disk layout (`.piflow/<wf>/template/`)
 ```
 template/
-  workflow.json            # the THIN authored header (§5): id · meta · phase order — NOT the edges
-  refs.json                # workspace refs (optional): skills dirs, registry paths, product-scaffold source
-  scripts/                 # optional: workflow-specific programmatic code (custom ops/checks/importers),
-                           #   referenced by node.json. Travels WITH the template; generic ops live in @piflow/core.
+  workflow.json            # GENERATED manifest (§5): the whole DAG, auto-regenerated from every node.json by the
+                           #   compile step — committed for visibility/diff; never hand-edit edges here (a lockfile).
+  refs.json                # workspace refs (optional, authored): skills dirs, registry paths, product-scaffold source
+  meta.json                # the authored header (optional): id · meta · phase ORDER (the only authored DAG input)
   nodes/<id>/              # the COPYABLE per-node skeleton — IDENTICAL shape to the runtime folder
     node.json              # the node definition (§3): deps · tools · mcp · contract · checks · policy · hooks (ONE file, §11)
-    prompt.md              # the prompt TEMPLATE: prose body + ${WORKSPACE}/${RUN}/${state.*} tokens + a skill pointer
+    prompt.md              # the prompt TEMPLATE: prose body + {{WORKSPACE}}/{{RUN}}/{{state.*}} tokens + a skill pointer
+    scripts/               # PER-NODE programmatic code (custom ops/checks for THIS node) — varies a lot per node;
+                           #   travels WITH the node in the copy. Generic, cross-node ops live in @piflow/core.
     io.json                # run-only stub, ships EMPTY ({}) so the cp brings it (§10 bucket 4)
     events.jsonl           # run-only stub, ships EMPTY
   .pi/state.json           # run-only stub, ships EMPTY ({}) — the RunState skeleton
@@ -36,17 +38,21 @@ run is a near-literal copy. The empty `io.json`/`events.jsonl`/`state.json` stub
 {
   "id": "w1-design",
   "phase": "design",
-  "deps": ["w0-classify"],                 // THE edges — SINGLE SOURCE (§5); the loader chains these into the DAG.
+  "deps": ["w0-classify"],                 // THE edges — SINGLE SOURCE (§5); the compile step chains these into the DAG.
                                            //   disjoint `owns` + same deps ⇒ a parallel lane
   "prompt": { "skill": "packages/skills/write-gdd/SKILL.md", "file": "prompt.md" },
   "tools":  { "allow": ["read","write","edit","submit_result"], "deny": [] },   // → DRIVER-TOOLS / --exclude-tools
   "mcp":    { "servers": { /* … */ } },    // SEPARATE field, SAME file (§11); or { "ref": "..." }; omitted ⇒ none
+  "reads": [                               // declared INPUTS + per-input delivery (§6a); omit ⇒ engine heuristic
+    { "path": "{{RUN}}/spec/classification.json", "deliver": "inject" },   // small · always-needed · stable
+    { "path": "{{WORKSPACE}}/templates/modules/{{state.archetype}}", "deliver": "tool" }  // large/optional ⇒ pi read tool
+  ],
   "contract": {                            // the WRITE/READ contract → DRIVER-ARTIFACTS/OWNS/READ-SCOPE/SCHEMA + DoD prose
-    "artifacts": ["spec/gdd.md"],          // REQUIRED outputs, ${RUN}-relative (driver stat()s them → blocked if missing)
+    "artifacts": ["spec/gdd.md"],          // REQUIRED outputs, {{RUN}}-relative (driver stat()s them → blocked if missing)
     "owns":      ["spec/**"],              // write authority
-    "readScope": ["${RUN}", "${WORKSPACE}/packages/skills/write-gdd",
-                  "${WORKSPACE}/templates/modules/${state.archetype}"],
-    "schema":      "${WORKSPACE}/.../gdd.schema.json",      // optional, validated off-disk after the node
+    "readScope": ["{{RUN}}", "{{WORKSPACE}}/packages/skills/write-gdd",
+                  "{{WORKSPACE}}/templates/modules/{{state.archetype}}"],   // the OS allow-list (what it MAY read)
+    "schema":      "{{WORKSPACE}}/.../gdd.schema.json",    // optional, validated off-disk after the node
     "returnMode":  "optional",             // optional (default when artifacts declared) | required (zero-artifact gate nodes)
     "fillSentinel": null                   // optional write-first sentinel
   },
@@ -86,22 +92,30 @@ realized prompt from it (§6). A custom op/check the generic families don't cove
 All of these live in `node.json` (§3). The generic check/op executors live in `@piflow/core`; a genuinely
 custom one is a `scripts/` file (§2) the node references.
 
-## 5. The DAG — chained from `node.json` `deps`; `workflow.json` is a thin header
-**There is NO separate edge list.** Each `node.json` owns its own `deps` (§3) — that is the SINGLE SOURCE of the
-edges. The loader **auto-discovers** the node set by scanning `nodes/*/node.json` and **chains their `deps`**
-into the DAG (add a node = drop a folder; no manifest edit — the D9 auto-discovery ethos). So the overall
-workflow is *produced by chaining the per-node info*, exactly — not hand-maintained in two places.
+## 5. The DAG — authored in `node.json` `deps`; `workflow.json` is GENERATED (the lockfile)
+**There is NO authored edge list.** Each `node.json` owns its own `deps` (§3) — the SINGLE SOURCE of the edges.
+The compile step (§8) **auto-discovers** the node set by scanning `nodes/*/node.json` and **chains their `deps`**
+into the DAG (add a node = drop a folder; no manifest edit). The overall workflow is *produced by chaining the
+per-node info*, exactly.
 
-`workflow.json` is only the **authored header**:
+The authored ⟷ generated split mirrors `package.json` ⟷ `package-lock.json`:
+- **`meta.json` — authored, tiny:** `{ id, name, description }` (+ an optional phase DISPLAY order). `phase` is a
+  DECORATIVE label a node carries; it does NOT drive ordering or parallelism (deps + `owns` do — below), so it
+  can never contradict the edges.
+- **`workflow.json` — GENERATED + committed (the lock AND the visible whole-DAG):** the compile step regenerates
+  it from `meta.json` + every `node.json` on each build — the full resolved topology (nodes · edges · stages ·
+  parallel lanes). You READ it (and diff it in a PR) but never hand-edit edges; change a `node.json`'s `deps` +
+  rebuild. A `piflow check` gate fails if it's stale.
 ```jsonc
-{ "id": "game-omni",
-  "meta":   { "name": "game-omni", "description": "…" },
-  "phases": ["classify","design","harden","scaffold", "…"] }   // id · meta · phase ORDER only — NO node/deps list
+// workflow.json — GENERATED, do not hand-edit (run the compile step)
+{ "id": "game-omni", "meta": { "name": "game-omni", "description": "…" },
+  "stages": [ ["w0-classify"], ["w1-design"], ["harden"], ["w3a-art","w3b-sound"] ],  // resolved from deps
+  "nodes":  { "w1-design": { "phase": "design", "deps": ["w0-classify"] } }            // mirror of each node.json
+}
 ```
-**Seeing the whole DAG:** the topology you read is GENERATED from the chained `deps` — `piflow` renders the
-box-and-arrow overview (and the loader can emit a `workflow.lock`/graph view). So there is exactly ONE authored
-source of edges (the nodes) + a DERIVED overview — never two lists to drift. Phase-mates with **write-disjoint
-`owns`** become a parallel lane. (Static DAG only — state drives values, never routing; D6.)
+**Stages + parallelism are DERIVED from `deps` + `owns`:** topological levels give the stages; same-level nodes
+with **write-disjoint `owns`** are a parallel lane — NOT from `phase` (decorative). (Static DAG only — state
+drives values, never routing; D6.)
 
 ## 6. Rendering (engine, at load / instantiate)
 The engine produces each node's realized prompt from its def — replacing the old JS `contract()` call:
@@ -109,22 +123,51 @@ The engine produces each node's realized prompt from its def — replacing the o
 2. append the `DRIVER-*` markers derived from `contract` + `checks` + `policy` + `hooks` + `tools` (ARTIFACTS ·
    OWNS · READ-SCOPE · SCHEMA · RETURN · CHECKS · POLICY · TOOLS · EXCLUDE-TOOLS · SEED · PROJECT · MERGE ·
    PROMOTE) + the Definition-of-Done prose,
-3. resolve `${WORKSPACE}`/`${RUN}` to physical roots; leave `${state.*}` as DEFERRED tokens (resolved by the
-   driver at node launch from `${RUN}/.pi/state.json`).
+3. resolve `{{WORKSPACE}}`/`{{RUN}}` to physical roots; leave `{{state.*}}` as DEFERRED tokens (resolved by the
+   driver at node launch from `{{RUN}}/.pi/state.json`).
 The output is byte-equivalent to what extraction recovers from a `.js` — but from authored DATA, single-sourced.
+
+### 6a. Input delivery — INJECT small/stable inputs; PATH + tool-read for large/mutable
+Because we have `readScope` and can compose the full path to every input, the engine decides PER INPUT how it
+reaches the model (researched 2026-06-23 — Claude Code injects user-pointed files, pi hands paths to its `read`
+tool; brief in `docs/research/`):
+- **INJECT (default for small · always-needed · stable inputs).** The engine pre-reads the file and embeds it in
+  the prompt, wrapped exactly like Claude Code so the model treats it as authoritative system context:
+  `<system-reminder>` + a `Contents of {{abs-path}}:` preamble + the numbered contents. This GUARANTEES the
+  model sees the input and removes the read decision — directly defusing the cheap-executor "explore-forever /
+  over-read" failure (piflow's FILL-don't-explore lesson; pi's own read-bloat issue #3432). The path is ALSO
+  passed so a re-read stays possible.
+- **PATH + tool-read (for large · optional · mutable inputs).** Pass only the path and let pi's `read` tool pull
+  it (paged via offset/limit). Required when the file is big (injection would pin it in context for the whole
+  node), when the model should CHOOSE what to read, or when a producer may rewrite it mid-run (injection freezes
+  a stale copy; tool-read always sees current bytes).
+- **The line:** inject iff `small (≲300–500 lines / well under pi's per-call cap) AND always-needed AND stable
+  when the prompt is composed`; otherwise path + tool-read. A node may override per input via `reads[].deliver`
+  (§3). `readScope` stays the OS allow-list (what the node MAY read at all); delivery is a separate axis on the
+  subset it actually consumes.
 
 ## 7. Vocabulary (the only path/value tokens — one resolver, every field)
 `${WORKSPACE}` (canonical, read-only) · `${RUN}` (per-thread) · `${state.<channel>}` (RunState, deferred). The
 single resolver is applied uniformly to every marker; a path not expressible in this vocabulary is a design
 smell (D6/D7).
 
-## 8. Loader (`loadTemplate(dir) → WorkflowSpec`)
-Read `workflow.json` (the header) + **scan `nodes/*/`** for each `{node.json, prompt.md}` → **chain the per-node
-`deps`** into the DAG → the in-memory `WorkflowSpec` the existing `compile`/`runWorkflow` consume. **Static
-checks** (fail closed): every `dep` resolves to a discovered node; no cycles; every `ref`/skill path exists;
-every `${state.<channel>}` referenced is `promote`d by some upstream node (a dangling-channel gate, the state
-analogue of the dangling-ref check). `WorkflowSpec` stays the runtime contract; the template is its authored
-on-disk form; the whole-DAG overview is RENDERED from the chained deps (visibility, not a second source).
+## 8. Loader / compile step (`loadTemplate(dir) → WorkflowSpec`, and (re)write `workflow.json`)
+The compile step is the workflow's `tsc` — the SINGLE fail-closed gate (this is where the "everything in
+node.json" design pays off: a malformed workflow fails in ms at author time, not after a 20-min pi run). It:
+1. reads `meta.json` + **scans `nodes/*/`** for each `{node.json, prompt.md, scripts/}`,
+2. **chains the per-node `deps`** into the DAG; derives stages (topological levels) + parallel lanes
+   (same-level + write-disjoint `owns`),
+3. renders each node's marker tail from its contract (§6) and validates it,
+4. **(re)writes `workflow.json`** — the generated lock/overview — so it is ALWAYS auto-synced from the node.json
+   set, never hand-maintained,
+5. returns the in-memory `WorkflowSpec` the existing `compile`/`runWorkflow` consume.
+
+**Static checks (fail closed — the gate):** `node.json`/`meta.json` SCHEMA-valid · every `dep` resolves to a
+discovered node · NO cycles · `phase` is decorative (never an ordering source beside `deps`) · every PARALLEL
+lane has write-disjoint `owns` · every `{{state.x}}` consumed is `promote`d upstream (dangling-channel) · every
+artifact a node READS is produced upstream (dangling producer/consumer) · every `ref`/skill/`scripts/` path
+exists (dangling-ref) · `workflow.json` is in sync (else regenerate). `WorkflowSpec` stays the runtime contract;
+the template is its authored on-disk form.
 
 ## 9. Ingest (`.js` → template) — one-time, init only
 `extractWorkflow` (U5) recovers the DAG + realized prompts from a `.js`. The init-template skill maps each
@@ -168,15 +211,20 @@ folder without knowing the node.
 > implemented — kept here as the intended use.
 
 ## 11. Decisions & open items
-- **DAG edges — RESOLVED: SINGLE-SOURCED in each `node.json` `deps`; NOT a list in `workflow.json`.** The loader
-  auto-discovers nodes (scan `nodes/*/`) and CHAINS deps into the DAG; `workflow.json` is the thin authored
-  header (id · meta · phase order); the whole-DAG view is GENERATED (rendered overview). Removes the prior
-  deps-in-both-places duplication. (§5/§8.)
+- **DAG edges — RESOLVED: authored in each `node.json` `deps`; `workflow.json` is GENERATED (the lock).** Authored
+  ⟷ generated mirrors `package.json` ⟷ `package-lock.json`: `meta.json` (tiny authored header) + the `node.json`
+  deps are the source; the compile step (§8) auto-discovers nodes, chains deps, and **(re)writes `workflow.json`
+  on every build** so it's always synced from the node set (never hand-edit edges; a `check` gate fails if
+  stale). `phase` is DECORATIVE (deps + `owns` drive order/parallelism). (§5/§8.)
+- **Input delivery — RESOLVED: HYBRID, inject-biased** (§6a; researched 2026-06-23). INJECT small · always-needed ·
+  stable inputs into the prompt (Claude-Code-style `<system-reminder>` + `Contents of {{path}}:` + numbered
+  body) to guarantee sight + defuse the cheap-model over-read; PATH + pi `read` tool for large · optional ·
+  mutable inputs. Per-input override via `reads[].deliver`; `readScope` stays the OS allow-list (a separate axis).
 - **Pre/post hooks + checks + policy — RESOLVED: ALL self-contained in the one `node.json`** (§3/§4): `hooks`
   (seed=PRE; project/merge/promote=POST) + `checks` (pre/post integrity DETECTION) + `policy` (verdict→action
   CONSEQUENCE; detection ⊥ consequence) + `returnMode`/`fillSentinel`. Nothing scattered across files.
-- **`scripts/` — RESOLVED: optional template folder for workflow-specific programmatic code** (custom
-  ops/checks/importers) that travels WITH the template; `node.json` references it. Generic op/check executors
+- **`scripts/` — RESOLVED: PER-NODE (`nodes/<id>/scripts/`).** Each node's custom ops/checks vary a lot, so its
+  scripts live IN its folder and travel with it in the copy (self-contained node). Generic, cross-node executors
   live in `@piflow/core` (installed, not copied). (§2.)
 - **`mcp` + `return` — RESOLVED: INLINE in `node.json`** (one self-contained per-node def; no sidecar files).
 - **`tools` + `mcp` — RESOLVED: one `node.json`, SEPARATE FIELDS; NO exploded `tools.ts`/`mcp.json` files.** Both
@@ -194,8 +242,9 @@ folder without knowing the node.
   enable a parallel A/B experiment substrate. A future knob; recorded, not implemented.
 - **`deepMerge` array policy — RESOLVED: arrays REPLACE** (treated as leaves); `append` is the explicit concat
   reducer (per U6a, `6518272`).
-- **Token syntax — RECOMMENDED `{{ … }}`** (Mustache/Jinja-style: `{{ state.archetype }}`, `{{ WORKSPACE }}`,
+- **Token syntax — ADOPTED `{{ … }}` FOR NOW** (Mustache/Jinja-style: `{{ state.archetype }}`, `{{ WORKSPACE }}`,
   `{{ RUN }}`) — lowest collision with the `${…}` (JS/shell) and `{…}` (JSON/code) that prompt prose carries.
-  Pending final confirm. NOTE: the design docs write `${WORKSPACE}`/`${RUN}` as CONCEPTUAL shorthand for the
-  engine-resolved roots; the on-disk delimiter in template files is this decision.
+  **PROVISIONAL — leave the resolver's delimiter behind a single constant so it can change later** (e.g. if a
+  prompt body legitimately contains `{{ }}`). Some older prose still writes `${WORKSPACE}`/`${RUN}` as conceptual
+  shorthand; on-disk the delimiter is `{{ }}`.
 - **Per-run metadata dir name** (`.pi/` vs `_meta/`) — the D9 naming nit; open.
