@@ -207,6 +207,17 @@ create(readScope, outputDir, workdir, env, timeoutMs)   // pick impl by sandbox.
   end-to-end (stdio + Streamable-HTTP+bearer) against OpenClaw's `plugin-tools-serve`. **Reuse, not rebuild:**
   OpenClaw is MIT and serves its plugin tools over MCP, so coupled tools execute in OpenClaw, reached over our
   existing MCP lane (`docs/research/sandbox-tool-wiring-2026-06-22.md`).
+- **OpenClaw plugin host — NATIVE in-process execution (S0–S3, 2026-06-22).** A second lane beyond the MCP
+  gateway: an in-process host (`tools/openclaw-host.ts`) runs OpenClaw plugins *natively on pi*. It drives a real
+  tool's `register(api)` → captured factory → `execute` (**S0** — `memory_get` reads a real on-disk file; the
+  registry only *stores* factories, so we drive `factory(ctx)`+`execute` ourselves), registers **all 10 bundled
+  tool-bearing plugins** with their tool-sets cross-checked against each manifest (**S1**), routes
+  `SecretResolver`-resolved keys to key-gated tools (**S2** — `tavily`'s key observed in the real auth header;
+  live call env-gated), and binds the one deep-runtime seam `runtime.agent.runEmbeddedAgent` to the **same `pi`
+  CLI the runner uses** (**S3** — a live nested-pi run drove `llm-task` end-to-end). **No second runtime added** —
+  pi supplies the agent loop; we host the tool substrate + provider-wire and translate at one seam (OpenClaw's
+  internalized `agent-core` loop is dropped, not ported). Design + findings: `openclaw-substrate-adoption.md`.
+  The long-running `canvas`/`browser` HTTP daemon (`registerHttpRoute` + lifecycle) = **S4, deferred**.
 - **Runner.** The full per-node lifecycle (`runner/` — create→stage `io.reads`→exec the built command→`downloadDir`
   collect→host-stat `io.artifacts` verify→hooks→dispose) · node-timeout + silent-stall **watchdogs** routed through
   one kill seam (SIGTERM→SIGKILL grace, real process-group reap via `ExecOpts.signal`) · **halt-on-failure** ·
@@ -245,4 +256,9 @@ runner **escalation ladder** + stuck-delta/tool-thrash kills · the `@piflow/viz
 > `package.json` (Copyright © 2026 OpenClaw Foundation). Amend the canon's "closed-core" note
 > (`orchestration-substrate.md` §4). It also corrects the prior assumption that OpenClaw *embeds pi*: OpenClaw owns
 > its own agent runtime (`@openclaw/agent-core`); the only pi dependency is `@earendil-works/pi-tui`. Neither
-> affects this spine — we reuse OpenClaw at the MCP tool-transport layer, never its runtime.
+> affects this spine — we reuse OpenClaw two ways, never adopting its agent runtime: **(a)** the MCP
+> tool-transport lane (gateway-coupled tools execute in OpenClaw), and **(b)** native in-process plugin hosting
+> (`tools/openclaw-host.ts`, S0–S3 — see above) where OpenClaw's one agent seam `runEmbeddedAgent` is bound to
+> **pi** and its internalized `agent-core` loop is dropped, not ported. *Update (2026-06-22): forensics show
+> OpenClaw's `agent-core` is a re-internalized copy of what was pi's own loop (OpenClaw ran on pi's SDK before
+> migrating off), which is exactly why binding the seam to `pi.createAgentSession`-equivalent is low-impedance.*
