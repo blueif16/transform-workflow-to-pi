@@ -1,6 +1,6 @@
 # OpenClaw Plugin Substrate Adoption — scope & findings
 
-**Status:** scoped, not started (2026-06-22). Supersedes the "reference OpenClaw over MCP" framing for the *plugin* question.
+**Status:** **S0–S3 IMPLEMENTED & verified** (2026-06-22, branch `feat/openclaw-plugin-host`); the in-process host registers all bundled tool-bearing plugins and a live nested-pi run drove `llm-task` through the seam. S4 (long-running daemon) deferred. Supersedes the "reference OpenClaw over MCP" framing for the *plugin* question.
 
 **Goal (one line):** Adopt OpenClaw's plugin **substrate** natively into our pi-based system so the whole community plugin ecosystem registers and runs as ours — every tool an agent might need — *for granted*, by manifest. Not MCP-wire a handful of tools; own the pipe.
 
@@ -139,12 +139,21 @@ The seam `runtime.agent.runEmbeddedAgent` fronts `runEmbeddedAgentInternal` — 
   - **(A) SDK-backed — end-state (doc S3).** Import pi's agent SDK, call `createAgentSession()` in-process. Cleaner, but adds a dependency and stands pi up in-process — **not done today** (the runner only ever shells out; `createAgentSession` is used nowhere in the repo). Defer until B proves the seam.
 - **Secrets/provider:** reuse the existing `SecretResolver` (`packages/core/src/types.ts:319` → applied `runner.ts:291` → `CreateOpts.env` `runner.ts:412`); models/keys via env `*_API_KEY` or pi's `--provider cp`.
 
-### Build order (operationalizes S1→S3 with real targets + an acceptance bar each)
-- **S0 — execute driver, one keyless tool (NEW, smallest).** `memory-core/memory_get` end-to-end through the **real** host (not the capture no-op). *Accept:* `register()` returns; `execute('t', {key})` returns the fs-backed value. *Proves* the execute driver — the thing `registry`/`loader` don't hand us.
-- **S1 — registration breadth.** All 19 manifests `register()` on the host under the stub runtime. *Accept:* 19/19 return without throw. *This is the "works on one → works on all" registration guarantee.*
-- **S2 — provider-wire, no agent loop.** A `llm-core`-backed tool needing only a key: `memory_search` (embeddings) or `firecrawl` (key-gated via `SecretResolver`). *Accept:* a real provider call returns. *Proves* `llm-core` copies clean.
-- **S3 — the seam.** `llm-task` → `runEmbeddedAgent` → pi (CLI-backed first). *Accept:* `llm-task` returns `{payloads}` from a real nested pi run. *Proves* the one seam.
-- **S4 — long-running (deferred).** `canvas`/`browser` via `registerHttpRoute` + lifecycle — the doc's L3 daemon; the hard, bounded part.
+### Build order — DONE S0–S3 (commits on `feat/openclaw-plugin-host`); S4 deferred
+All host code lives in `packages/core/src/tools/openclaw-host.ts`; each stage ships its own test.
+- **S0 — execute driver, one keyless tool. ✅ DONE (`1f78c00`).** `memory-core/memory_get` end-to-end through the **real** host (not the capture no-op): writes a marker to an on-disk memory file, `memory_get` reads it back. Proved the execute driver — `registry`/`loader` only *store* factories, so we drive `factory(ctx)` → `tool.execute(...)` ourselves.
+- **S1 — registration breadth. ✅ DONE (`2953ed1`).** **All 10 _installed_ tool-bearing plugins** register on the host (`browser, canvas, codex-supervisor, file-transfer, llm-task, memory-core, memory-wiki, tavily, workboard, xai`); each captured tool-set cross-checks its manifest `contracts.tools`. *(Not 19 — see findings; the rest aren't bundled in npm.)*
+- **S2 — provider-wire / secrets. ✅ DONE (`baee957`).** `tavily_search` reaches the real provider with a `SecretResolver`-resolved key in the `Authorization` header (observed deterministically at the fetch boundary). Live call **env-gated** on `TAVILY_API_KEY` (skipped — none here). The web-search provider-wire loaded & formed a request fully in-process, no agent loop.
+- **S3 — the seam. ✅ DONE (`2062567`), live run executed.** `llm-task` → `runtime.agent.runEmbeddedAgent` → our adapter → the **same `pi -p --mode json`** CLI the runner uses (`defaultPiCommand`, reused) → parsed back to `EmbeddedAgentRunResult`. Live nested pi ran against `mmgw/MiniMax-M3` and returned a real JSON answer; the deterministic test feeds a recorded pi-stream tape through an injectable runner. The "no duplicate runtime" thesis is now demonstrated, not asserted — pi supplies the loop; we only translate.
+- **S4 — long-running (deferred).** `canvas`/`browser` via `registerHttpRoute` + lifecycle — the L3 daemon; the hard, bounded part.
+
+### Implementation findings (surfaced by building, correct the forensics above)
+- **10 tool-bearing plugins are bundled, not 19.** The npm package ships 77 of 139 extensions; `memory-lancedb`, `firecrawl`, `lobster`, the channels, etc. are external `openclaw plugins install @openclaw/*` and absent from `dist`. S1 covers the bundled set completely.
+- **`registerTool` has 3 shapes**, not one: `registerTool(factory, {names})` · `registerTool(def)` with name on the def · `registerTool(factory)` with name only on the *produced* tool (browser/canvas — factory must be instantiated with a benign ctx to read `.name`). The old capture-shim assumed only "def IS the tool"; the host handles all three.
+- **`register` needs only cheap stubs.** Real `runtime.state.openKeyedStore`; register-time-safe no-ops for `registerGatewayMethod/HttpRoute/RuntimeLifecycle/…` (verified none capture a return value the tool needs at execute time); a **loud-throwing stub** for every unwired `runtime.*` so a hidden gateway dependency surfaces loudly instead of silently no-op'ing.
+- **`llm-task` consumes only `payloads[].text`/`isError`** from the result; passing `provider`+`model` explicitly and no `thinking` means `runEmbeddedAgent` is the ONLY `runtime.agent.*` path it hits (no `defaults`/`thinking` reaches).
+- **Provider is `mmgw`, not `cp`** in this environment's `~/.pi/agent/models.json`; the live S3 probe gates on `pi --list-models`. The CLI-backed (option B) seam was used; the SDK `createAgentSession()` path (option A) remains the deferred end-state.
+- **Parser nuance:** `runEmbeddedAgent` needs the model's *raw assistant text*, so S3 added `finalAssistantTextFromPiJson` rather than reusing `lastJsonBlock` (which recovers the `{status,summary}` return-handshake — a different concern).
 
 ### Risks / notes specific to the wiring
 - The **execute driver** is genuinely new code, not a free entrypoint (Subagent A).
