@@ -5,10 +5,15 @@
 // the `{{state.X}}` channels a string consumes.
 
 /** The provisional token delimiters (§11) — change here only. */
-const OPEN = '{{';
-const CLOSE = '}}';
+export const OPEN = '{{';
+export const CLOSE = '}}';
 
-const reToken = (inner: string): RegExp =>
+/**
+ * Build a global RegExp matching `{{ <inner> }}` (whitespace-tolerant). The ONE place the delimiter is
+ * compiled — the static loader checks (here) and the U7 runtime resolver both consume it, so the
+ * provisional `{{`/`}}` delimiter changes in exactly one spot.
+ */
+export const reToken = (inner: string): RegExp =>
   new RegExp(escapeRe(OPEN) + '\\s*' + inner + '\\s*' + escapeRe(CLOSE), 'g');
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

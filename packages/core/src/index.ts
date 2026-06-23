@@ -27,8 +27,28 @@ export { loadTemplate, TemplateError } from './workflow/template/loader.js';
 export type { LoadTemplateOpts } from './workflow/template/loader.js';
 
 // RunState (D6): the per-thread channel object + its reducers + the only state I/O. `RunState`/`Reducer`
-// types come via `export * from './types.js'` above. The `${state}` resolver / `promote` op land in U7.
+// types come via `export * from './types.js'` above.
 export { applyReducer, mergeUpdate, loadState, persistState } from './workflow/state.js';
+
+// U7 — the SINGLE runtime token resolver: `{{RUN}}`/`{{WORKSPACE}}`/`{{state.<channel>}}` made physical,
+// applied uniformly to every marker (retires the `BASE_ROOT→wtRoot` regex + `RUN_CWD`-relative tokens).
+export { resolveTokens, resolveAll, MissingChannelError } from './workflow/resolver.js';
+export type { ResolveCtx } from './workflow/resolver.js';
+
+// U7 — deterministic op executors (seed PRE · project/merge POST), re-rooted onto the logical resolver.
+export { driverSeed, resolveSeedTokens } from './workflow/ops/seed.js';
+export type { Seed } from './workflow/ops/seed.js';
+export { ensureDir, projJson, drillPath, readJsonSafe, fileExists, absUnder } from './workflow/ops/util.js';
+export { applyProjectionOp } from './workflow/ops/project.js';
+export type { ProjectionResult } from './workflow/ops/project.js';
+export { applyMergeOp, runMerge } from './workflow/ops/merge.js';
+export type { MergeResult, MergeSpec } from './workflow/ops/merge.js';
+
+// U7 — the `promote` POST-op (lift a node output into a RunState channel via the reducer) + the
+// stage-barrier merge (serial+deterministic parallel-promote merge; a `set` channel with two concurrent
+// writers is a flagged ConflictError — LangGraph InvalidUpdateError semantics).
+export { parsePromote, extractPromoteValue, applyPromotes, barrierMerge, ConflictError } from './workflow/ops/promote.js';
+export type { PromoteSpec, ResolvedPromote, PromoteCtx, NodeUpdate } from './workflow/ops/promote.js';
 
 // Contract-marker codec (DRIVER-*)
 export { emitMarkers, parseMarkers, markersFromNode } from './contract.js';
