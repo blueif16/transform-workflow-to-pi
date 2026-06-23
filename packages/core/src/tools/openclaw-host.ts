@@ -20,6 +20,10 @@
 // loud-throwing stub so any unexpected reach surfaces instead of silently no-oping. Later steps
 // (S1 breadth, S2 provider-wire, S3 the `runEmbeddedAgent` seam) extend this same driver.
 
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
 import { resolveEntry, type OpenClawPluginEntry } from './openclaw-shim.js';
 
 /** A captured `registerTool` call: the FACTORY `(ctx) => tool` and the opts (e.g. `{ names: [...] }`). */
@@ -132,11 +136,17 @@ function makeHostApi(cfg: Record<string, unknown>): { api: Record<string, unknow
 
   const api: Record<string, unknown> = {
     runtime,
-    // The one verb we capture: OpenClaw registers a FACTORY `(ctx) => tool` plus opts (`{ names }`).
+    // The one verb we CAPTURE: OpenClaw registers a tool in three shapes (resolved by `captureToolName`):
+    //   registerTool(factory, { names:[...] })  — memory-core/memory-wiki/tavily/llm-task/workboard
+    //   registerTool(def, undefined)            — codex-supervisor/file-transfer (name on the def object)
+    //   registerTool(factory, undefined)        — browser/canvas (name on the factory's produced tool)
     registerTool: (factory: CapturedFactory['factory'], opts?: CapturedFactory['opts']) => {
       captured.push(opts === undefined ? { factory } : { factory, opts });
     },
-    // Graceful no-ops: register-time verbs memory-core calls that the tool's execute does not need.
+    // Graceful no-ops — register-time DECLARATION verbs the installed tool-bearing plugins call. Each is
+    // register-time-SAFE: it takes a declaration and returns void; NONE returns a service the tool's own
+    // `execute` consumes, so no-op'ing it registers the plugin without breaking the tool later (S1 bar).
+    // Stubbing a verb that DID return an execute-time service would hide an S3 problem — none of these do.
     registerMemoryCapability: noop,
     registerMemoryEmbeddingProvider: noop,
     registerProvider: noop,
@@ -147,6 +157,25 @@ function makeHostApi(cfg: Record<string, unknown>): { api: Record<string, unknow
     registerCli: noop,
     registerService: noop,
     registerHook: noop,
+    // S1 breadth additions — declaration verbs reached by browser/canvas/codex-supervisor/file-transfer/
+    // memory-wiki/workboard/xai at register time (probed against the real dist). All void-returning.
+    registerGatewayMethod: noop, // browser, workboard, memory-wiki: gateway RPC method declarations
+    registerHttpRoute: noop, // canvas: HTTP route declaration (the L3 daemon lives elsewhere)
+    registerNodeInvokePolicy: noop, // canvas, file-transfer: node.invoke allow-policy declaration
+    registerNodeCliFeature: noop, // canvas: node CLI feature declaration
+    registerHostedMediaResolver: noop, // canvas: hosted-media URL resolver declaration
+    registerMemoryPromptSupplement: noop, // memory-wiki: MEMORY.md prompt-section supplement
+    registerMemoryCorpusSupplement: noop, // memory-wiki: corpus supplement
+    registerModelCatalogProvider: noop, // xai: model-catalog declaration
+    registerImageGenerationProvider: noop, // xai
+    registerMediaUnderstandingProvider: noop, // xai
+    registerRealtimeTranscriptionProvider: noop, // xai
+    registerSpeechProvider: noop, // xai
+    registerVideoGenerationProvider: noop, // xai
+    // codex-supervisor registers a SHUTDOWN hook at register time via `api.lifecycle.registerRuntimeLifecycle`
+    // ({ id, description, dispose }) — caches a dispose callback for daemon teardown; the tool's execute
+    // never reads it. A no-op here is register-time-safe (we are not running a daemon to tear down).
+    lifecycle: { registerRuntimeLifecycle: noop },
     on: noop,
     emitAgentEvent: noop,
     logger,
@@ -207,4 +236,199 @@ export async function hostOpenClawTool(args: HostOpenClawToolParams): Promise<un
 
   // 4. Drive the tool's OWN execute — THIS is the execute-driver the registry/loader do not hand us.
   return await tool.execute(args.toolCallId ?? 'oc-host-s0', args.params);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// S1 — REGISTRATION BREADTH. Discover every installed tool-bearing OpenClaw plugin, run its real
+// `register(api)` on the host, and report — per plugin — the tools it actually registered, OR the exact
+// runtime path it reached at register time that S1 must not fake. This is the "works on one → works on
+// all" registration guarantee made observable (docs/design/openclaw-substrate-adoption.md, build order S1).
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The installed OpenClaw dist's extensions root, resolved relative to this compiled module. */
+function openClawExtensionsDir(): string {
+  // This file ships to `packages/core/dist/tools/openclaw-host.js` and runs from `src/` under vitest;
+  // walk up to the repo's `node_modules/openclaw/dist/extensions` from either location.
+  const here = dirname(fileURLToPath(import.meta.url));
+  // src/tools → ../../../../node_modules ; dist/tools → ../../../../node_modules (same depth from pkg root
+  // is not guaranteed, so search upward for the first node_modules/openclaw that exists).
+  let dir = here;
+  for (let i = 0; i < 8; i++) {
+    const candidate = join(dir, 'node_modules', 'openclaw', 'dist', 'extensions');
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Fall back to a CWD-relative resolution (covers the monorepo-root test invocation).
+  return resolve('node_modules/openclaw/dist/extensions');
+}
+
+/** A discovered tool-bearing plugin: its dir, id, manifest tool names, and resolved entry file URL. */
+interface DiscoveredPlugin {
+  dir: string;
+  id: string;
+  declaredTools: string[];
+  entryUrl: string;
+}
+
+/**
+ * Discover every installed extension whose `openclaw.plugin.json` declares a non-empty `contracts.tools`.
+ * The entry file is read from the plugin's `package.json` `openclaw.extensions[0]` (the authoritative
+ * entry list OpenClaw itself uses), falling back to the conventional `./index.js`. Pure fs read — no import.
+ */
+export function discoverToolBearingPlugins(): DiscoveredPlugin[] {
+  const root = openClawExtensionsDir();
+  const out: DiscoveredPlugin[] = [];
+  for (const dir of readdirSync(root)) {
+    const manifestPath = join(root, dir, 'openclaw.plugin.json');
+    if (!existsSync(manifestPath)) continue;
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      id?: string;
+      contracts?: { tools?: unknown };
+    };
+    const tools = manifest.contracts?.tools;
+    if (!Array.isArray(tools) || tools.length === 0) continue;
+    const declaredTools = tools.filter((t): t is string => typeof t === 'string');
+
+    let entryRel = './index.js';
+    const pkgPath = join(root, dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+        openclaw?: { extensions?: unknown };
+      };
+      const exts = pkg.openclaw?.extensions;
+      if (Array.isArray(exts) && typeof exts[0] === 'string') entryRel = exts[0];
+    }
+    const entryFile = join(root, dir, entryRel.replace(/^\.\//, ''));
+    out.push({
+      dir,
+      id: manifest.id ?? dir,
+      declaredTools,
+      entryUrl: pathToFileURL(entryFile).href,
+    });
+  }
+  out.sort((a, b) => a.id.localeCompare(b.id));
+  return out;
+}
+
+/**
+ * The tool name OpenClaw attaches to a captured `registerTool` call — resolved across the THREE shapes the
+ * installed plugins use (all verified against the real dist):
+ *   1. `opts.names: string[]`     → return them all (memory-core, memory-wiki, tavily, llm-task, workboard)
+ *   2. `opts.name: string`        → return [name]  (defensive; OpenClaw's singular-name opt form)
+ *   3. arg1 is a tool DEF object  → return [def.name]  (codex-supervisor, file-transfer)
+ *   4. arg1 is a FACTORY function → call `factory(ctx)` and read the produced tool's `.name` (browser, canvas)
+ * Case 4 INSTANTIATES the (lazy) tool only to read its declared name — it does NOT call `execute` (that is
+ * S3). If the factory itself reaches a runtime service to build the tool, the loud `runtime` stub throws
+ * and the caller records `needs-runtime` with the path.
+ */
+function captureToolNames(c: CapturedFactory, ctx: unknown): string[] {
+  if (Array.isArray(c.opts?.names)) return c.opts.names.filter((n): n is string => typeof n === 'string');
+  if (typeof (c.opts as { name?: unknown } | undefined)?.name === 'string') {
+    return [(c.opts as { name: string }).name];
+  }
+  // arg1 carries the name: either a def object (`{ name, execute }`) or a factory `(ctx) => tool`.
+  const arg1 = c.factory as unknown;
+  if (arg1 && typeof arg1 === 'object' && typeof (arg1 as { name?: unknown }).name === 'string') {
+    return [(arg1 as { name: string }).name];
+  }
+  if (typeof arg1 === 'function') {
+    const tool = c.factory(ctx);
+    if (tool && typeof (tool as { name?: unknown }).name === 'string') {
+      return [(tool as { name: string }).name];
+    }
+  }
+  return [];
+}
+
+/** A per-plugin S1 registration record: what it declared, what it actually registered, and its status. */
+export interface LoadedOpenClawPlugin {
+  /** Manifest `id` (e.g. `'memory-core'`). */
+  id: string;
+  /** `extensions/<dir>` segment (the entry/manifest location). */
+  dir: string;
+  /** Verbatim manifest `contracts.tools`. */
+  declaredTools: string[];
+  /** Tool names actually captured from the plugin's real `register(api)` (empty iff status ≠ registered). */
+  capturedTools: string[];
+  /**
+   * `registered` — `register(api)` returned and its tools were captured on the host.
+   * `needs-runtime` — `register` reached a runtime SERVICE we must not fake at register time (S1 stops
+   *   here for this plugin); `detail` carries the exact reached path. NEVER set when register succeeded.
+   */
+  status: 'registered' | 'needs-runtime';
+  /** For `needs-runtime`: the exact unwired `runtime.*`/`api.*` path the register reached. */
+  detail?: string;
+}
+
+/**
+ * Run EVERY installed tool-bearing plugin's real `register(api)` on the host and report a per-plugin
+ * record. A plugin whose register returns is `registered` with its captured tool names; a plugin that
+ * reaches an unwired runtime service at register time is `needs-runtime` with the exact path (its throw is
+ * reported, NEVER swallowed as success). The host `api` adds only register-time-SAFE no-op declaration
+ * verbs — never a stub that returns a service the tool's execute needs (that would hide an S3 problem).
+ *
+ * S1 scope: registration breadth only. This does NOT call any tool's `execute` and does NOT run gateway-
+ * coupled tools (browser/canvas/etc. instantiate their lazy tool only to read its declared name).
+ */
+export async function loadAllOpenClawPlugins(): Promise<LoadedOpenClawPlugin[]> {
+  const discovered = discoverToolBearingPlugins();
+  const results: LoadedOpenClawPlugin[] = [];
+
+  for (const p of discovered) {
+    const cfg: Record<string, unknown> = { agents: { defaults: { workspace: '/tmp/oc-s1-register' } } };
+    const { api, captured } = makeHostApi(cfg);
+    // The benign ctx a lazy factory reads to produce its tool (for the name-on-tool capture shape). Same
+    // shape as hostOpenClawTool's ctx; never used to call execute here.
+    const ctx = {
+      config: cfg,
+      getRuntimeConfig: () => cfg,
+      runtimeConfig: cfg,
+      sandboxed: false,
+      oneShotCliRun: false,
+    };
+
+    let entry: OpenClawPluginEntry;
+    try {
+      const mod = (await import(p.entryUrl)) as unknown;
+      entry = resolveEntry(mod);
+    } catch (err) {
+      // An un-importable / register-less entry is a hard discovery blocker — surface it precisely.
+      results.push({
+        id: p.id,
+        dir: p.dir,
+        declaredTools: p.declaredTools,
+        capturedTools: [],
+        status: 'needs-runtime',
+        detail: `import/entry: ${(err as Error).message}`,
+      });
+      continue;
+    }
+
+    try {
+      entry.register(api as never);
+      const capturedTools = captured.flatMap((c) => captureToolNames(c, ctx));
+      results.push({
+        id: p.id,
+        dir: p.dir,
+        declaredTools: p.declaredTools,
+        capturedTools,
+        status: 'registered',
+      });
+    } catch (err) {
+      // register reached an unwired runtime/api path — report it as needs-runtime with the EXACT path
+      // (the loud stub's message carries `runtime.<path>()`), NEVER counted as a success.
+      results.push({
+        id: p.id,
+        dir: p.dir,
+        declaredTools: p.declaredTools,
+        capturedTools: [],
+        status: 'needs-runtime',
+        detail: (err as Error).message,
+      });
+    }
+  }
+
+  return results;
 }
