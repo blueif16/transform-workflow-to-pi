@@ -27,6 +27,7 @@ import type {
   ExecResult,
   SecretResolver,
   PiCommandOptions,
+  ReturnMode,
 } from '../types.js';
 import { defaultSecretResolver } from '../types.js';
 import { DefaultToolRegistry } from '../tools/registry.js';
@@ -102,6 +103,14 @@ export interface RunOptions {
   stallMs?: number;
   /** ms after SIGTERM before SIGKILL. Default 3000 (run.mjs 904–911). */
   killGraceMs?: number;
+  /**
+   * Run-level DEFAULT for the write-then-fence return handshake (any pi node needs it). PRECEDENCE: a
+   * node's own `io.returnMode` wins; else THIS run default applies to every node; else the artifact
+   * heuristic (a node with a satisfied artifact contract ⇒ 'optional', a zero-artifact node ⇒ 'required').
+   * Omit ⇒ the artifact heuristic alone (today's behavior). Set `'required'` to enforce the fenced-JSON
+   * handshake on every node regardless of artifacts; `'optional'` to make it advisory everywhere.
+   */
+  returnProtocol?: ReturnMode;
   /** Resume window: run from the first stage whose phase/label/id contains this (inclusive). */
   from?: string;
   /** Resume window: run up to the last stage whose phase/label/id contains this (inclusive). */
@@ -352,6 +361,8 @@ interface RunContext {
   providerKind: SandboxProvider['kind'];
   /** Per-node secret resolver (the scoped-token / sealing-broker seam). Undefined ⇒ `defaultSecretResolver`. */
   secretResolver?: SecretResolver;
+  /** Run-level default for the return handshake (a node's own `returnMode` wins; else this; else the artifact heuristic). */
+  returnProtocol?: ReturnMode;
 }
 
 /** Read a host-side input file as bytes (for staging a downstream node's reads). */
@@ -543,7 +554,8 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     // artifact (its structured return IS its only output) still REQUIRES the handshake. `returnMode`
     // overrides per node. This releases the redundant-handshake false-error (the W1-class defect) while
     // real corruption is still caught by the missing/schema/checks gates above.
-    const returnMode = node.io.returnMode ?? (node.io.artifacts.length ? 'optional' : 'required');
+    // PRECEDENCE: per-node override → run-level default (ctx.returnProtocol) → the artifact heuristic.
+    const returnMode = node.io.returnMode ?? ctx.returnProtocol ?? (node.io.artifacts.length ? 'optional' : 'required');
     rec.returnMode = returnMode;
 
     // The status ladder (run.mjs 1876–1883): kill/nonzero ⇒ error; then the driver-verified contract
@@ -678,6 +690,7 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     mcpConfig: opts.mcpConfig,
     providerKind: provider.kind,
     secretResolver: opts.secretResolver,
+    returnProtocol: opts.returnProtocol,
     watchdog: {
       nodeTimeoutMs: opts.nodeTimeoutMs ?? 1_800_000,
       stallMs: opts.stallMs ?? 0,
