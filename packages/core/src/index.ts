@@ -35,6 +35,15 @@ export { applyReducer, mergeUpdate, loadState, persistState } from './workflow/s
 export { resolveTokens, resolveAll, MissingChannelError } from './workflow/resolver.js';
 export type { ResolveCtx } from './workflow/resolver.js';
 
+// U7 — deterministic op executors (seed PRE · project/merge POST), re-rooted onto the logical resolver.
+export { driverSeed, resolveSeedTokens } from './workflow/ops/seed.js';
+export type { Seed } from './workflow/ops/seed.js';
+export { ensureDir, projJson, drillPath, readJsonSafe, fileExists, absUnder } from './workflow/ops/util.js';
+export { applyProjectionOp } from './workflow/ops/project.js';
+export type { ProjectionResult } from './workflow/ops/project.js';
+export { applyMergeOp, runMerge } from './workflow/ops/merge.js';
+export type { MergeResult, MergeSpec } from './workflow/ops/merge.js';
+
 // Contract-marker codec (DRIVER-*)
 export { emitMarkers, parseMarkers, markersFromNode } from './contract.js';
 export type { ContractMarkers } from './contract.js';
