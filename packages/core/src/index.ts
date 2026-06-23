@@ -44,6 +44,9 @@ export { OPENCLAW_COMMUNITY_CATALOG, OPENCLAW_PIN } from './tools/openclaw-commu
 
 // Sandbox providers (lifecycle; in-memory reference impl + not-implemented stubs)
 export { InMemorySandbox, InMemorySandboxProvider, NotImplementedProvider } from './sandbox/index.js';
+// Local in-place provider ('local' kind): roots the sandbox AT workdir (no temp dir), dispose is a NO-OP
+// (preserves the user's tree) — the semantic opposite of InMemory (which wipes on dispose).
+export { LocalSandbox, LocalSandboxProvider } from './sandbox/local.js';
 // Bounded stdout/stderr capture (guards every provider against the cumulative-snapshot string blow-up)
 export { tailAppend, DEFAULT_CAPTURE_MAX } from './sandbox/capture.js';
 // Seatbelt read-scope provider (macOS)
