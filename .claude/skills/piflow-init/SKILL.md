@@ -57,11 +57,18 @@ that is how a silent, wrong workflow gets built.
   ship the template.
 - **New conditions are a new row + a new reference + (if programmatic) a new script — never more prose here.**
 
-> **Forward direction (NOT built — shape undecided).** The intended endgame is a **canonical-template store**:
-> the most canonical template lives once, a store retrieves it and dumps it into the product folder, and each
-> workflow is an inheritor that duplicates the full template and fills its runtime state on top. The final shape
-> is still open — see the design canon under `docs/design/` and the handoffs under `.tasks/`. **Do not build the
-> store or finalize the canonical template here; INIT today is PORT (+ the deferred IMPORT/COMPOSE rows).**
+> **The per-run shape (designed, partially confident — not a separate "store" to build).** There is no
+> database/registry layer: the TEMPLATE itself (`.piflow/<wf>/template/`, D8) is the canonical source — authored
+> once here, customized per workflow. Each run is a DUPLICATION of it: **init-RUN** (`init(${RUN})`, D7/D9)
+> instantiates a thread by materializing `${RUN}/.pi/` and copying each node's per-node configs (`prompt.md` ·
+> `tools` · `mcp` · `node.json`) into `${RUN}/.pi/nodes/<id>/`, then filling the runtime STATE on top
+> (`state.json` channels + the `io.json` ledger). So a run = a regenerable instance of the template (template
+> COMMITTED; `runs/<id>/` GITIGNORED). This is the canon's **two inits** distinction — init-TEMPLATE (authoring,
+> THIS skill) vs init-RUN (runtime instantiation). The shape is specified in
+> `docs/design/sdk-canonical-build-plan.md` (D7 per-run `.pi/` layout · D8 source-of-truth · D9 `.piflow/`
+> namespaces) + `docs/design/template-format.md` §10, and **partially landed** (U6a); the template loader +
+> init-RUN (U6b–U8) are the remaining build, with open naming nits (`.pi/` vs `_meta/`). **INIT today is PORT
+> (+ the deferred IMPORT/COMPOSE rows); do not finalize the template format or those open items here.**
 
 ## Standing up the project (after the template exists)
 The engine is the **`@piflow/core`** package; a project does NOT copy an engine, it installs the package and
