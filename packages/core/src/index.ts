@@ -27,8 +27,13 @@ export { loadTemplate, TemplateError } from './workflow/template/loader.js';
 export type { LoadTemplateOpts } from './workflow/template/loader.js';
 
 // RunState (D6): the per-thread channel object + its reducers + the only state I/O. `RunState`/`Reducer`
-// types come via `export * from './types.js'` above. The `${state}` resolver / `promote` op land in U7.
+// types come via `export * from './types.js'` above.
 export { applyReducer, mergeUpdate, loadState, persistState } from './workflow/state.js';
+
+// U7 — the SINGLE runtime token resolver: `{{RUN}}`/`{{WORKSPACE}}`/`{{state.<channel>}}` made physical,
+// applied uniformly to every marker (retires the `BASE_ROOT→wtRoot` regex + `RUN_CWD`-relative tokens).
+export { resolveTokens, resolveAll, MissingChannelError } from './workflow/resolver.js';
+export type { ResolveCtx } from './workflow/resolver.js';
 
 // Contract-marker codec (DRIVER-*)
 export { emitMarkers, parseMarkers, markersFromNode } from './contract.js';
