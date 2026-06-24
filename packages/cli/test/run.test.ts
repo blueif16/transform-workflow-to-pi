@@ -56,6 +56,11 @@ describe('parseRunArgs — the run subcommand flag surface', () => {
     expect(p.args.eq).toBe('a=b=c');
   });
 
+  it('reads --profile <name>', () => {
+    const p = parseRunArgs([TEMPLATE_MIN, '--run', 'g1', '--profile', 'companion']);
+    expect(p.profile).toBe('companion');
+  });
+
   it('reads the real-run flags: --sandbox, --provider, --thinking, --model, --workspace, --from/--until', () => {
     const p = parseRunArgs([
       TEMPLATE_MIN,
@@ -193,6 +198,7 @@ describe('piflow run — LIVE branch routes through core runFromTemplate, thread
         model: 'MiniMax-M3',
         from: 's2',
         until: 's5',
+        profile: 'companion',
       },
       deps,
     );
@@ -208,6 +214,7 @@ describe('piflow run — LIVE branch routes through core runFromTemplate, thread
     expect(optsSeen?.model).toBe('MiniMax-M3');
     expect(optsSeen?.from).toBe('s2');
     expect(optsSeen?.until).toBe('s5');
+    expect(optsSeen?.profile).toBe('companion');
     // --sandbox local ⇒ a real LocalSandboxProvider instance is constructed and passed.
     expect(optsSeen?.provider).toBeInstanceOf(LocalSandboxProvider);
     expect((optsSeen?.provider as { kind?: string } | undefined)?.kind).toBe('local');
@@ -264,5 +271,64 @@ describe('runFailureReport — the loud verdict for a finished failed run', () =
   it('returns null on a healthy run (ok) and on a still-running run (no false alarm)', () => {
     expect(runFailureReport({ done: true, ok: true, nodes: {} } as never, 'out/x')).toBeNull();
     expect(runFailureReport({ done: false, ok: null, nodes: {} } as never, 'out/x')).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (E) PROFILE ELISION — the dry-run plan compiles against the ACTIVE profile (declared in meta.json as
+// DATA), so the realized plan reflects the SAME reduced DAG the live run would execute. We clone
+// template-min and inject a `profiles` block that elides the `build` phase (both leaf nodes), leaving
+// only the `classify` root. Drop the applyProfileByName call in run.ts ⇒ these go red (the leaves reappear).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('piflow run --dry-run --profile — the plan reflects the elided DAG', () => {
+  let PROFILED: string; // a template-min clone with a profiles block
+  let pOut: string;
+  let pWs: string;
+  beforeAll(async () => {
+    PROFILED = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-cli-profiled-tpl-'));
+    await fs.cp(FIXTURE, PROFILED, { recursive: true });
+    const meta = JSON.parse(await fs.readFile(path.join(PROFILED, 'meta.json'), 'utf8'));
+    meta.profiles = { full: {}, lean: { elidePhases: ['build'] } };
+    meta.defaultProfile = 'full';
+    await fs.writeFile(path.join(PROFILED, 'meta.json'), JSON.stringify(meta, null, 2));
+    pOut = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-cli-profiled-out-'));
+    pWs = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-cli-profiled-ws-'));
+  });
+  afterAll(async () => {
+    for (const d of [PROFILED, pOut, pWs]) await fs.rm(d, { recursive: true, force: true });
+  });
+
+  it('--profile lean ELIDES the build-phase leaves (only the classify root survives in the plan)', async () => {
+    const lines: string[] = [];
+    await runTemplate(
+      { templateDir: PROFILED, dryRun: true, run: 'lean', args: { projectDir: pOut }, workspace: pWs, outDir: pOut, profile: 'lean' },
+      { print: (s) => lines.push(s) },
+    );
+    const out = lines.join('\n');
+    expect(out).toContain('[profile: lean]');
+    expect(out).toContain('w0-classify');     // the root survives
+    expect(out).not.toContain('w2a-levels');  // the build leaves are ELIDED
+    expect(out).not.toContain('w2b-assets');
+    expect(out).toContain('1 nodes');          // exactly one node remains
+  });
+
+  it('the DEFAULT profile (full = {}) leaves the DAG unchanged — all three nodes present', async () => {
+    const lines: string[] = [];
+    await runTemplate(
+      { templateDir: PROFILED, dryRun: true, run: 'full', args: { projectDir: pOut }, workspace: pWs, outDir: pOut },
+      { print: (s) => lines.push(s) },
+    );
+    const out = lines.join('\n');
+    for (const id of ['w0-classify', 'w2a-levels', 'w2b-assets']) expect(out).toContain(id);
+    expect(out).toContain('3 nodes');
+  });
+
+  it('an UNKNOWN --profile errors loudly (lists the declared names), never a silent full DAG', async () => {
+    await expect(
+      runTemplate(
+        { templateDir: PROFILED, dryRun: true, run: 'ghost', args: {}, workspace: pWs, outDir: pOut, profile: 'ghost' },
+        { print: () => {} },
+      ),
+    ).rejects.toThrow(/unknown profile "ghost".*full.*lean/);
   });
 });
