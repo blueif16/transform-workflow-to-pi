@@ -1,6 +1,7 @@
 // Ported from game-omni pi-runner/hooks/test/project.test.mjs — the GENERIC projection transforms
-// (copy | assemble | merge), re-rooted onto the U7 resolver (paths under {{RUN}}). The game-omni-specific
-// `union` op (asset-slot + genre-record + golden-blueprint) stays a CONSUMER concern, NOT in core (flagged).
+// (copy | assemble | merge | union), re-rooted onto the U7 resolver (paths under {{RUN}}). The `union` op
+// is GENERIC: all of its specifics (dedup key, defaults, path convention, carry, envelope) live in the
+// op DATA, so the consumer (a registry record's `projections`) supplies them — core carries no field names.
 import { describe, it, expect, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -195,15 +196,31 @@ describe('applyProjectionOp — unknown', () => {
   });
 });
 
-// ---------- union (asset-slot manifest) ----------
-// The .mjs union goldens read out/p02 + the live templates/genres.json (absent in piflow), so those two cases
-// are re-grounded onto INLINE fixtures here; the self-contained .mjs dedup case ports verbatim.
+// ---------- union (generic dedup-union manifest, all specifics in the op DATA) ----------
+// The op is GENERIC — the dedup key, defaults, computed-path convention, carry whitelist, const row, and
+// envelope are all supplied by the op-spec DATA (the asset convention that USED to be hard-coded in core).
+// These two cases drive the data-driven shape; the EXPECTED OUTPUT is the oracle (it proves the relocation
+// of the specifics into DATA is byte-identical to the old hard-coded behavior).
+const ASSET_UNION = {
+  key: 'slot',
+  path: {
+    byField: 'type',
+    dir: { sprite: 'sprites', animation: 'sprites', image: 'images', tileset: 'tiles', background: 'backgrounds', audio: 'audio', model: 'models' },
+    ext: { audio: 'mp3', model: 'glb' },
+    defaultDir: 'sprites',
+    defaultExt: 'png',
+  },
+  defaults: { width: 32, height: 32 },
+  carry: ['type', 'width', 'height', 'depth', 'frames', 'entityIds', 'description'],
+  row: { status: 'pending' },
+  envelope: { archetype: 'meta.archetype', assetsDir: { value: 'public/assets' } },
+  itemsKey: 'slots',
+};
 describe('applyProjectionOp — union', () => {
-  // Re-grounded p02 golden: an assetList with conventional rows + an entities[].assetSlot ref carrying one
-  // dup (deduped) and one NEW slot. Asserts the deduped rows, the assetDefaultPath convention, the
-  // {archetype,assetsDir,slots} shape, the constant row key (status:"pending"), and that absent
-  // depth/frames/entityIds are omitted. NO `schema` field — the ajv gate is deferred (see SCOPE NOTE).
-  it('builds the index.json manifest: deduped rows, conventional paths, const row, omitted optionals', async () => {
+  // An assetList with conventional rows + an entities[].assetSlot ref carrying one dup (deduped) and one
+  // NEW slot. Asserts the deduped rows, the data-driven path convention, the {archetype,assetsDir,slots}
+  // envelope, the constant row key (status:"pending"), and that absent depth/frames/entityIds are omitted.
+  it('builds the manifest: deduped rows, data-driven paths, const row, omitted optionals', async () => {
     tmp = await mkTmp();
     const spec = {
       meta: { archetype: 'platformer' },
@@ -219,8 +236,7 @@ describe('applyProjectionOp — union', () => {
     };
     const opSpec = {
       to: 'index.json',
-      union: ['assetList', 'entities[].assetSlot'],
-      row: { status: 'pending' },
+      union: { ...ASSET_UNION, from: ['assetList', 'entities[].assetSlot'] },
     };
     const res = await applyProjectionOp('index', opSpec, spec, tmp);
     expect({ op: res.op, wrote: res.wrote, rows: res.rows }).toEqual({ op: 'union', wrote: true, rows: 4 });
@@ -266,8 +282,8 @@ describe('applyProjectionOp — union', () => {
     }
   });
 
-  // Ported VERBATIM from the .mjs (already self-contained, inline fixtures): a slot present in BOTH refs
-  // appears once; the entities-sourced row gets the width/height/path defaults and no description.
+  // A slot present in BOTH refs appears once; the entities-sourced row gets the width/height/path defaults
+  // and no description.
   it('dedups across the two union refs (a slot in BOTH appears once)', async () => {
     tmp = await mkTmp();
     const spec = {
@@ -275,7 +291,7 @@ describe('applyProjectionOp — union', () => {
       assetList: [{ slot: 'hero', type: 'sprite', width: 10, height: 20 }],
       entities: [{ assetSlot: 'hero' }, { assetSlot: 'coin', type: 'sprite' }], // hero dup ⇒ dropped, coin new
     };
-    const opSpec = { to: 'index.json', union: ['assetList', 'entities[].assetSlot'], row: { status: 'pending' } };
+    const opSpec = { to: 'index.json', union: { ...ASSET_UNION, from: ['assetList', 'entities[].assetSlot'] } };
     const res = await applyProjectionOp('index', opSpec, spec, tmp);
     expect(res.rows).toBe(2); // hero (from assetList) + coin (from entities); hero NOT counted twice
     const out = (await readJson(path.join(tmp, 'index.json'))) as any;
@@ -292,11 +308,11 @@ describe('applyProjectionOp — union', () => {
   });
 });
 
-// ---------- runProjection (marker → genre record → ops) ----------
+// ---------- runProjection (marker → registry record → ops) ----------
 describe('runProjection', () => {
-  // Re-grounded live test: one inline genre record running all 3 op kinds (copy/merge/union) over an inline
-  // blueprint + a seeded gameConfig target. Asserts summary.genre and that all 3 ops wrote.
-  it('resolves the genre record and runs all 3 ops (runtimeData/gameConfig/index)', async () => {
+  // One inline registry record running all 3 op kinds (copy/merge/union) over an inline source + a seeded
+  // merge target. Asserts summary.key and that all 3 ops wrote.
+  it('resolves the registry record and runs all 3 ops (runtimeData/gameConfig/index)', async () => {
     tmp = await mkTmp();
     await writeJson(path.join(tmp, 'bp.json'), {
       meta: { archetype: 'demo', failModel: 'respawn' },
@@ -316,14 +332,14 @@ describe('runProjection', () => {
           projections: {
             runtimeData: { to: 'src/level.json', copy: 'layout' },
             gameConfig: { to: 'src/gameConfig.json', merge: { wrapInto: 'playerConfig', from: 'config', literals: { failModel: 'meta.failModel' } } },
-            index: { to: 'index.json', union: ['assetList', 'entities[].assetSlot'], row: { status: 'pending' } },
+            index: { to: 'index.json', union: { ...ASSET_UNION, from: ['assetList', 'entities[].assetSlot'] } },
           },
         },
       ],
     });
-    const proj = { source: 'bp.json', genreToken: 'demo', mapRef: 'genres.json' };
+    const proj = { source: 'bp.json', key: 'demo', mapRef: 'genres.json' };
     const summary = await runProjection(proj, tmp);
-    expect(summary?.genre).toBe('demo');
+    expect(summary?.key).toBe('demo');
     const byOp = Object.fromEntries((summary!.ops ?? []).map((o) => [o.op, o]));
     expect(byOp.copy.wrote).toBe(true);
     expect(byOp.merge.wrote).toBe(true);
@@ -334,31 +350,31 @@ describe('runProjection', () => {
     expect(((await readJson(path.join(tmp, 'index.json'))) as any).slots.map((s: any) => s.slot)).toEqual(['hero', 'coin']);
   });
 
-  it('skips gracefully when the genre record is absent', async () => {
+  it('skips gracefully when the registry record is absent', async () => {
     tmp = await mkTmp();
     await writeJson(path.join(tmp, 'genres.json'), { genres: [{ id: 'platformer', projections: {} }] });
-    const proj = { source: 'x.json', genreToken: 'no-such-genre', mapRef: 'genres.json' };
+    const proj = { source: 'x.json', key: 'no-such-record', mapRef: 'genres.json' };
     const summary = await runProjection(proj, tmp);
-    expect(summary?.skipped).toMatch(/no genre record/);
+    expect(summary?.skipped).toMatch(/no registry record/);
   });
 
-  // GENRE-PREFIX fallback: record ids are compound "archetype:subgenre" but the token is the bare archetype,
-  // so a single-genre archetype needs the exact→prefix fallback or its whole projection is silently skipped.
-  it('falls back from exact id to the archetype PREFIX for a bare-archetype token', async () => {
+  // NAMESPACE-PREFIX fallback: record ids may be compound "<key>:<suffix>" but the lookup key is the bare
+  // prefix, so a single-record key needs the exact→prefix fallback or its whole projection is silently skipped.
+  it('falls back from exact id to the namespace PREFIX for a bare key', async () => {
     tmp = await mkTmp();
     await writeJson(path.join(tmp, 'genres.json'), {
       genres: [{ id: 'paddle_ball:brick-breaker', projections: { rt: { to: 'out.json', copy: 'layout' } } }],
     });
     await writeJson(path.join(tmp, 'bp.json'), { layout: { a: 1 } });
-    const proj = { source: 'bp.json', genreToken: 'paddle_ball', mapRef: 'genres.json' };
+    const proj = { source: 'bp.json', key: 'paddle_ball', mapRef: 'genres.json' };
     const summary = await runProjection(proj, tmp);
     expect(summary?.skipped).toBeUndefined(); // exact-only ⇒ would skip; prefix fallback resolves it
-    expect(summary?.genre).toBe('paddle_ball');
+    expect(summary?.key).toBe('paddle_ball');
     expect(summary?.ops?.[0].wrote).toBe(true);
     expect(await readJson(path.join(tmp, 'out.json'))).toEqual({ a: 1 });
   });
 
-  it('prefers an EXACT id over an archetype-prefix sibling', async () => {
+  it('prefers an EXACT id over a namespace-prefix sibling', async () => {
     tmp = await mkTmp();
     await writeJson(path.join(tmp, 'genres.json'), {
       genres: [
@@ -367,14 +383,14 @@ describe('runProjection', () => {
       ],
     });
     await writeJson(path.join(tmp, 'bp.json'), { layout: { a: 1 } });
-    const proj = { source: 'bp.json', genreToken: 'platformer', mapRef: 'genres.json' };
+    const proj = { source: 'bp.json', key: 'platformer', mapRef: 'genres.json' };
     const summary = await runProjection(proj, tmp);
     expect(summary?.skipped).toBeUndefined();
     expect(await fs.stat(path.join(tmp, 'right.json')).then(() => true, () => false)).toBe(true); // exact ran
     expect(await fs.stat(path.join(tmp, 'wrong.json')).then(() => true, () => false)).toBe(false); // prefix did not
   });
 
-  it('picks the FIRST when a bare archetype maps to multiple subgenres', async () => {
+  it('picks the FIRST when a bare key maps to multiple namespaced records', async () => {
     tmp = await mkTmp();
     await writeJson(path.join(tmp, 'genres.json'), {
       genres: [
@@ -383,7 +399,7 @@ describe('runProjection', () => {
       ],
     });
     await writeJson(path.join(tmp, 'bp.json'), { k: { v: 1 } });
-    const proj = { source: 'bp.json', genreToken: 'z', mapRef: 'genres.json' };
+    const proj = { source: 'bp.json', key: 'z', mapRef: 'genres.json' };
     const summary = await runProjection(proj, tmp);
     expect(summary?.skipped).toBeUndefined();
     expect(await fs.stat(path.join(tmp, 'first.json')).then(() => true, () => false)).toBe(true); // z:one ran
