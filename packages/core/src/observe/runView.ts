@@ -171,6 +171,10 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
 
   const nodes: RunViewNode[] = [];
   const audit: NodeAudit[] = [];
+  // Declared I/O ledger per node (io.json reads[]/writes[]) — the data-flow edge source. Unlike the
+  // events stream, io.json PERSISTS across reuse and predates per-node event capture, so the DAG wires
+  // every node, not just the ones that happened to record events.
+  const ioByNode = new Map<string, { reads: string[]; writes: string[] }>();
   for (const [id, rec] of Object.entries(rj.nodes || {})) {
     const replay = replayEvents(runDir, id);
     const { rich } = replay.acc.finalize(rec);
@@ -183,7 +187,14 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
 
     let phase: string | null = rec.phase ?? null;
     const ioFile = path.join(runDir, '.pi', 'nodes', id, 'io.json');
-    if (fssync.existsSync(ioFile)) { try { phase = (JSON.parse(fssync.readFileSync(ioFile, 'utf8')).phase ?? phase) as string | null; } catch { /* keep fallback */ } }
+    if (fssync.existsSync(ioFile)) {
+      try {
+        const io = JSON.parse(fssync.readFileSync(ioFile, 'utf8')) as { phase?: string | null; reads?: { path?: unknown }[]; writes?: { path?: unknown }[] };
+        phase = (io.phase ?? phase) as string | null;
+        const paths = (arr: { path?: unknown }[] | undefined) => (arr ?? []).map((x) => x?.path).filter((p): p is string => typeof p === 'string');
+        ioByNode.set(id, { reads: paths(io.reads), writes: paths(io.writes) });
+      } catch { /* keep fallback */ }
+    }
 
     const reads: ReadRef[] = rich.reads.map((r) => {
       const dp = displayPath(r.path);
@@ -221,17 +232,37 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
   });
   for (const st of stages) st.nodeIds.forEach((id, lane) => { const n = nodes.find((x) => x.id === id); if (n) { n.stageIndex = st.index; n.lane = lane; } });
 
-  // data-flow edges: a producer's write path read back by a consumer
+  // data-flow edges = the DECLARED io.json ledger UNION the events-observed I/O. io.json persists across
+  // reuse and predates per-node event capture (so it wires nodes the event stream misses); events cover
+  // runs whose io.json ledger wasn't written (legacy/partial captures, e.g. an empty `{}` io.json). The
+  // union is strictly the most complete topology, and it unifies this view with observe/read.ts (io.json-
+  // only) so every renderer agrees.
+  //
+  // Keyed on the ABSOLUTE path (the two sources emit byte-identical absolute strings), which (a) lets a
+  // shared edge from both sources DEDUPE to one — never a double edge — and (b) cannot collide two distinct
+  // files that share a basename (a display-path key could). CONFLICT PRECEDENCE: the union never yields a
+  // duplicate edge (deduped by from|to|path). The only contest is a path claimed by two WRITERS; it is
+  // resolved deterministically — the declared io.json writer wins over an events-observed one, and within a
+  // source the first writer in node order wins (matching read.ts's "first writer wins"). A well-formed
+  // workflow has exactly one producer per path, so this is a guard, not a routine branch.
+  const writerOf = new Map<string, string>();                     // absolute path → producing node (first wins)
+  const claim = (nodeId: string, abs: string) => { if (abs && !writerOf.has(abs)) writerOf.set(abs, nodeId); };
+  for (const n of nodes) for (const p of ioByNode.get(n.id)?.writes ?? []) claim(n.id, p);   // declared first…
+  for (const n of nodes) for (const w of n.writes) claim(n.id, w.path);                       // …then observed
+  const readsOf = (n: RunViewNode): string[] => [
+    ...(ioByNode.get(n.id)?.reads ?? []),
+    ...n.reads.map((r) => r.path),
+  ];
   const seen = new Set<string>();
   const edges: RunViewEdge[] = [];
-  for (const from of nodes) {
-    const w = new Set(from.writes.map((x) => x.displayPath));
-    for (const to of nodes) {
-      if (from.id === to.id) continue;
-      for (const r of to.reads) {
-        const key = `${from.id}|${to.id}|${r.displayPath}`;
-        if (w.has(r.displayPath) && !seen.has(key)) { seen.add(key); edges.push({ from: from.id, to: to.id, path: r.displayPath }); }
-      }
+  for (const n of nodes) {
+    for (const abs of readsOf(n)) {
+      const from = writerOf.get(abs);
+      if (!from || from === n.id) continue;
+      const key = `${from}|${n.id}|${abs}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({ from, to: n.id, path: displayPath(abs) });
     }
   }
 
