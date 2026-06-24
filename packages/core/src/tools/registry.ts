@@ -15,6 +15,7 @@ export const BUILTIN_TOOLS: ToolEntry[] = [
   { address: 'fs:find', source: 'builtin', piName: 'find', description: 'Find files by name.', origin: { kind: 'native' } },
   { address: 'fs:ls', source: 'builtin', piName: 'ls', description: 'List a directory.', origin: { kind: 'native' } },
   { address: 'sh:bash', source: 'builtin', piName: 'bash', description: 'Run a shell command.', origin: { kind: 'native' } },
+  { address: 'pi:submit_result', source: 'builtin', piName: 'submit_result', description: 'Submit the structured node result (the return handshake).', origin: { kind: 'native' } },
 ];
 
 export class DefaultToolRegistry implements ToolRegistry {

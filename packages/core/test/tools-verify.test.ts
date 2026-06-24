@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { verifyToolBinding, BUILTIN_TOOLS, mcpToolsToEntries } from '../src/index.js';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { verifyToolBinding, BUILTIN_TOOLS, DefaultToolRegistry, mcpToolsToEntries } from '../src/index.js';
 import type { ToolEntry } from '../src/index.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const MCP = mcpToolsToEntries('github', [
   { name: 'create_issue', description: 'Open an issue.' },
@@ -47,5 +52,33 @@ describe('verifyToolBinding — the per-node bind pre-check', () => {
     expect(r.ok).toBe(false);
     expect(r.collisions).toEqual([{ piName: 'dup', addresses: ['a:dup', 'b:dup'] }]);
     expect(r.issues.join(' ')).toMatch(/collision|collide/i);
+  });
+});
+
+// S0 — the migrated nodes declare `submit_result` (a pi-native builtin) in tools.allow; it MUST bind
+// against the default catalog (the BUILTIN_TOOLS set) exactly like `read`/`bash`, by its bare piName.
+// Before submit_result is registered, this is the live tool-bind block that halts a real run at W0.
+describe('verifyToolBinding — submit_result binds for the migrated nodes (S0)', () => {
+  it('binds the real w0-classify tools.allow (incl submit_result) against the default registry', async () => {
+    // Read the COMMITTED game-omni template's W0 node — its tools.allow is the bare-name vocabulary a
+    // live run binds. The default registry (what runWorkflow uses) is the catalog the bind check runs over.
+    const w0 = JSON.parse(
+      await fs.readFile(
+        path.join(HERE, '..', '..', '..', '.piflow', 'game-omni', 'template', 'nodes', 'w0-classify', 'node.json'),
+        'utf8',
+      ),
+    ) as { tools: { allow: string[]; deny?: string[] } };
+    expect(w0.tools.allow).toContain('submit_result'); // guard: this test asserts the real declared shape
+
+    const r = verifyToolBinding(w0.tools, new DefaultToolRegistry().list());
+    expect(r.ok).toBe(true);
+    expect(r.missing).toEqual([]);
+    expect(r.bound).toContain('submit_result');
+  });
+
+  it('submit_result is in the default BUILTIN_TOOLS catalog with its bare piName', () => {
+    const e = BUILTIN_TOOLS.find((t) => t.piName === 'submit_result');
+    expect(e).toBeTruthy();
+    expect(e!.source).toBe('builtin');
   });
 });
