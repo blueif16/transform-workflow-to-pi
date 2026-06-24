@@ -21,7 +21,7 @@ const baseName = (p) => (typeof p === 'string' ? p.split('/').pop() : p);
 
 // Pull the human-readable text out of a tool result ({ content: [{type:'text', text}] }), capped — so
 // the HUD's "hover a read → see the file" shows the REAL bytes the agent read, not a placeholder.
-const PREVIEW_CAP = 1200;
+const PREVIEW_CAP = 8000;
 function resultText(result) {
   if (!result || !Array.isArray(result.content)) return undefined;
   const text = result.content.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('\n');

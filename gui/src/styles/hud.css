@@ -14,11 +14,11 @@
 /* --- region grid -------------------------------------------------------- */
 .ds-hud {
   width: 100%;
-  max-height: 100%;
+  height: 100%;
   pointer-events: auto;
   display: grid;
   grid-template-columns: minmax(200px, 260px) minmax(0, 1fr) minmax(200px, 280px);
-  grid-template-rows: auto minmax(220px, 40vh) auto;
+  grid-template-rows: auto minmax(220px, 1fr) auto;
   grid-template-areas:
     "top top top"
     "left mid right"
@@ -29,7 +29,17 @@
   outline: none;
 }
 .ds-hud__top { grid-area: top; align-self: start; justify-self: center; width: clamp(380px, 30%, 620px); display: grid; grid-template-columns: 1fr 1fr; gap: var(--ds-space-3); }
-.ds-hud__mid { grid-area: mid; align-self: stretch; position: relative; min-width: 0; min-height: 0; display: flex; }
+.ds-hud__mid { grid-area: mid; align-self: stretch; position: relative; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; }
+/* LEFT input sources — no wrapper card; each source is its own small box, files clickable */
+.ds-hud__left { grid-area: left; align-self: center; display: flex; flex-direction: column; gap: var(--ds-space-3); max-height: 100%; overflow: auto; min-height: 0; }
+.ds-source { border: 1px solid var(--ds-border-hairline); border-left: 3px solid var(--scope); border-radius: var(--ds-radius-md); background: var(--ds-bg-surface); box-shadow: var(--ds-shadow-xs); padding: var(--ds-space-2); }
+.ds-source__head { display: flex; align-items: center; gap: var(--ds-space-2); font-family: var(--ds-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary); margin-bottom: 4px; }
+.ds-source__head svg { color: var(--scope); flex: 0 0 auto; }
+.ds-source__count { margin-left: auto; }
+.ds-source__files { display: flex; flex-direction: column; gap: 1px; }
+.ds-filebtn { display: block; width: 100%; text-align: left; padding: 3px 6px; border: none; border-radius: var(--ds-radius-sm); background: transparent; font-family: var(--ds-font-mono); font-size: 11px; color: var(--ds-text-secondary); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ds-filebtn:hover { background: var(--ds-bg-sunken); color: var(--ds-text-primary); }
+.ds-filebtn.is-sel { background: var(--ds-bg-sunken); color: var(--ds-text-primary); box-shadow: inset 2px 0 0 var(--ds-accent); }
 
 /* --- a flat region card ------------------------------------------------- */
 .ds-hud-region {
@@ -51,6 +61,8 @@
 .ds-hud-region:focus-visible { border-color: var(--ds-accent); box-shadow: 0 0 0 1px var(--ds-accent-ring), var(--ds-shadow-sm); }
 /* inputs + outputs ride the vertical center of the middle row */
 .ds-hud-region[data-area="left"], .ds-hud-region[data-area="right"] { align-self: center; }
+/* the two top cards stretch to one shared height (override the content-size default) */
+.ds-hud__top .ds-hud-region { align-self: stretch; }
 /* bottom progress: drop the header chrome — the bar IS the row */
 .ds-hud-region--bare .ds-hud-region__body { padding: var(--ds-space-3) var(--ds-space-4); }
 .ds-hud-region__label {
@@ -113,15 +125,15 @@
 .ds-out__meta { margin-left: auto; flex: 0 0 auto; color: var(--ds-text-tertiary); }
 
 /* --- BOTTOM: progress --------------------------------------------------- */
-.ds-prog { display: flex; align-items: center; gap: var(--ds-space-4); }
-.ds-prog .ds-progress { flex: 1 1 auto; height: 30px; border-radius: var(--ds-radius-md); }
+.ds-prog { display: flex; justify-content: center; }
+.ds-prog .ds-progress { flex: 0 0 60%; width: 60%; height: 30px; border-radius: var(--ds-radius-md); }
 .ds-prog .ds-progress__fill { border-radius: inherit; }
 .ds-prog__pct { flex: 0 0 auto; font-family: var(--ds-font-mono); font-size: var(--ds-text-sm); color: var(--ds-text-accent); }
 .ds-prog__meta { flex: 0 0 auto; font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
 .ds-prog__meta b { color: var(--ds-text-secondary); font-weight: var(--ds-weight-medium); }
 
 /* --- MIDDLE: identity card (glass, morph target) ------------------------ */
-.ds-hud__ident { position: relative; flex: 1 1 auto; display: flex; }
+.ds-hud__ident { position: relative; flex: 0 0 auto; width: 100%; max-width: 520px; display: flex; }
 .ds-hud__ident .ds-hud-card__body { padding: var(--ds-space-4); display: flex; flex-direction: column; gap: var(--ds-space-2); width: 100%; }
 .ds-hud__ident-row { display: flex; align-items: center; gap: var(--ds-space-3); }
 .ds-hud__ident-id { min-width: 0; margin-right: auto; }
@@ -132,8 +144,12 @@
 
 /* --- MIDDLE: the hover-expanded detail overlay -------------------------- */
 .ds-hud-detail { position: absolute; inset: 0; display: flex; flex-direction: column; z-index: 2; overflow: hidden; }
-.ds-hud-detail__head { padding: var(--ds-space-2) var(--ds-space-4); border-bottom: 1px solid var(--ds-border-hairline); font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary); }
+.ds-hud-detail__head { display: flex; align-items: center; gap: var(--ds-space-2); padding: var(--ds-space-2) var(--ds-space-4); border-bottom: 1px solid var(--ds-border-hairline); font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
+.ds-hud-detail__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-detail-x { margin-left: auto; flex: 0 0 auto; display: inline-flex; padding: 2px; border: none; background: transparent; color: var(--ds-text-tertiary); cursor: pointer; border-radius: var(--ds-radius-sm); }
+.ds-detail-x:hover { color: var(--ds-text-primary); background: var(--ds-bg-sunken); }
 .ds-hud-detail__body { padding: var(--ds-space-4); overflow: auto; flex: 1 1 auto; min-height: 0; }
+.ds-fileview { flex: 1 1 auto; min-height: 0; max-height: 100%; overflow: auto; margin: 0; }
 .ds-hud-empty { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); padding: var(--ds-space-2) 0; }
 
 /* model detail — key/value */

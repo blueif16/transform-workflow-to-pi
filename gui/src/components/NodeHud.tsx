@@ -20,10 +20,12 @@ import * as motion from "motion/react-client";
 import { Button } from "./Button";
 import { ProgressBar } from "./ProgressBar";
 import { StatusPill, HudCorners } from "./HudBits";
+import { MarkdownReader } from "./MarkdownReader";
 import { expandTransition, easing } from "../motion/transitions";
 import type { FlowNodeData } from "./WorkflowNode";
-import { formatMs, formatBytes, type RunViewNode, type ScopeKind } from "../data/runView";
+import { formatMs, formatBytes, type RunViewNode, type ScopeKind, type ReadRef } from "../data/runView";
 import "../styles/hud.css";
+import "../styles/reader.css";
 
 type RegionKey = "model" | "tools" | "files" | "output" | "progress";
 const REGION_KEYS: readonly RegionKey[] = ["model", "tools", "files", "output", "progress"];
@@ -34,6 +36,16 @@ const initialPeek: RegionKey | null =
     ? (REGION_KEYS as readonly string[]).includes(new URLSearchParams(window.location.search).get("peek") ?? "")
       ? (new URLSearchParams(window.location.search).get("peek") as RegionKey)
       : null
+    : null;
+
+// Deep-link a selected input file via `?file=<index>` (handy + how the file view is screenshotted).
+const initialFile: number | null =
+  typeof window !== "undefined"
+    ? (() => {
+        const v = new URLSearchParams(window.location.search).get("file");
+        const n = v == null ? NaN : Number(v);
+        return Number.isInteger(n) && n >= 0 ? n : null;
+      })()
     : null;
 
 const SCOPE_META: Record<ScopeKind, { label: string; hint: string }> = {
@@ -64,13 +76,16 @@ export interface NodeHudProps {
 export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) {
   const rv = data.rv;
   const status = data.status ?? "idle";
-  // focus drives which region is expanded into MIDDLE. Hover sets it; `?peek=<region>` deep-links it.
+  // focus drives which region is HOVER-expanded into MIDDLE (top/right/bottom). `?peek=` deep-links it.
   const [focus, setFocus] = useState<RegionKey | null>(initialPeek);
+  // fileIdx is the CLICK-selected input file whose content shows in MIDDLE (persists until closed).
+  const [fileIdx, setFileIdx] = useState<number | null>(initialFile);
   const clearTimer = useRef<number | undefined>(undefined);
 
   // hover bridge: keep a region open while the cursor travels from it into the MIDDLE detail
   const hold = (k: RegionKey) => { window.clearTimeout(clearTimer.current); setFocus(k); };
   const release = () => { window.clearTimeout(clearTimer.current); clearTimer.current = window.setTimeout(() => setFocus(null), 160); };
+  const selectFile = (i: number) => { window.clearTimeout(clearTimer.current); setFocus(null); setFileIdx(i); };
 
   // progress: a completed node is 100%; the ETA is the mean of prior runs (rv.expectedMs)
   const done = status === "success" || status === "error";
@@ -87,7 +102,20 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
   }
 
   const breakdown = Object.entries(rv.toolBreakdown).sort((a, b) => b[1] - a[1]);
-  const maxCount = Math.max(1, ...breakdown.map(([, c]) => c));
+
+  // input files grouped by source, each carrying its global index into rv.reads (for click→select)
+  const sources = rv.scopes.map((s) => ({
+    kind: s.kind,
+    label: SCOPE_META[s.kind]?.label ?? s.label,
+    items: rv.reads.map((r, i) => ({ r, i })).filter(({ r }) => r.scope === s.kind),
+  }));
+
+  // what MIDDLE overlays over the identity: a hover region (transient) wins, else a clicked file
+  const overlay = focus
+    ? { kind: "region" as const, key: focus, title: DETAIL_TITLE[focus], region: focus }
+    : fileIdx != null && rv.reads[fileIdx]
+      ? { kind: "file" as const, key: `file-${fileIdx}`, title: rv.reads[fileIdx].displayPath }
+      : null;
 
   return (
     <div
@@ -119,45 +147,61 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
         </Region>
       </div>
 
-      {/* ── LEFT: input files, bucketed by scope ──────────────────────────── */}
-      <Region rk="files" area="left" label={`Inputs · ${rv.reads.length} files`} focus={focus} hold={hold} release={release}>
-        <div className="ds-scopes">
-          {rv.scopes.length === 0 && <div className="ds-hud-empty">no reads recorded</div>}
-          {rv.scopes.map((s) => (
-            <div key={s.kind} className="ds-scope" data-scope={s.kind}>
-              <div className="ds-scope__head">
-                <ScopeGlyph kind={s.kind} />
-                <span className="ds-scope__label">{SCOPE_META[s.kind]?.label ?? s.label}</span>
-                <span className="ds-scope__count">{s.count}</span>
-              </div>
-              <div className="ds-scope__files">
-                {s.paths.slice(0, 4).map((p) => <span key={p} className="ds-chip" title={p}>{fileName(p)}</span>)}
-                {s.paths.length > 4 && <span className="ds-chip ds-chip--more">+{s.paths.length - 4}</span>}
-              </div>
+      {/* ── LEFT: input SOURCES (no wrapper) — click any file to read it in MIDDLE ── */}
+      <div className="ds-hud__left" style={{ gridArea: "left" }}>
+        {sources.length === 0 && <div className="ds-hud-empty">no reads recorded</div>}
+        {sources.map((g) => (
+          <div key={g.kind} className="ds-source" data-scope={g.kind}>
+            <div className="ds-source__head">
+              <ScopeGlyph kind={g.kind} />
+              <span>{g.label}</span>
+              <span className="ds-source__count">{g.items.length}</span>
             </div>
-          ))}
-        </div>
-      </Region>
+            <div className="ds-source__files">
+              {g.items.map(({ r, i }) => (
+                <button
+                  key={r.path}
+                  type="button"
+                  className={`ds-filebtn${fileIdx === i ? " is-sel" : ""}`}
+                  onClick={() => selectFile(i)}
+                  title={r.path}
+                >
+                  {fileName(r.displayPath)}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
 
-      {/* ── MIDDLE: identity (morph) + the hover-expanded detail overlay ───── */}
+      {/* ── MIDDLE: small identity (morph) + the expanded detail / file content ── */}
       <div className="ds-hud__mid" style={{ gridArea: "mid" }}>
         <Identity id={id} data={data} reduce={reduce} onClose={onClose} status={status} />
         <AnimatePresence>
-          {focus && (
+          {overlay && (
             <motion.div
-              key={focus}
-              className="ds-hud-detail ds-glass ds-glass--soft"
+              key={overlay.key}
+              className={`ds-hud-detail ds-glass ds-glass--soft${overlay.kind === "file" ? " ds-hud-detail--file" : ""}`}
               initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.99 }}
               transition={{ duration: reduce ? 0 : 0.16, ease: easing.standard }}
-              onMouseEnter={() => hold(focus)}
+              onMouseEnter={() => { if (overlay.kind === "region") hold(overlay.region); }}
               onMouseLeave={release}
             >
               <HudCorners />
-              <div className="ds-hud-detail__head">{DETAIL_TITLE[focus]}</div>
+              <div className="ds-hud-detail__head">
+                <span className="ds-hud-detail__title">{overlay.title}</span>
+                {overlay.kind === "file" && (
+                  <button type="button" className="ds-detail-x" aria-label="Close file" onClick={() => setFileIdx(null)}>
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+                  </button>
+                )}
+              </div>
               <div className="ds-hud-detail__body">
-                <Detail region={focus} rv={rv} expected={expected} pct={pct} />
+                {overlay.kind === "region"
+                  ? <Detail region={overlay.region} rv={rv} expected={expected} pct={pct} />
+                  : <FileContent file={rv.reads[fileIdx!]} />}
               </div>
             </motion.div>
           )}
@@ -185,17 +229,10 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
         </div>
       </Region>
 
-      {/* ── BOTTOM: progress + avg-of-prior-runs ETA ──────────────────────── */}
+      {/* ── BOTTOM: just the bar (60%, centered). took/avg live in the hover detail ── */}
       <Region rk="progress" area="bottom" label="Progress" bare focus={focus} hold={hold} release={release}>
         <div className="ds-prog">
-          <ProgressBar size="block" value={pct} status={status} aria-label={`${data.title} progress`} />
-          <span className="ds-prog__pct">{pct != null ? `${Math.round(pct * 100)}%` : "···"}</span>
-          <span className="ds-prog__meta">
-            took <b>{formatMs(rv.durationMs)}</b>
-            {expected != null && (
-              <> · avg <b>{formatMs(expected)}</b> over {rv.priorSamples || 1} run{(rv.priorSamples || 1) === 1 ? "" : "s"}</>
-            )}
-          </span>
+          <ProgressBar size="block" value={pct} status={status} aria-label={`${data.title} progress · ${pct != null ? `${Math.round(pct * 100)}%` : "running"}`} />
         </div>
       </Region>
     </div>
@@ -226,7 +263,7 @@ function Identity({ id, data, reduce, onClose, status }: { id: string; data: Flo
           </Button>
         </div>
         {rv?.summary && <p className="ds-hud__summary">{rv.summary}</p>}
-        <div className="ds-hud__hintline">Hover a panel for full detail.</div>
+        <div className="ds-hud__hintline">Hover a panel, or click an input file.</div>
       </div>
     </motion.div>
   );
@@ -377,6 +414,16 @@ function Detail({ region, rv, expected, pct }: { region: RegionKey; rv: RunViewN
       </div>
     </div>
   );
+}
+
+/* ── a clicked input file's REAL content (markdown rendered; everything else raw) ── */
+function FileContent({ file }: { file: ReadRef }) {
+  if (!file?.preview) return <div className="ds-hud-empty">content not captured for this read</div>;
+  const ext = (file.displayPath.split(".").pop() || "").toLowerCase();
+  if (ext === "md" || ext === "markdown") {
+    return <div className="ds-reader ds-fileview"><MarkdownReader source={file.preview} /></div>;
+  }
+  return <pre className="ds-reader ds-reader--code ds-fileview ds-glass__legible">{file.preview}</pre>;
 }
 
 function KV({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {
