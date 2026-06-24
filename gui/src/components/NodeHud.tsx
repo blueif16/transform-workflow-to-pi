@@ -1,15 +1,16 @@
 /**
- * NodeHud — the "clicked-up" view, rebuilt as a 5-REGION HUD around the node.
+ * NodeHud — the "clicked-up" view, laid out around the node.
  *
- *      ┌─────────────── TOP ───────────────┐   model/provider · tool-call summary
- *      │ LEFT │       MIDDLE        │ RIGHT │   inputs/scope · identity · output
- *      └─────────────── BOTTOM ────────────┘   progress (avg-of-prior-runs ETA)
+ *      ┌ IDENT ┐  model·tools        (top-right corner: the shell MenuBar floats here)
+ *      │ LEFT  │      CENTER      │ RIGHT │   inputs/scope · content · output
+ *      └──────────── BOTTOM ──────────────┘   progress (avg-of-prior-runs ETA)
  *
- * MIDDLE is the morph target: the canvas node grows into the identity card here
- * (shared layoutId). HOVER any region and it expands into MIDDLE, showing the full
- * detail — the whole file for an input, the tool bar-chart for the summary, the
- * timestamped timeline for progress. A short grace timer bridges the gap so you can
- * move the cursor INTO the detail to read/scroll it.
+ * IDENT (top-left) is the morph target: the canvas node grows into the identity card
+ * (shared layoutId). CENTER is the content viewer — an at-rest Overview (summary +
+ * phase/issues/context/timing), replaced on HOVER of any region (full detail) or
+ * CLICK of an input file (its content). A short grace timer bridges the cursor gap.
+ * Exit lives in the persistent top-right MenuBar (shell), so it survives the file
+ * panel covering the card.
  *
  * Every value is real (data.rv = the distilled run-view node). Nothing is mocked;
  * a region with no backing data renders empty.
@@ -132,8 +133,11 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
       ref={dialogRef}
       onMouseLeave={release}
     >
-      {/* ── TOP: two containers — model/provider · tool-call summary ───────── */}
-      <div className="ds-hud__top">
+      {/* ── TOP-LEFT: identity (morph target). TOP-RIGHT corner is left free for the floating MenuBar. ── */}
+      <Identity id={id} data={data} reduce={reduce} onClose={onClose} status={status} />
+
+      {/* ── TOP-CENTER: model/provider · tool-call telemetry ── */}
+      <div className="ds-hud__meta">
         <Region rk="model" label="Model" focus={focus} hold={hold} release={release}>
           <div className="ds-hud-stat">
             <span className="ds-hud-stat__v">{rv.model ?? "—"}</span>
@@ -179,9 +183,9 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
         ))}
       </div>
 
-      {/* ── MIDDLE: small identity (morph) + the expanded detail / file content ── */}
+      {/* ── CENTER: content viewer — an at-rest overview, the detail/file on interaction ── */}
       <div className="ds-hud__mid" style={{ gridArea: "mid" }}>
-        <Identity id={id} data={data} reduce={reduce} onClose={onClose} status={status} />
+        <Overview rv={rv} status={status} expected={expected} />
         <AnimatePresence>
           {overlay && (
             <motion.div
@@ -251,9 +255,8 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
   );
 }
 
-/* ── the identity card (morph target) ──────────────────────────────────── */
+/* ── the identity card (morph target), now pinned TOP-LEFT — compact chrome ── */
 function Identity({ id, data, reduce, onClose, status }: { id: string; data: FlowNodeData; reduce: boolean; onClose: () => void; status: FlowNodeData["status"] }) {
-  const rv = data.rv;
   return (
     <motion.div
       layoutId={`node-${id}`}
@@ -274,10 +277,52 @@ function Identity({ id, data, reduce, onClose, status }: { id: string; data: Flo
             </svg>
           </Button>
         </div>
-        {rv?.summary && <p className="ds-hud__summary">{rv.summary}</p>}
-        <div className="ds-hud__hintline">Hover a panel, or click an input file.</div>
       </div>
     </motion.div>
+  );
+}
+
+/* ── CENTER overview (at rest): the summary + the REAL extra telemetry not shown
+   elsewhere — phase, issues/warnings, context peak, timing. Covered by the detail
+   overlay on hover/click. (Token cost is intentionally NOT shown — broken upstream.) ── */
+function Overview({ rv, status, expected }: { rv: RunViewNode; status: NonNullable<FlowNodeData["status"]>; expected: number | null }) {
+  const ctxPeak = rv.tokens?.contextPeak ?? 0;
+  return (
+    <div className="ds-hud__overview">
+      {rv.summary
+        ? <p className="ds-hud__summary">{rv.summary}</p>
+        : <p className="ds-hud__summary ds-hud__summary--muted">No summary captured for this node.</p>}
+
+      {rv.issues && rv.issues.length > 0 && (
+        <div className="ds-hud__issues" role="status">
+          {rv.issues.map((m, i) => (
+            <div key={i} className="ds-hud__issue">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5l6.5 11.5h-13z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /><path d="M8 6.5v3M8 11.2v.1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
+              <span>{m}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="ds-hud__facts">
+        {rv.phase && <Fact k="Phase" v={rv.phase} />}
+        <Fact k="Status" v={STATUS_LABEL[status]} />
+        <Fact k="Duration" v={formatMs(rv.durationMs)} />
+        {expected != null && <Fact k="Avg / prior" v={`${formatMs(expected)} · ${rv.priorSamples || 1} run${(rv.priorSamples || 1) === 1 ? "" : "s"}`} />}
+        {ctxPeak > 0 && <Fact k="Context peak" v={`${ctxPeak.toLocaleString()} tok`} />}
+      </div>
+
+      <div className="ds-hud__hintline">Hover a panel, or click an input file.</div>
+    </div>
+  );
+}
+
+function Fact({ k, v }: { k: string; v: ReactNode }) {
+  return (
+    <div className="ds-hud__fact">
+      <span className="ds-hud__fact-k">{k}</span>
+      <span className="ds-hud__fact-v">{v}</span>
+    </div>
   );
 }
 

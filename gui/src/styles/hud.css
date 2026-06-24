@@ -17,18 +17,18 @@
   height: 100%;
   pointer-events: auto;
   display: grid;
-  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr) minmax(200px, 260px);
-  grid-template-rows: auto minmax(150px, 1fr) auto;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(220px, 300px);
+  grid-template-rows: auto minmax(160px, 1fr) auto;
   grid-template-areas:
-    "top top top"
-    "left mid right"
+    "ident meta ."
+    "left  mid  right"
     "bottom bottom bottom";
   gap: var(--ds-space-4);
   padding: 4px;
   align-items: start;          /* cards hug their content; air fills the rest (sparse) */
   outline: none;
 }
-.ds-hud__top { grid-area: top; align-self: start; justify-self: center; width: clamp(380px, 30%, 620px); display: grid; grid-template-columns: 1fr 1fr; gap: var(--ds-space-3); }
+.ds-hud__meta { grid-area: meta; align-self: start; justify-self: center; width: clamp(340px, 100%, 580px); display: grid; grid-template-columns: 1fr 1fr; gap: var(--ds-space-4); }
 .ds-hud__mid { grid-area: mid; align-self: stretch; position: relative; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; }
 /* LEFT input sources — no wrapper card; each source is its own small box, files clickable */
 .ds-hud__left { grid-area: left; align-self: center; display: flex; flex-direction: column; gap: var(--ds-space-3); max-height: 100%; overflow: auto; min-height: 0; }
@@ -57,8 +57,8 @@
 .ds-hud-region:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px; }
 /* inputs + outputs ride the vertical center of the middle row */
 .ds-hud-region[data-area="left"], .ds-hud-region[data-area="right"] { align-self: center; }
-/* the two top cards stretch to one shared height (override the content-size default) */
-.ds-hud__top .ds-hud-region { align-self: stretch; }
+/* the two telemetry lockups stretch to one shared height (override the content-size default) */
+.ds-hud__meta .ds-hud-region { align-self: stretch; }
 /* bottom progress: drop the header chrome — the bar IS the row */
 .ds-hud-region--bare .ds-hud-region__body { padding: var(--ds-space-3) 0; }
 .ds-hud-region__label {
@@ -134,13 +134,24 @@
 .ds-prog__meta { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); font-variant-numeric: tabular-nums; }
 .ds-prog__meta b { color: var(--ds-text-secondary); font-weight: var(--ds-weight-medium); }
 
-/* --- MIDDLE: identity card (glass, morph target) ------------------------ */
-.ds-hud__ident { position: relative; flex: 0 0 auto; width: 100%; max-width: 440px; display: flex; }
+/* --- TOP-LEFT: identity card (glass, morph target) — compact chrome ------ */
+.ds-hud__ident { grid-area: ident; position: relative; align-self: start; justify-self: start; width: max-content; max-width: 300px; display: flex; }
 .ds-hud__ident .ds-hud-card__body { padding: var(--ds-space-3); display: flex; flex-direction: column; gap: var(--ds-space-2); width: 100%; }
-.ds-hud__ident-row { display: flex; align-items: center; gap: var(--ds-space-3); }
+.ds-hud__ident-row { display: flex; align-items: center; gap: var(--ds-space-2); }
 .ds-hud__ident-id { min-width: 0; margin-right: auto; }
+
+/* --- CENTER: at-rest overview (summary + real facts + issues), bare on the frost - */
+.ds-hud__overview { width: 100%; max-width: 580px; display: flex; flex-direction: column; gap: var(--ds-space-3); padding: var(--ds-space-2) var(--ds-space-4); }
 .ds-hud__summary { margin: 0; font-size: var(--ds-text-sm); line-height: var(--ds-leading-relaxed); color: var(--ds-text-secondary); }
-.ds-hud__hintline { margin-top: auto; font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
+.ds-hud__summary--muted { color: var(--ds-text-tertiary); font-style: italic; }
+.ds-hud__issues { display: flex; flex-direction: column; gap: var(--ds-space-2); }
+.ds-hud__issue { display: flex; align-items: flex-start; gap: var(--ds-space-2); padding: var(--ds-space-2) var(--ds-space-3); border-left: 3px solid var(--ds-warning-fg); background: color-mix(in srgb, var(--ds-warning) 12%, transparent); border-radius: var(--ds-radius-sm); font-size: var(--ds-text-sm); line-height: var(--ds-leading-snug); color: var(--ds-text-secondary); }
+.ds-hud__issue svg { color: var(--ds-warning-fg); flex: 0 0 auto; margin-top: 2px; }
+.ds-hud__facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--ds-space-3) var(--ds-space-4); }
+.ds-hud__fact { display: flex; flex-direction: column; gap: 2px; }
+.ds-hud__fact-k { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary); }
+.ds-hud__fact-v { font-size: var(--ds-text-sm); color: var(--ds-text-primary); font-variant-numeric: tabular-nums; }
+.ds-hud__hintline { margin-top: var(--ds-space-1); font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
 .ds-hud-card { position: relative; min-width: 0; }
 .ds-hud-card__body { padding: var(--ds-space-4); }
 
@@ -222,8 +233,8 @@
 
 /* --- responsive: stack on narrow viewports ------------------------------ */
 @media (max-width: 720px) {
-  .ds-hud { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(280px, 50vh) auto auto; grid-template-areas: "top" "left" "mid" "right" "bottom"; }
-  .ds-hud__top { grid-template-columns: 1fr 1fr; }
+  .ds-hud { grid-template-columns: 1fr; grid-template-rows: auto auto auto minmax(280px, 50vh) auto auto; grid-template-areas: "ident" "meta" "left" "mid" "right" "bottom"; }
+  .ds-hud__meta { grid-template-columns: 1fr 1fr; width: 100%; }
 }
 
 /* --- reduced motion ----------------------------------------------------- */
