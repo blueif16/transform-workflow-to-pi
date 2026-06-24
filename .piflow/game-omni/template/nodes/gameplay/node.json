@@ -1,0 +1,54 @@
+{
+  "id": "gameplay",
+  "phase": "gameplay",
+  "deps": [
+    "w1-design"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/harden-blueprint/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "edit",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "spec/blueprint.json"
+    ],
+    "owns": [
+      "spec/**"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/templates/genres.json",
+      "{{WORKSPACE}}/templates/modules"
+    ],
+    "fillSentinel": "<FILL:"
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "seed": [
+      {
+        "to": "spec/blueprint.json",
+        "from": "{{WORKSPACE}}/templates/modules/{{state.archetype}}/blueprint.template.json"
+      }
+    ],
+    "project": [
+      {
+        "to": "spec/blueprint.json",
+        "from": [
+          "spec/blueprint.json",
+          "{{WORKSPACE}}/.agents/node-catalog.json"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "verify-2-m2",
+  "phase": "verify-2",
+  "deps": [
+    "w4-execute-m2"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/verify/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "ls",
+      "grep",
+      "find",
+      "edit",
+      "write",
+      "bash",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "verify/report.M2.json"
+    ],
+    "owns": [
+      "src/**",
+      "verify/**",
+      "MEMORY.md"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/verify",
+      "{{WORKSPACE}}/packages/skills/scaffold",
+      "{{WORKSPACE}}/packages/verify"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  }
+}

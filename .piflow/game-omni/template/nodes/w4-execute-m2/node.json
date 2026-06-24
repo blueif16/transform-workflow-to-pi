@@ -1,0 +1,48 @@
+{
+  "id": "w4-execute-m2",
+  "phase": "execute",
+  "deps": [
+    "verify-2-m1"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/implement-milestone/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "MEMORY.w4-M2.md"
+    ],
+    "owns": [
+      "src/**",
+      "STRUCTURE.md",
+      "MEMORY.w4-M2.md"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/implement-milestone",
+      "{{WORKSPACE}}/packages/skills/scaffold"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "merge": [
+      {
+        "to": "verify/event-wiring.ok.json",
+        "from": "src"
+      }
+    ]
+  }
+}

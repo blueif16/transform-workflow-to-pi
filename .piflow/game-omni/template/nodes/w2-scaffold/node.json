@@ -1,0 +1,79 @@
+{
+  "id": "w2-scaffold",
+  "phase": "scaffold",
+  "deps": [
+    "verify-1-design"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/scaffold/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "STRUCTURE.md",
+      "index.json",
+      "verify/event-bindings.ok.json"
+    ],
+    "owns": [
+      "src/**",
+      "STRUCTURE.md",
+      "index.json",
+      "package.json",
+      "tsconfig.json",
+      "vite.config.js",
+      "index.html",
+      "dist/**",
+      "node_modules/**",
+      "verify/**",
+      "MEMORY.w2.md"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/scaffold",
+      "{{WORKSPACE}}/templates"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "seed": [
+      {
+        "to": ".",
+        "from": "{{WORKSPACE}}/templates/{templates/modules/{{state.archetype}}/genre.json:genres.0.coreBase}"
+      },
+      {
+        "to": "src",
+        "from": "{{WORKSPACE}}/templates/modules/{{state.archetype}}/src"
+      },
+      {
+        "to": "src/contract",
+        "from": "{{WORKSPACE}}/templates/core-contract/src"
+      }
+    ],
+    "merge": [
+      {
+        "to": "index.json",
+        "from": [
+          "public/assets/asset-manifest.json",
+          "public/assets/models/model-manifest.json"
+        ]
+      },
+      {
+        "to": "MEMORY.md",
+        "from": "MEMORY.*.md"
+      }
+    ]
+  }
+}

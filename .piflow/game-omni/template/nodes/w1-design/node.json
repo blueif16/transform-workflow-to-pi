@@ -1,0 +1,62 @@
+{
+  "id": "w1-design",
+  "phase": "design",
+  "deps": [
+    "w0-classify"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/write-gdd/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "edit",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "spec/gdd.md"
+    ],
+    "owns": [
+      "spec/**"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/write-gdd",
+      "{{WORKSPACE}}/templates/modules"
+    ],
+    "fillSentinel": "<FILL:"
+  },
+  "checks": {
+    "post": [
+      {
+        "kind": "fenced-tail",
+        "path": "spec/gdd.md",
+        "param": {
+          "lang": "json",
+          "field": "milestones",
+          "minItems": 3
+        }
+      }
+    ]
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "seed": [
+      {
+        "to": "spec/gdd.md",
+        "from": "{{WORKSPACE}}/templates/gdd.skeleton.md"
+      },
+      {
+        "to": "spec/genre-options.json",
+        "from": "{{WORKSPACE}}/templates/genres/{{state.archetype}}.json"
+      }
+    ]
+  }
+}
