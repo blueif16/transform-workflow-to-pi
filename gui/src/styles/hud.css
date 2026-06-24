@@ -28,7 +28,7 @@
   align-items: start;          /* cards hug their content; air fills the rest (sparse) */
   outline: none;
 }
-.ds-hud__top { grid-area: top; align-self: start; display: grid; grid-template-columns: 1fr 1fr; gap: var(--ds-space-4); }
+.ds-hud__top { grid-area: top; align-self: start; justify-self: center; width: clamp(380px, 30%, 620px); display: grid; grid-template-columns: 1fr 1fr; gap: var(--ds-space-3); }
 .ds-hud__mid { grid-area: mid; align-self: stretch; position: relative; min-width: 0; min-height: 0; display: flex; }
 
 /* --- a flat region card ------------------------------------------------- */
@@ -49,6 +49,10 @@
 }
 .ds-hud-region.is-active,
 .ds-hud-region:focus-visible { border-color: var(--ds-accent); box-shadow: 0 0 0 1px var(--ds-accent-ring), var(--ds-shadow-sm); }
+/* inputs + outputs ride the vertical center of the middle row */
+.ds-hud-region[data-area="left"], .ds-hud-region[data-area="right"] { align-self: center; }
+/* bottom progress: drop the header chrome — the bar IS the row */
+.ds-hud-region--bare .ds-hud-region__body { padding: var(--ds-space-3) var(--ds-space-4); }
 .ds-hud-region__label {
   display: flex; align-items: center; justify-content: space-between; gap: var(--ds-space-2);
   padding: var(--ds-space-2) var(--ds-space-3);
@@ -109,8 +113,9 @@
 .ds-out__meta { margin-left: auto; flex: 0 0 auto; color: var(--ds-text-tertiary); }
 
 /* --- BOTTOM: progress --------------------------------------------------- */
-.ds-prog { display: flex; align-items: center; gap: var(--ds-space-3); }
-.ds-prog .ds-progress { flex: 1 1 auto; }
+.ds-prog { display: flex; align-items: center; gap: var(--ds-space-4); }
+.ds-prog .ds-progress { flex: 1 1 auto; height: 30px; border-radius: var(--ds-radius-md); }
+.ds-prog .ds-progress__fill { border-radius: inherit; }
 .ds-prog__pct { flex: 0 0 auto; font-family: var(--ds-font-mono); font-size: var(--ds-text-sm); color: var(--ds-text-accent); }
 .ds-prog__meta { flex: 0 0 auto; font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
 .ds-prog__meta b { color: var(--ds-text-secondary); font-weight: var(--ds-weight-medium); }

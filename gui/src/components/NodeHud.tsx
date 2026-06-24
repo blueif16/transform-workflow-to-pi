@@ -186,7 +186,7 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
       </Region>
 
       {/* ── BOTTOM: progress + avg-of-prior-runs ETA ──────────────────────── */}
-      <Region rk="progress" area="bottom" label="Progress" focus={focus} hold={hold} release={release}>
+      <Region rk="progress" area="bottom" label="Progress" bare focus={focus} hold={hold} release={release}>
         <div className="ds-prog">
           <ProgressBar size="block" value={pct} status={status} aria-label={`${data.title} progress`} />
           <span className="ds-prog__pct">{pct != null ? `${Math.round(pct * 100)}%` : "···"}</span>
@@ -233,14 +233,15 @@ function Identity({ id, data, reduce, onClose, status }: { id: string; data: Flo
 }
 
 /* ── a hoverable region box ─────────────────────────────────────────────── */
-function Region({ rk, area, label, focus, hold, release, children }: {
+function Region({ rk, area, label, focus, hold, release, children, bare }: {
   rk: RegionKey; area?: string; label: string; focus: RegionKey | null;
-  hold: (k: RegionKey) => void; release: () => void; children: ReactNode;
+  hold: (k: RegionKey) => void; release: () => void; children: ReactNode; bare?: boolean;
 }) {
   return (
     <section
-      className={`ds-hud-region${focus === rk ? " is-active" : ""}`}
+      className={`ds-hud-region${focus === rk ? " is-active" : ""}${bare ? " ds-hud-region--bare" : ""}`}
       style={area ? { gridArea: area } : undefined}
+      data-area={area}
       tabIndex={0}
       onMouseEnter={() => hold(rk)}
       onMouseLeave={release}
@@ -248,10 +249,12 @@ function Region({ rk, area, label, focus, hold, release, children }: {
       onBlur={release}
       aria-label={label}
     >
-      <header className="ds-hud-region__label">
-        <span>{label}</span>
-        <span className="ds-hud-region__hint" aria-hidden="true">⤢</span>
-      </header>
+      {!bare && (
+        <header className="ds-hud-region__label">
+          <span>{label}</span>
+          <span className="ds-hud-region__hint" aria-hidden="true">⤢</span>
+        </header>
+      )}
       <div className="ds-hud-region__body">{children}</div>
     </section>
   );
