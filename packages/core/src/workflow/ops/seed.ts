@@ -47,7 +47,16 @@ export function resolveSeedTokens(spec: string, ctx: ResolveCtx): string {
   for (let pass = 0; pass < 8 && oneToken.test(out); pass++) {
     out = out.replace(new RegExp(oneToken, 'g'), (whole, file: string, field: string) => {
       try {
-        const v = drillPath(JSON.parse(readFileSync(file, 'utf8')), field.trim());
+        // Re-root a RELATIVE inner {file:field} path against the WORKSPACE, not
+        // process.cwd(). The outer {{…}} tokens already resolved to absolute paths,
+        // but a bare readFileSync(relative) resolves against the LAUNCH dir — so a run
+        // started outside the workspace (e.g. `piflow run` from the piflow repo root,
+        // where cwd ≠ {{WORKSPACE}}) ENOENTs and the nested-token seed silently skips
+        // (the "engine base ABSENT" → Claude-mode fallback). Mirrors the legacy
+        // runner's path.resolve(runCwd, file); makes the drill relocation-invariant
+        // exactly like the {{…}} roots already are.
+        const abs = path.isAbsolute(file) ? file : path.resolve(ctx.workspace, file);
+        const v = drillPath(JSON.parse(readFileSync(abs, 'utf8')), field.trim());
         return v == null ? whole : String(v);
       } catch {
         return whole;
