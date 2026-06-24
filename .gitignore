@@ -12,3 +12,7 @@ dist/
 # GUI run fixtures: the raw .pi/ telemetry tree is large + regenerable from the source run
 # (gui/scripts/transcode-run.mjs). Only the distilled run-view.json is committed.
 gui/public/runs/*/.pi/
+
+# `piflow run` from this repo stages per-node prompts/configs into the cwd (transient, regenerable).
+/_pi/
+/.pi/
