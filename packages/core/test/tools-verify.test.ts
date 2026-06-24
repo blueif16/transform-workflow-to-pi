@@ -76,9 +76,9 @@ describe('verifyToolBinding — submit_result binds for the migrated nodes (S0)'
     expect(r.bound).toContain('submit_result');
   });
 
-  it('submit_result is in the default BUILTIN_TOOLS catalog with its bare piName', () => {
-    const e = BUILTIN_TOOLS.find((t) => t.piName === 'submit_result');
-    expect(e).toBeTruthy();
-    expect(e!.source).toBe('builtin');
+  it('submit_result is NOT a pi-native builtin (it is the first-party contract tool, registered separately)', () => {
+    // The append-only model was rejected: submit_result is a `contract` tool with its own inline execute,
+    // NOT a pi-native on BUILTIN_TOOLS — so the builtins-only default never drags it in.
+    expect(BUILTIN_TOOLS.find((t) => t.piName === 'submit_result')).toBeUndefined();
   });
 });

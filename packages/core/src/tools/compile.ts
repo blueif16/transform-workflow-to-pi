@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 import type { ToolEntry, ToolSource } from '../types.js';
+import { renderContractTool } from './contract-tool.js';
 
 /** Module the generated extension imports its execute-bridge (`callTool`) from. */
 export const DEFAULT_BRIDGE_MODULE = '@piflow/tool-bridge';
@@ -166,6 +167,9 @@ function renderHead(t: PlannedTool): string[] {
  * @param modIdent the local identifier the plugin module was imported as (sdk-native branch only).
  */
 function renderTool(t: PlannedTool, modIdent?: string): string {
+  // A first-party CONTRACT tool (e.g. submit_result) carries its OWN inline execute — render it directly,
+  // never the bridge/native-sdk route. (Its piName/description/parameters satisfy ContractRenderable.)
+  if (t.source === 'contract') return renderContractTool(t);
   const head = renderHead(t);
   if (isNativeSdk(t) && modIdent) {
     // capture the plugin's tool defs, find THIS tool by its raw registered name, bind its native execute.
@@ -197,9 +201,10 @@ export function renderExtension(tools: PlannedTool[], opts: CompileOpts = {}): s
   const bridge = opts.bridgeModule ?? DEFAULT_BRIDGE_MODULE;
   const shim = opts.shimModule ?? DEFAULT_SHIM_MODULE;
 
-  // any tool that routes through the bridge needs `callTool`; any native sdk tool needs the shim.
+  // any tool that routes through the bridge needs `callTool`; any native sdk tool needs the shim. A
+  // first-party CONTRACT tool brings its own inline execute → it needs NEITHER (no bridge, no plugin).
   const nativeSdk = tools.filter(isNativeSdk);
-  const needsBridge = tools.some((t) => !isNativeSdk(t));
+  const needsBridge = tools.some((t) => t.source !== 'contract' && !isNativeSdk(t));
   const needsShim = nativeSdk.length > 0;
 
   // dedupe distinct plugin modules → one stable import each (`__ocPlugin_<i>`); map module → ident.

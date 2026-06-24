@@ -66,7 +66,11 @@ export { CHECK_KINDS, evaluateChecks, effectiveChecks, actionForVerdict, lastFen
 export type { CheckResult, FileBytes } from './checks.js';
 
 // Tool registry (namespace:name → bare pi names)
-export { DefaultToolRegistry, BUILTIN_TOOLS } from './tools/registry.js';
+export { DefaultToolRegistry, BUILTIN_TOOLS, DEFAULT_TOOLS } from './tools/registry.js';
+// The first-party `submit_result` contract tool (the typed terminating return tool): the catalog entry
+// (seeded into every DefaultToolRegistry) + its param schema + its inline-execute render for the `-e` ext.
+export { SUBMIT_RESULT_TOOL, SUBMIT_RESULT_PARAMETERS, SUBMIT_RESULT_ADDRESS, renderContractTool } from './tools/contract-tool.js';
+export type { ContractRenderable } from './tools/contract-tool.js';
 // Ingestion: MCP tools/list → ToolEntry[] (the effortless catalog fill)
 export { mcpToolsToEntries } from './tools/ingest.js';
 export type { McpToolListing, McpIngestOpts } from './tools/ingest.js';

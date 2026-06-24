@@ -394,8 +394,14 @@ export const defaultSecretResolver: SecretResolver = (name) => process.env[name]
 
 // ── TOOL REGISTRY (horizontal seam — the searchable catalog) ──────────────────
 
-/** Where a tool comes from. `builtin` is native pi; `sdk`/`mcp` need a generated `-e` extension. */
-export type ToolSource = 'builtin' | 'sdk' | 'mcp';
+/**
+ * Where a tool comes from. `builtin` is native pi (on `--tools`, no extension). `sdk`/`mcp` are
+ * third-party tools bound through a generated `-e` extension (execute routes to a plugin/the bridge).
+ * `contract` is a FIRST-PARTY SDK tool with its OWN inline execute (e.g. `submit_result`, the typed
+ * terminating return tool) — bound by bare name like a builtin, but NOT pi-native, so it ships in the
+ * generated `-e` extension with its real execute baked in (no bridge, no external plugin).
+ */
+export type ToolSource = 'builtin' | 'sdk' | 'mcp' | 'contract';
 
 /** One catalog entry. `address` is SDK-facing (`ns:name`); `piName` is the bare name pi sees. */
 export interface ToolEntry {
