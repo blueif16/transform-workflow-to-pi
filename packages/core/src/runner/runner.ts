@@ -42,6 +42,8 @@ import { NodeRecorder, recordingSandbox, type EventSink } from './events.js';
 import { defaultPiCommand, type CommandBuilder } from './command.js';
 import { resolveTokens, type ResolveCtx } from '../workflow/resolver.js';
 import { stageSeed } from '../workflow/ops/seed.js';
+import { parsePromote, extractPromoteValue, barrierMerge, type NodeUpdate, type ResolvedPromote } from '../workflow/ops/promote.js';
+import { loadState, persistState } from '../workflow/state.js';
 import {
   type RunStatus,
   type NodeStatusRecord,
@@ -214,7 +216,9 @@ export const defaultExecRunner: ExecRunner = (sandbox, cmd, opts) =>
 
 // ── forgiving return-parse (run.mjs lastJsonBlock 670–698) ────────────────────────────────────────
 
-interface NodeReturn { status?: string; summary?: string; issues?: string[] }
+// The recovered structured return: the recognized fields PLUS any arbitrary `@return:<field>` payload a
+// promote may lift (§3.6 — `lastJsonBlock` already JSON.parses the WHOLE block; we just stop narrowing it).
+type NodeReturn = { status?: string; summary?: string; issues?: string[] } & Record<string, unknown>;
 
 /** Recover a node's return object from its stdout. Tries closed ```json, unclosed fence, last {…}. */
 export function lastJsonBlock(text: string): NodeReturn | null {
@@ -382,9 +386,15 @@ interface RunContext {
   args: Record<string, string>;
   /**
    * The per-thread RunState `{{state.<channel>}}` tokens resolve against. Loaded once at run start and
-   * folded at each stage barrier (S3); the S1 spine threads it as `{}` until promote wiring lands.
+   * folded at each stage barrier (S3). MUTABLE: the barrier replaces it after each stage's merge.
    */
   runState: RunState;
+  /**
+   * The promote updates each node emitted this stage, keyed by node id — drained + barrier-merged at the
+   * stage barrier (LangGraph super-step: independent emits, ONE serial merge). A node writes only its own
+   * key (lane-safe); a non-ok node never writes (it promotes nothing).
+   */
+  promotesByNode: Map<string, NodeUpdate>;
 }
 
 /** Read a host-side input file as bytes (for staging a downstream node's reads). */
@@ -685,6 +695,26 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
       issues.push(`post-hook failed: ${(e as Error).message}`);
     }
 
+    // PROMOTE POST op (S3): on an OK node, LIFT each declared output into a RunState channel (the value
+    // extracted now; the DRIVER merges it at the stage barrier — the "mechanical → driver hook" law, D6).
+    // An artifact source reads under `{{RUN}}` (= outDir); an `@return:<field>` source drills the parsed
+    // structured return (lastJsonBlock, widened). A promote of nothing throws → downgrade the node to error
+    // (a real wiring breach, surfaced loudly), and emit no update.
+    if (st === 'ok' && node.ops?.promote?.length) {
+      try {
+        const promotes: ResolvedPromote[] = [];
+        for (const raw of node.ops.promote) {
+          const spec = parsePromote(raw);
+          const value = await extractPromoteValue(spec, { run: ctx.outDir, returnValue: parsed ?? undefined });
+          promotes.push({ to: spec.to, value, merge: spec.merge });
+        }
+        ctx.promotesByNode.set(node.id, { nodeId: node.id, promotes });
+      } catch (e) {
+        st = 'error';
+        issues.push(`promote failed: ${(e as Error).message}`);
+      }
+    }
+
     if (killed === 'timeout') rec.killedTimeout = true;
     if (killed === 'stall') rec.killedStall = true;
     const summary = killed
@@ -781,7 +811,10 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     returnProtocol: opts.returnProtocol,
     workspace: opts.workspace ?? repoRoot,
     args: opts.args ?? {},
-    runState: {},
+    // Load the per-thread RunState at run start (D6): a fresh run sees `{}`; a resume sees the prior
+    // barrier's persisted channels, so the resumed tail's `{{state.*}}` resolves from t=0.
+    runState: await loadState(outDir),
+    promotesByNode: new Map(),
     watchdog: {
       nodeTimeoutMs: opts.nodeTimeoutMs ?? 1_800_000,
       stallMs: opts.stallMs ?? 0,
@@ -876,6 +909,27 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
 
       // Parallel lanes within a stage (run.mjs 1313).
       const results = await Promise.all(s.nodeIds.map((id) => runNode(ctx, wf.nodes[id], scope)));
+
+      // STAGE-BARRIER MERGE (D6 / LangGraph super-step): fold every lane's promoted update into RunState
+      // SERIALLY + deterministically (in node order), persist ONCE, and advance ctx.runState so the NEXT
+      // stage resolves `{{state.*}}` against the merged channels. A `set` channel written by ≥2 parallel
+      // lanes is a `ConflictError` → the run HALTS loudly (a synthetic node, mirroring __resume__).
+      const updates: NodeUpdate[] = s.nodeIds
+        .map((id) => ctx.promotesByNode.get(id))
+        .filter((u): u is NodeUpdate => u !== undefined);
+      if (updates.length) {
+        try {
+          ctx.runState = barrierMerge(ctx.runState, updates);
+          await persistState(outDir, ctx.runState);
+        } catch (e) {
+          ctx.status.nodes['__barrier__'] = {
+            id: '__barrier__', label: 'state barrier merge', status: 'error', artifacts: [],
+            issues: [`stage barrier merge failed: ${(e as Error).message}`],
+          };
+          halted = true;
+        }
+        for (const id of s.nodeIds) ctx.promotesByNode.delete(id); // drain this stage's emits
+      }
 
       // HALT-on-failure (run.mjs 1315–1322): first error/blocked stops the run; downstream never runs.
       if (results.some((r) => r.status === 'error' || r.status === 'blocked')) halted = true;
