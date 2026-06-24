@@ -225,29 +225,35 @@ are in `reference/sdk-consumer.md` — read it first.** The flow:
   node WRITES; the **node I/O map** (see *Designing a node's I/O* below) says who READS it. **Every
   node/subagent edit checks in there FIRST.**
 
-## Companion Mode (dev-time) — the orchestrator IS the verification node
-A workflow ships with both an automated in-pipeline VERIFICATION surface (the verify nodes) AND the
-human-judged criteria fixture. Production runs the verify nodes for stable, unattended output. But
-during development/debugging — when you're babysitting the run — they're slow, and you (orchestrator + human)
-judge better. Companion Mode makes the orchestrator the standing verifier (the dev-time face of piflow-enhance):
-- **One static toggle, two clean DAGs.** Branch the workflow on a `mode` INPUT arg
-  (`const COMPANION = (args.mode === 'companion')`) and wrap every verify node `if (!COMPANION)`. Because
-  `mode` is a static input (resolved BEFORE any node runs), `extract.mjs`/`run.mjs` realize a FIXED DAG per
-  mode — NOT the result-dependent branching the extractor can't see. `production` (default) = full pipeline;
-  `companion` = producing nodes only.
-- **This only works because verify nodes create nothing (the law above).** Drop them and every key artifact
-  still exists, because PRODUCERS made them. If a verify node is also a producer you could not drop it — split
-  it FIRST, then add the toggle.
-- **Run in the background; judge every stage as it lands.** Poll `run-status.json`; the moment a node goes
-  `ok`, compare its artifact to (a) the GOLD sample and (b) its criteria-fixture entry — the same dual
+## Run profiles (product-declared modes) — let the USER choose how many
+A workflow can declare named run PROFILES in its template `meta.json` — each a GENERIC node-ELISION
+predicate the SDK applies before compile (`docs/design/profiles-and-resume-robustness.md`). A profile that
+elides the verify/gate phase yields a producing-only DAG (the dev-time "companion" posture, where the
+orchestrator IS the verifier); the default runs everything (the unattended "production" posture). The names
+are the PRODUCT's vocabulary, declared as DATA — `@piflow/core` carries none of it (it knows only "elide the
+nodes this predicate matches, rewiring deps so the survivor graph is gateless").
+- **Authoring a workflow that has gate/verify nodes? PRESENT THE USER A CHOICE of how many profiles to
+  declare — and ONE is a fine, common answer.** Don't force a pair. Offer, Claude-Code style: **(1)** just one
+  default profile [recommended if unsure]; **(2)** add a dev profile that elides the gate nodes (faster babysat
+  runs); **(3)** more, you name them. Declare the chosen set as `profiles` + `defaultProfile` in `meta.json`:
+  ```json
+  "profiles": { "production": {}, "companion": { "elidePhases": ["verify-1", "verify-2"] } },
+  "defaultProfile": "production"
+  ```
+  A profile selects nodes to elide by their generic `phase` tag — so give the gate nodes a shared `phase`.
+  Selecting one at run time is `--profile <name>` (piflow-start owns that).
+- **A profile may only elide nodes that CREATE NOTHING — that IS the verify-node law above.** Drop the gates
+  and every key artifact still exists, because PRODUCERS made them; that is precisely why the gate phase is
+  safely elidable. A verify node that is also a producer can't be elided — split it FIRST.
+- **When the gates are elided, the orchestrator IS the verifier.** Run in the background; the moment a node
+  goes `ok`, judge its artifact against (a) the GOLD sample and (b) its criteria-fixture entry — the dual
   reference the `hermes-skill-system` node-validation loop uses (criteria stay a JUDGING reference, NEVER
-  injected). You are the verifier for EVERY surface the skipped nodes would have covered.
+  injected). You cover every surface the elided gates would have.
 - **On a heavy mistake, stop** — don't pour effort onto a bad upstream artifact. Fix at the canonical owner
-  (Hermes), rerun the SUFFIX fixed by the first changed node (`--from`/`--only`), reuse unchanged upstream.
-  Borderline → surface to the human (the eye), don't guess. Promote a fresh artifact over the gold when it's
-  better (this is also how the gold + criteria get sharpened each run).
-A dev-time POSTURE, not a code path beyond the one `mode` branch. Pairs with the criteria fixture
-and `hermes-skill-system`'s node-validation loop.
+  (Hermes), rerun the SUFFIX from the first changed node (`--from`), reuse unchanged upstream. Borderline →
+  surface to the human (the eye). Promote a fresh artifact over the gold when it's better.
+A dev-time POSTURE on a product-declared profile — no engine branch, no per-workflow `mode` code. Pairs with
+the criteria fixture and `hermes-skill-system`'s node-validation loop.
 
 ## Designing a node's I/O — the standards + the I/O map
 Designing a workflow IS setting each node's input/output standards — this is the most meaningful place to fix

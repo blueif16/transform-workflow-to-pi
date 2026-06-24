@@ -82,13 +82,22 @@ A needle matches a stage by substring against its **phase, node-id, or node labe
 - **`--until X` runs through the LAST stage containing X; `--from X` resumes AT X** (reusing upstream artifacts
   via a stat preflight). `--only X` = both.
 
-## Companion intent on an SDK template (the verify-skip)
-A production template carries its verify nodes; the SDK template has **no `mode=companion` toggle** (a known
-gap — an enhancement for piflow-init/the template). To run the producing path WITHOUT a verify gate (so a gate
-can't block/mask the producing result), **window it**: `--until <last producer>` runs producers only; resume
-the rest later with `--from <node after the verify>` — a verify node CREATES nothing, so skipping it loses no
-artifact. When you window verify nodes out, **the orchestrator IS the verifier**: judge each node's artifact
-against the criteria fixture as it lands (see piflow-enhance / hermes-skill-system's node-validation loop).
+## Profiles — match the user's intent to a declared profile, then run
+A template may declare named run PROFILES in its `meta.json` (`profiles` + `defaultProfile`); each ELIDES a
+subset of nodes so one workflow has several run shapes — e.g. a full `production` flow with verify gates and a
+dev `companion` flow that elides them (`docs/design/profiles-and-resume-robustness.md`). Selecting one is the
+whole job, and it is short:
+1. **Read the declared profiles** (`meta.json` `profiles` keys) — those are the ONLY valid names; never invent one.
+2. **Match the user's stated intent to one** → `--profile <name>`: "just build it / dev run / skip the gates" →
+   the gate-eliding profile (e.g. `companion`); "full / unattended / validated" → the default (e.g.
+   `production`); a profile they name → use it. No flag → the template's `defaultProfile`. An unknown name
+   ERRORS loudly, listing the declared ones (a typo can't silently run the wrong shape).
+3. Done — the profile compiles the reduced, gateless DAG; `--from`/`--until` still window WITHIN it.
+
+When a profile elides the verify gates, **the orchestrator IS the verifier** — judge each node's artifact
+against the criteria fixture as it lands (piflow-enhance / hermes-skill-system's node-validation loop).
+(Obsolete: hand-windowing gates out with `--until <last producer>` — use `--profile`; it rewires deps so a
+`--from` resume never blocks on an elided gate's missing artifact, the failure that motivated this.)
 
 ## Triage a misbehaving run (failure signatures)
 - **never-wrote** (clean exit, required artifact absent) → read the node's `events.jsonl`: explore-forever /
