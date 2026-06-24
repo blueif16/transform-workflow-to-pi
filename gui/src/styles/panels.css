@@ -1,0 +1,194 @@
+/* ============================================================================
+   Flowmap — panel layouts: the floating directory navigator (Miller columns)
+   and the overlay's per-node config blocks. Depends on tokens.css.
+   No backdrop-filter here — the directory's glass comes from GlassSurface
+   (.ds-glass), which is the only blur surface. These are flat, tokens-only.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   1. DIRECTORY PANEL — a floating folder/menu navigator as Miller columns:
+   each folder you open reveals the next column to the right (a drill-in that
+   keeps the whole path of choices on screen). The strip scrolls horizontally
+   when it outgrows the panel; new columns slide in (motion, in the component).
+   --------------------------------------------------------------------------- */
+.ds-dir {
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  max-width: min(72vw, 580px);
+  padding: 0;                 /* GlassSurface owns the surface; rows own padding */
+  overflow: hidden;           /* keep columns inside the beveled glass corners */
+}
+
+.ds-dir__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-2) var(--ds-space-3);
+  border-bottom: 1px solid var(--ds-border-hairline);
+}
+.ds-dir__title {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ds-tracking-label);
+  color: var(--ds-text-tertiary);
+}
+.ds-dir__crumb {
+  margin-left: auto;
+  max-width: 320px;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  color: var(--ds-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;             /* truncate the *start* of a long path, not the end */
+  text-align: left;
+}
+
+.ds-dir__cols {
+  display: flex;
+  max-height: var(--ds-dir-max-h);
+  overflow-x: auto;
+  overscroll-behavior: contain;
+}
+.ds-dir__col {
+  flex: 0 0 var(--ds-dir-col-width);
+  width: var(--ds-dir-col-width);
+  max-height: var(--ds-dir-max-h);
+  overflow-y: auto;
+  padding: var(--ds-space-1);
+  border-right: 1px solid var(--ds-border-hairline);
+}
+.ds-dir__col:last-child { border-right: none; }
+
+.ds-dir__row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  width: 100%;
+  height: var(--ds-dir-row-h);
+  padding: 0 var(--ds-space-2);
+  border: none;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: var(--ds-text-secondary);
+  font-family: var(--ds-font-sans);
+  font-size: var(--ds-text-sm);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--ds-dur-fast) var(--ds-ease-standard),
+              color var(--ds-dur-fast) var(--ds-ease-standard);
+}
+.ds-dir__row:hover { background: var(--ds-bg-hover); color: var(--ds-text-primary); }
+.ds-dir__row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ds-accent-ring);
+}
+/* selected = on the active path (folder) or the chosen file */
+.ds-dir__row[aria-current="true"] {
+  background: var(--ds-accent-subtle);
+  color: var(--ds-text-accent);
+}
+.ds-dir__icon  { display: inline-flex; color: var(--ds-text-tertiary); flex: 0 0 auto; }
+.ds-dir__row[aria-current="true"] .ds-dir__icon { color: var(--ds-accent); }
+.ds-dir__name  { overflow: hidden; text-overflow: ellipsis; }
+.ds-dir__chev  { margin-left: auto; display: inline-flex; color: var(--ds-text-tertiary); flex: 0 0 auto; }
+.ds-dir__type  {
+  margin-left: auto;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ds-tracking-label);
+  color: var(--ds-text-tertiary);
+  flex: 0 0 auto;
+}
+
+/* ---------------------------------------------------------------------------
+   2. FIELD BLOCKS — the overlay's per-node config, laid out as a grid of
+   rectangular cards that tile cleanly beside/below the "middle card" content.
+   Label (mono, uppercase) over value; a tone gives it a 3px status edge — the
+   same game geometry as a node, so the blocks read as part of the same kit.
+   --------------------------------------------------------------------------- */
+.ds-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--ds-field-min), 1fr));
+  gap: var(--ds-space-2);
+}
+.ds-field {
+  position: relative;
+  min-width: 0;
+  padding: var(--ds-space-3);
+  background: var(--ds-bg-surface);
+  border: 1px solid var(--ds-border-hairline);
+  border-radius: var(--ds-radius-md);
+  box-shadow: var(--ds-shadow-xs);
+}
+.ds-field__label {
+  margin-bottom: var(--ds-space-1);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ds-tracking-label);
+  color: var(--ds-text-tertiary);
+}
+.ds-field__value {
+  font-size: var(--ds-text-base);
+  font-weight: var(--ds-weight-medium);
+  letter-spacing: var(--ds-tracking-tight);
+  color: var(--ds-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ds-field__value--mono {
+  font-family: var(--ds-font-mono);
+  font-weight: var(--ds-weight-normal);
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-code);
+}
+
+/* tone = a 3px left status edge (the node's left-bar grammar) + value color */
+.ds-field--accent,
+.ds-field--success,
+.ds-field--warning,
+.ds-field--error { padding-left: calc(var(--ds-space-3) + 3px); }
+.ds-field--accent::before,
+.ds-field--success::before,
+.ds-field--warning::before,
+.ds-field--error::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: var(--ds-radius-md) 0 0 var(--ds-radius-md);
+}
+.ds-field--accent::before  { background: var(--ds-accent); }
+.ds-field--success::before { background: var(--ds-success); }
+.ds-field--warning::before { background: var(--ds-warning); }
+.ds-field--error::before   { background: var(--ds-error); }
+.ds-field--accent  .ds-field__value { color: var(--ds-text-accent); }
+.ds-field--success .ds-field__value { color: var(--ds-success-fg); }
+.ds-field--warning .ds-field__value { color: var(--ds-warning-fg); }
+.ds-field--error   .ds-field__value { color: var(--ds-error-fg); }
+
+/* a field block that spans the whole grid row (used for the progress block) */
+.ds-field--full { grid-column: 1 / -1; }
+.ds-field__row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-3);
+}
+.ds-field__row .ds-progress { flex: 1; }
+.ds-field__pct {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-secondary);
+  flex: 0 0 auto;
+  min-width: 3.5ch;
+  text-align: right;
+}

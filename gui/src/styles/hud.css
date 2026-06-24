@@ -1,0 +1,168 @@
+/* ============================================================================
+   Flowmap — the "clicked-up" HUD: a centered CLUSTER of cards (a bento, not a
+   banded frame). The identity card spans the cluster; the rest are sized to
+   purpose — half-width cards pair up, full-width cards take their own row.
+   Built on glass.css (.ds-glass soft cards, .ds-progress) + tokens. The scrim
+   does the heavy background blur; cards are soft glass.
+   ========================================================================== */
+
+/* --- cluster ------------------------------------------------------------ */
+.ds-hud2 {
+  width: min(960px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: auto;            /* the cluster is interactive; the layer isn't */
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ds-space-4);
+  align-content: start;
+  padding: 4px;                    /* room for the corner brackets */
+  outline: none;
+}
+
+/* --- a card ------------------------------------------------------------- */
+.ds-hud-card { position: relative; min-width: 0; }
+.ds-hud-card--full { grid-column: 1 / -1; }       /* span the whole cluster */
+.ds-hud-card__title {
+  padding: var(--ds-space-2) var(--ds-space-4);
+  border-bottom: 1px solid var(--ds-border-hairline);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ds-tracking-label);
+  color: var(--ds-text-tertiary);
+}
+.ds-hud-card__body { padding: var(--ds-space-4); }
+
+/* identity card — roomier, holds the charge bar */
+.ds-hud2__ident .ds-hud-card__body { padding: var(--ds-space-5); display: flex; flex-direction: column; gap: var(--ds-space-4); }
+.ds-hud2__ident-row { display: flex; align-items: center; gap: var(--ds-space-3); }
+.ds-hud2__ident-id { min-width: 0; margin-right: auto; }
+
+/* --- corner brackets (two, on the square corners; rounded elbow) -------- */
+.ds-hud__corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--ds-accent);
+  opacity: 0.85;
+  pointer-events: none;
+}
+.ds-hud__corner--tl { top: 8px; left: 8px; border-right: none; border-bottom: none; border-top-left-radius: 4px; }
+.ds-hud__corner--br { bottom: 8px; right: 8px; border-left: none; border-top: none; border-bottom-right-radius: 4px; }
+
+/* --- identity type/title ------------------------------------------------ */
+.ds-hud__eyebrow {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ds-tracking-label);
+  color: var(--ds-text-tertiary);
+}
+.ds-hud__title {
+  margin: 2px 0 0;
+  font-size: var(--ds-text-2xl);
+  font-weight: var(--ds-weight-semibold);
+  letter-spacing: var(--ds-tracking-display);
+  line-height: var(--ds-leading-tight);
+  color: var(--ds-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- status pill -------------------------------------------------------- */
+.ds-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  height: 24px;
+  padding: 0 var(--ds-space-2);
+  border-radius: var(--ds-radius-full);
+  border: 1px solid var(--ds-border-hairline);
+  background: var(--ds-bg-surface);
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-secondary);
+  flex: 0 0 auto;
+}
+.ds-pill__dot { position: relative; width: 7px; height: 7px; border-radius: var(--ds-radius-full); background: var(--ds-text-tertiary); }
+.ds-pill[data-status="running"]  { border-color: var(--ds-accent);  color: var(--ds-text-accent); }
+.ds-pill[data-status="running"]  .ds-pill__dot { background: var(--ds-accent); }
+.ds-pill[data-status="selected"] { border-color: var(--ds-accent);  color: var(--ds-text-accent); }
+.ds-pill[data-status="selected"] .ds-pill__dot { background: var(--ds-accent); }
+.ds-pill[data-status="success"]  { border-color: var(--ds-success); color: var(--ds-success-fg); }
+.ds-pill[data-status="success"]  .ds-pill__dot { background: var(--ds-success); }
+.ds-pill[data-status="error"]    { border-color: var(--ds-error);   color: var(--ds-error-fg); }
+.ds-pill[data-status="error"]    .ds-pill__dot { background: var(--ds-error); }
+.ds-pill[data-status="running"] .ds-pill__dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  animation: ds-pulse 1.6s var(--ds-ease-standard) infinite;
+}
+@keyframes ds-pulse {
+  0%   { transform: scale(1); opacity: 0.55; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+/* --- telemetry: metric tiles + sparkline -------------------------------- */
+.ds-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--ds-space-3); }
+.ds-metric {
+  position: relative;
+  padding: var(--ds-space-4);
+  background: var(--ds-bg-surface);
+  border: 1px solid var(--ds-border-hairline);
+  border-radius: var(--ds-radius-lg);
+  box-shadow: var(--ds-shadow-xs);
+  overflow: hidden;
+}
+.ds-metric__k { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary); }
+.ds-metric__v { margin-top: 2px; font-size: var(--ds-text-2xl); font-weight: var(--ds-weight-semibold); letter-spacing: var(--ds-tracking-display); color: var(--ds-text-primary); }
+.ds-metric__d { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
+.ds-metric__d--up { color: var(--ds-success-fg); }
+.ds-metric__d--down { color: var(--ds-error-fg); }
+.ds-metric__spark { display: block; height: 28px; margin-top: var(--ds-space-2); color: var(--ds-accent); }
+
+.ds-hud__activity { display: block; height: 64px; color: var(--ds-accent); }
+
+.ds-spark { display: block; width: 100%; height: 100%; overflow: visible; }
+.ds-spark__line { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.ds-spark__area { fill: currentColor; opacity: 0.1; }
+.ds-spark__dot  { fill: currentColor; }
+
+/* --- stream console ----------------------------------------------------- */
+.ds-stream {
+  max-height: 280px;
+  overflow: auto;
+  padding: var(--ds-space-4);
+  background: var(--ds-bg-sunken);
+  border: 1px solid var(--ds-border-hairline);
+  border-radius: var(--ds-radius-lg);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-sm);
+  line-height: var(--ds-leading-relaxed);
+  color: var(--ds-text-code);
+}
+.ds-stream__line { display: flex; gap: var(--ds-space-2); white-space: pre-wrap; word-break: break-word; }
+.ds-stream__dot { flex: 0 0 auto; width: 6px; height: 6px; margin-top: 7px; border-radius: var(--ds-radius-full); background: var(--ds-text-tertiary); }
+.ds-stream__line--ok .ds-stream__dot    { background: var(--ds-success); }
+.ds-stream__line--warn .ds-stream__dot  { background: var(--ds-warning); }
+.ds-stream__line--error .ds-stream__dot { background: var(--ds-error); }
+.ds-stream__cursor { display: inline-block; width: 7px; height: 14px; vertical-align: -2px; background: var(--ds-accent); animation: ds-blink 1.05s steps(2, end) infinite; }
+@keyframes ds-blink { 50% { opacity: 0; } }
+
+/* --- I/O signals -------------------------------------------------------- */
+.ds-io { display: flex; flex-direction: column; gap: var(--ds-space-2); }
+.ds-io__row { display: flex; align-items: center; gap: var(--ds-space-2); font-family: var(--ds-font-mono); font-size: var(--ds-text-sm); color: var(--ds-text-secondary); }
+.ds-io__arrow { display: inline-flex; flex: 0 0 auto; color: var(--ds-text-tertiary); }
+.ds-io__arrow--in  { color: var(--ds-accent); }
+.ds-io__arrow--out { color: var(--ds-success); }
+
+/* --- reduced motion ----------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .ds-pill__dot::after,
+  .ds-stream__cursor { animation: none; }
+}

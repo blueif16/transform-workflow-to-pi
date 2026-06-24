@@ -1,0 +1,383 @@
+/* ============================================================================
+   Flowmap — material, orb field, node card, motion primitives
+   Depends on tokens.css. Performance rule baked in:
+   backdrop-filter (blur) appears ONLY on .ds-glass. Everything else is flat.
+   ========================================================================== */
+
+/* Hide scrollbars by default everywhere (scrolling still works) — the chrome is
+   meant to feel like a clean canvas, not a document. */
+* { scrollbar-width: none; -ms-overflow-style: none; }
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* ---------------------------------------------------------------------------
+   1. ORB FIELD — the subtle dynamic background ("orbs")
+   2–3 large, low-opacity radial blooms drifting slowly. Compositor-only:
+   we animate transform, never the gradient. Sits behind the canvas.
+   --------------------------------------------------------------------------- */
+.ds-orb-field {
+  position: absolute;
+  inset: 0;
+  z-index: var(--ds-z-orbs);
+  overflow: hidden;
+  pointer-events: none;
+  /* isolate paint so the canvas above never repaints with the orbs */
+  contain: strict;
+}
+
+.ds-orb {
+  position: absolute;
+  width: var(--ds-orb-size);
+  height: var(--ds-orb-size);
+  border-radius: var(--ds-radius-full);
+  filter: blur(40px);
+  will-change: transform;
+  opacity: 0.9;
+}
+
+.ds-orb--a {
+  top: -10%;
+  left: -5%;
+  background: radial-gradient(circle at center, var(--ds-orb-a), transparent 70%);
+  animation: ds-drift-a var(--ds-orb-drift) ease-in-out infinite alternate;
+}
+.ds-orb--b {
+  bottom: -15%;
+  right: -8%;
+  background: radial-gradient(circle at center, var(--ds-orb-b), transparent 70%);
+  animation: ds-drift-b calc(var(--ds-orb-drift) * 1.3) ease-in-out infinite alternate;
+}
+.ds-orb--c {
+  top: 30%;
+  right: 20%;
+  background: radial-gradient(circle at center, var(--ds-orb-c), transparent 70%);
+  animation: ds-drift-c calc(var(--ds-orb-drift) * 1.6) ease-in-out infinite alternate;
+}
+
+@keyframes ds-drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(6vw, 4vh, 0) scale(1.12); }
+}
+@keyframes ds-drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.05); }
+  to   { transform: translate3d(-5vw, -6vh, 0) scale(1); }
+}
+@keyframes ds-drift-c {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(-4vw, 5vh, 0) scale(1.1); }
+}
+
+/* ---------------------------------------------------------------------------
+   2. GLASS SURFACE — Liquid-Glass material. The expensive one. Use sparingly:
+   the expanded overlay window, floating toolbars. NOT on nodes.
+   --------------------------------------------------------------------------- */
+.ds-glass {
+  background: var(--ds-glass-bg);
+  -webkit-backdrop-filter: blur(var(--ds-glass-blur)) saturate(var(--ds-glass-saturate));
+  backdrop-filter: blur(var(--ds-glass-blur)) saturate(var(--ds-glass-saturate));
+  border-radius: 0;               /* sharp — sci-fi rectangle, not a SaaS card */
+  box-shadow: var(--ds-shadow-glass);
+  /* the inner top highlight is in the shadow stack; this border is the rim */
+  border: 1px solid var(--ds-glass-highlight);
+}
+/* progressive enhancement: two opposing beveled corners (the classic
+   sci-fi-rectangle silhouette) where corner-shape is supported */
+@supports (corner-shape: bevel) {
+  .ds-glass {
+    border-start-end-radius: 16px;
+    border-end-start-radius: 16px;
+    corner-shape: bevel;
+  }
+}
+
+.ds-glass--soft {
+  -webkit-backdrop-filter: blur(var(--ds-glass-blur-soft)) saturate(var(--ds-glass-saturate));
+  backdrop-filter: blur(var(--ds-glass-blur-soft)) saturate(var(--ds-glass-saturate));
+}
+
+/* Legibility guard (Apple's rule): when text sits on glass over busy content,
+   add this to the text container for a faint local contrast lift. */
+.ds-glass__legible {
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+/* Graceful fallback where backdrop-filter is unsupported → opaque surface */
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ds-glass { background: var(--ds-glass-bg-strong); }
+}
+
+/* ---------------------------------------------------------------------------
+   3. SCRIM — dim + soft blur behind the overlay so the busy node canvas drops
+   back and the window is unambiguously the focus. Heavier than a hint (the
+   node graph behind is high-contrast), still short of an opaque "dark modal".
+   Tune via --ds-scrim-bg / --ds-scrim-blur.
+   --------------------------------------------------------------------------- */
+.ds-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--ds-z-scrim);
+  background: var(--ds-scrim-bg);
+  -webkit-backdrop-filter: blur(var(--ds-scrim-blur));
+  backdrop-filter: blur(var(--ds-scrim-blur));
+}
+
+/* ---------------------------------------------------------------------------
+   4. NODE — sharp-cornered frosted-glass panel (the "right-angle" game feel).
+   NO clip-path: it would clip away border + box-shadow + backdrop-filter.
+   Corners are real 90°, with corner-shape:bevel as progressive enhancement.
+   TYPE = icon + mono label (desaturated). STATUS = border color + outer glow
+   (the Blender/n8n pattern). No left bar, no body fill, no pulse.
+   --------------------------------------------------------------------------- */
+.ds-node {
+  position: relative;
+  width: var(--ds-node-width);
+  min-height: var(--ds-node-min-h);
+  border-radius: 0;                       /* right angles */
+  background: var(--ds-node-glass);
+  -webkit-backdrop-filter: blur(var(--ds-node-blur)) saturate(var(--ds-glass-saturate));
+  backdrop-filter: blur(var(--ds-node-blur)) saturate(var(--ds-glass-saturate));
+  border: 1px solid var(--ds-border-hairline);
+  box-shadow: var(--ds-shadow-sm);
+  font-family: var(--ds-font-sans);
+  color: var(--ds-text-primary);
+  transition:
+    transform var(--ds-dur-fast) var(--ds-ease-standard),
+    box-shadow var(--ds-dur-base) var(--ds-ease-standard),
+    border-color var(--ds-dur-base) var(--ds-ease-standard),
+    background var(--ds-dur-base) var(--ds-ease-standard);
+  cursor: pointer;
+}
+/* progressive enhancement: one beveled corner where the browser supports it */
+@supports (corner-shape: bevel) {
+  .ds-node { border-start-end-radius: var(--ds-bevel); corner-shape: bevel; }
+}
+
+/* LOD escape hatch: add .ds-lod-flat to the canvas root when zoomed out or
+   dense → drop per-node blur to a flat translucent fill (keeps fps at scale). */
+.ds-lod-flat .ds-node {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--ds-bg-surface);
+}
+
+/* corner brackets — HUD targeting cue, only on hover / focus / active */
+.ds-node::before,
+.ds-node::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--ds-accent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-standard);
+}
+.ds-node::before { top: -1px; left: -1px; border-right: none; border-bottom: none; }
+.ds-node::after  { bottom: -1px; right: -1px; border-left: none; border-top: none; }
+.ds-node:hover::before, .ds-node:hover::after,
+.ds-node:focus-visible::before, .ds-node:focus-visible::after,
+.ds-node[data-status="selected"]::before, .ds-node[data-status="selected"]::after,
+.ds-node[data-status="running"]::before, .ds-node[data-status="running"]::after { opacity: 1; }
+
+/* hover = lift + clearer glass */
+.ds-node:hover {
+  transform: translateY(-2px);
+  background: var(--ds-node-glass-hover);
+  box-shadow: var(--ds-shadow-node-hover);
+}
+.ds-node:focus-visible {
+  outline: none;
+  border-color: var(--ds-border-focus);
+  box-shadow: var(--ds-shadow-node-hover);
+}
+
+/* STATUS = border color + soft outer glow (energized edge) */
+.ds-node[data-status="selected"],
+.ds-node[data-status="running"] {
+  border-color: var(--ds-accent);
+  box-shadow: var(--ds-shadow-sm), 0 0 0 3px var(--ds-accent-ring);
+}
+.ds-node[data-status="success"] {
+  border-color: var(--ds-success);
+  box-shadow: var(--ds-shadow-sm), 0 0 0 3px rgba(21, 161, 74, 0.20);
+}
+.ds-node[data-status="error"] {
+  border-color: var(--ds-error);
+  box-shadow: var(--ds-shadow-sm), 0 0 0 3px rgba(229, 72, 77, 0.20);
+}
+.ds-node[data-status="success"]::before, .ds-node[data-status="success"]::after { border-color: var(--ds-success); }
+.ds-node[data-status="error"]::before,   .ds-node[data-status="error"]::after   { border-color: var(--ds-error); }
+
+/* header / body — structure via a hairline divider, not a colored bar */
+.ds-node__header {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-3);
+  border-bottom: 1px solid var(--ds-border-hairline);
+}
+.ds-node__title {
+  font-size: var(--ds-text-base);
+  font-weight: var(--ds-weight-medium);
+  letter-spacing: var(--ds-tracking-tight);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ds-node__type {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ds-tracking-label);
+  color: var(--ds-text-tertiary);
+}
+.ds-node__body {
+  padding: var(--ds-space-2) var(--ds-space-3) var(--ds-space-3);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* in-node progress sits flush on the node's bottom edge (the "charge" line) */
+.ds-node__progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   PROGRESS — the "charge" bar (battery-charging energy, kept elegant).
+   The ONE element that animates continuously inside a node, and it is strictly
+   transform-only (a sheen sweeps the fill) so it stays compositor-cheap even
+   across many running nodes. The determinate fill width changes only on a real
+   progress update (a state change, not per-frame), so it never costs the budget.
+
+   Anatomy:
+     .ds-progress            track (rounded, clips the fill)
+       .ds-progress__fill    accent fill, width = var(--ds-p), leading-edge glow
+         .ds-progress__sheen the travelling light = the "charging" cue
+   Variants: --node (slim, square ends, flush to a node) · --block (overlay).
+   State:    data-status recolors the fill · --indeterminate = unknown %, the
+             fill itself becomes a looping segment.
+   --------------------------------------------------------------------------- */
+.ds-progress {
+  position: relative;
+  width: 100%;
+  height: var(--ds-progress-h);
+  border-radius: var(--ds-radius-full);
+  background: var(--ds-progress-track);
+  contain: layout;             /* isolate layout; let the fill's glow halo escape */
+  /* note: the sheen is clipped by the FILL's own overflow:hidden, not here, so
+     the track stays un-clipped and the leading-edge "charged" glow can bloom. */
+}
+.ds-progress--node  { height: var(--ds-progress-h);       border-radius: 0; }
+.ds-progress--block { height: var(--ds-progress-h-block); border-radius: var(--ds-radius-full); }
+
+.ds-progress__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--ds-p, 0%);
+  border-radius: inherit;
+  background: var(--ds-progress-fill);
+  box-shadow: 0 0 6px 0 var(--ds-progress-glow);   /* leading-edge bloom */
+  overflow: hidden;                                /* keep the sheen on the fill */
+  transition:
+    width var(--ds-dur-base) var(--ds-ease-standard),
+    background var(--ds-dur-base) var(--ds-ease-standard);
+}
+.ds-progress__sheen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  background: linear-gradient(90deg, transparent, var(--ds-progress-sheen), transparent);
+  transform: translateX(-120%);
+  will-change: transform;
+  animation: ds-charge var(--ds-progress-sweep) var(--ds-ease-standard) infinite;
+}
+@keyframes ds-charge {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+/* status recolors the fill (running = accent default) */
+.ds-progress[data-status="success"] .ds-progress__fill {
+  background: var(--ds-progress-fill-success);
+  box-shadow: 0 0 6px 0 rgba(21, 161, 74, 0.35);
+}
+.ds-progress[data-status="error"] .ds-progress__fill {
+  background: var(--ds-progress-fill-error);
+  box-shadow: 0 0 6px 0 rgba(229, 72, 77, 0.35);
+}
+/* the sheen reads only while actively charging */
+.ds-progress:not([data-status="running"]) .ds-progress__sheen { display: none; }
+
+/* indeterminate: unknown %, the fill becomes a looping segment (transform only) */
+.ds-progress--indeterminate .ds-progress__fill {
+  width: 42%;
+  animation: ds-indeterminate var(--ds-progress-indeterminate) var(--ds-ease-standard) infinite;
+}
+.ds-progress--indeterminate .ds-progress__sheen { display: none; }
+@keyframes ds-indeterminate {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(280%); }
+}
+
+/* Button loading spinner */
+.ds-spinner {
+  width: 0.85em;
+  height: 0.85em;
+  border-radius: var(--ds-radius-full);
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  display: inline-block;
+  animation: ds-spin 0.6s linear infinite;
+}
+@keyframes ds-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ds-spinner { animation-duration: 1.4s; } }
+
+/* ---------------------------------------------------------------------------
+   5. HANDLES — connection ports. Small, hairline, accent on hover.
+   --------------------------------------------------------------------------- */
+.ds-handle {
+  width: var(--ds-handle) !important;
+  height: var(--ds-handle) !important;
+  background: var(--ds-bg-surface) !important;
+  border: 1.5px solid var(--ds-border-strong) !important;
+  border-radius: var(--ds-radius-full) !important;
+  transition: border-color var(--ds-dur-fast), transform var(--ds-dur-fast);
+}
+.ds-handle:hover { border-color: var(--ds-accent) !important; transform: scale(1.25); }
+
+/* ---------------------------------------------------------------------------
+   6. EDGES — flowing accent when active (React Flow class hooks)
+   --------------------------------------------------------------------------- */
+.react-flow__edge-path { stroke: var(--ds-edge-default); stroke-width: 1.5; }
+.react-flow__edge.ds-edge-active .react-flow__edge-path {
+  stroke: var(--ds-edge-active);
+  stroke-width: 2;
+  stroke-dasharray: 5;
+  animation: ds-dash 0.6s linear infinite;
+}
+@keyframes ds-dash { to { stroke-dashoffset: -10; } }
+
+/* ---------------------------------------------------------------------------
+   7. REDUCED MOTION — honor the OS setting everywhere.
+   Orbs freeze, pulses stop, expands become instant fades (handled in JS too).
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .ds-orb,
+  .react-flow__edge.ds-edge-active .react-flow__edge-path {
+    animation: none !important;
+  }
+  .ds-node { transition: box-shadow var(--ds-dur-fast) var(--ds-ease-standard), border-color var(--ds-dur-fast); }
+  .ds-node:hover { transform: none; }
+  /* progress: freeze the charge sweep; show the static fill (still informative).
+     Indeterminate has no real value, so park it as a calm 42% segment. */
+  .ds-progress__sheen { animation: none; display: none; }
+  .ds-progress--indeterminate .ds-progress__fill { animation: none; transform: none; }
+}

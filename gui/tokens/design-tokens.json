@@ -1,0 +1,279 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "$description": "Flowmap design system — Geist-clean light base + Liquid-Glass material accents + restrained game-panel geometry. Tuned for a node/workflow canvas (React Flow). Light is the primary theme; dark scaffolding is provided but not the design target.",
+
+  "color": {
+    "primitive": {
+      "$type": "color",
+      "white":   { "$value": "#ffffff" },
+      "black":   { "$value": "#000000" },
+      "neutral": {
+        "50":   { "$value": "#fafafa" },
+        "100":  { "$value": "#f5f5f5" },
+        "200":  { "$value": "#ebebeb", "$description": "hairline border — the structural workhorse" },
+        "300":  { "$value": "#e0e0e0" },
+        "400":  { "$value": "#d4d4d4", "$description": "hairline strong" },
+        "500":  { "$value": "#a3a3a3" },
+        "600":  { "$value": "#737373", "$description": "text tertiary / muted" },
+        "700":  { "$value": "#525252", "$description": "text secondary" },
+        "800":  { "$value": "#404040" },
+        "900":  { "$value": "#262626" },
+        "1000": { "$value": "#171717", "$description": "ink — primary text & filled actions; never pure #000" }
+      },
+      "blue": {
+        "$description": "the single chromatic accent. Used scarcely: active/selected/running, focus rings, flowing edges.",
+        "50":  { "$value": "#f0f7ff" },
+        "100": { "$value": "#e0effe" },
+        "200": { "$value": "#b9ddff" },
+        "300": { "$value": "#7cc0ff" },
+        "400": { "$value": "#3293ff" },
+        "500": { "$value": "#0070f3", "$description": "accent default (Geist blue)" },
+        "600": { "$value": "#0061d5", "$description": "accent hover — AA on white for text" },
+        "700": { "$value": "#0052b3", "$description": "accent active" }
+      },
+      "green":  { "500": { "$type": "color", "$value": "#15a14a" }, "600": { "$type": "color", "$value": "#0f7a38", "$description": "AA text on white" } },
+      "amber":  { "500": { "$type": "color", "$value": "#e08600" }, "600": { "$type": "color", "$value": "#b46600", "$description": "AA text on white" } },
+      "red":    { "500": { "$type": "color", "$value": "#e5484d" }, "600": { "$type": "color", "$value": "#c1262b", "$description": "AA text on white" } }
+    },
+
+    "bg": {
+      "$type": "color",
+      "canvas":   { "$value": "{color.primitive.white}", "$description": "the workspace floor (under the orb field)" },
+      "soft":     { "$value": "{color.primitive.neutral.50}" },
+      "surface":  { "$value": "{color.primitive.white}", "$description": "flat node cards, panels — NOT glass (perf)" },
+      "raised":   { "$value": "{color.primitive.white}" },
+      "sunken":   { "$value": "{color.primitive.neutral.100}", "$description": "input wells, code blocks" },
+      "hover":    { "$value": "{color.primitive.neutral.50}" },
+      "active":   { "$value": "{color.primitive.neutral.100}" }
+    },
+
+    "text": {
+      "$type": "color",
+      "primary":   { "$value": "{color.primitive.neutral.1000}" },
+      "secondary": { "$value": "{color.primitive.neutral.700}" },
+      "tertiary":  { "$value": "{color.primitive.neutral.600}" },
+      "disabled":  { "$value": "{color.primitive.neutral.500}" },
+      "inverse":   { "$value": "{color.primitive.white}" },
+      "accent":    { "$value": "{color.primitive.blue.600}", "$description": "accent text — uses 600 for AA" },
+      "code":      { "$value": "{color.primitive.neutral.900}" }
+    },
+
+    "border": {
+      "$type": "color",
+      "hairline":  { "$value": "{color.primitive.neutral.200}", "$description": "default structural line" },
+      "strong":    { "$value": "{color.primitive.neutral.400}" },
+      "accent":    { "$value": "{color.primitive.blue.500}" },
+      "focus":     { "$value": "{color.primitive.blue.500}" }
+    },
+
+    "accent": {
+      "$type": "color",
+      "default": { "$value": "{color.primitive.blue.500}" },
+      "hover":   { "$value": "{color.primitive.blue.600}" },
+      "active":  { "$value": "{color.primitive.blue.700}" },
+      "subtle":  { "$value": "{color.primitive.blue.50}", "$description": "tinted fills for selected/running rows" },
+      "ring":    { "$value": "rgba(0, 112, 243, 0.35)", "$description": "soft glow around active node" }
+    },
+
+    "feedback": {
+      "$type": "color",
+      "success":    { "$value": "{color.primitive.green.500}" },
+      "success-fg": { "$value": "{color.primitive.green.600}" },
+      "warning":    { "$value": "{color.primitive.amber.500}" },
+      "warning-fg": { "$value": "{color.primitive.amber.600}" },
+      "error":      { "$value": "{color.primitive.red.500}" },
+      "error-fg":   { "$value": "{color.primitive.red.600}" },
+      "info":       { "$value": "{color.primitive.blue.500}" }
+    },
+
+    "node": {
+      "$type": "color",
+      "$description": "status colors for the left accent bar + ring on a workflow node",
+      "idle":     { "$value": "{color.primitive.neutral.400}" },
+      "selected": { "$value": "{color.primitive.blue.500}" },
+      "running":  { "$value": "{color.primitive.blue.500}" },
+      "success":  { "$value": "{color.primitive.green.500}" },
+      "error":    { "$value": "{color.primitive.red.500}" },
+      "agent":    { "$value": "{color.primitive.blue.500}", "$description": "agent nodes" },
+      "file":     { "$value": "{color.primitive.neutral.600}", "$description": "file/code nodes" }
+    },
+
+    "edge": {
+      "$type": "color",
+      "default": { "$value": "{color.primitive.neutral.400}" },
+      "active":  { "$value": "{color.primitive.blue.500}", "$description": "edge carrying live data (animated)" }
+    }
+  },
+
+  "glass": {
+    "$description": "Liquid-Glass material. Reserved for the ONE expanded overlay window + floating toolbars. NEVER on every node — backdrop-filter is the only expensive effect in this system.",
+    "bg":         { "$type": "color", "$value": "rgba(255, 255, 255, 0.72)" },
+    "bg-strong":  { "$type": "color", "$value": "rgba(255, 255, 255, 0.85)" },
+    "highlight":  { "$type": "color", "$value": "rgba(255, 255, 255, 0.65)", "$description": "inner top highlight that makes glass read as lit" },
+    "ring":       { "$type": "color", "$value": "rgba(0, 0, 0, 0.06)", "$description": "outer hairline so glass separates from white bg" },
+    "blur":       { "$type": "dimension", "$value": "20px" },
+    "blur-soft":  { "$type": "dimension", "$value": "12px" },
+    "saturate":   { "$value": "180%" }
+  },
+
+  "orb": {
+    "$description": "the subtle dynamic background (the 'orbs/dolls'). 2–3 large, low-opacity radial blooms drifting slowly behind the canvas. Pure CSS transforms — compositor only.",
+    "a": { "$type": "color", "$value": "rgba(0, 112, 243, 0.10)", "$description": "cool blue bloom" },
+    "b": { "$type": "color", "$value": "rgba(124, 192, 255, 0.10)", "$description": "lighter blue bloom" },
+    "c": { "$type": "color", "$value": "rgba(180, 200, 255, 0.08)", "$description": "lilac-grey bloom" },
+    "size":    { "$type": "dimension", "$value": "44vmax" },
+    "opacity": { "$value": "1" },
+    "drift-duration": { "$type": "duration", "$value": "32s" }
+  },
+
+  "scrim": {
+    "$description": "the dim + soft blur behind the expanded overlay. Heavier than a hint so the high-contrast node canvas drops back and the window is unambiguously the focus; still short of an opaque 'dark modal'.",
+    "bg":   { "$type": "color", "$value": "rgba(23, 23, 23, 0.34)" },
+    "blur": { "$type": "dimension", "$value": "3px" }
+  },
+
+  "progress": {
+    "$description": "the in-node 'charge' bar + the overlay progress block. The one element that animates continuously inside a node — and it is strictly transform-only (a sheen sweeps the fill), so it stays compositor-cheap across many running nodes and freezes under reduced motion. The determinate fill width changes only on a real progress update, never per frame.",
+    "height":        { "$type": "dimension", "$value": "3px", "$description": "node: slim, echoes the 3px status geometry" },
+    "height-block":  { "$type": "dimension", "$value": "8px", "$description": "overlay: readable" },
+    "track":         { "$type": "color", "$value": "{color.primitive.neutral.200}" },
+    "fill":          { "$type": "color", "$value": "{color.accent.default}" },
+    "fill-success":  { "$type": "color", "$value": "{color.feedback.success}" },
+    "fill-error":    { "$type": "color", "$value": "{color.feedback.error}" },
+    "glow":          { "$type": "color", "$value": "{color.accent.ring}", "$description": "leading-edge bloom" },
+    "sheen":         { "$type": "color", "$value": "rgba(255, 255, 255, 0.55)", "$description": "the travelling charge light" },
+    "sweep":         { "$type": "duration", "$value": "1.6s", "$description": "sheen travel duration" },
+    "indeterminate": { "$type": "duration", "$value": "1.4s", "$description": "unknown-% segment loop" }
+  },
+
+  "typography": {
+    "fontFamily": {
+      "sans": { "$type": "fontFamily", "$value": "'Geist', 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" },
+      "mono": { "$type": "fontFamily", "$value": "'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace", "$description": "for file paths, code, type labels, IDs — signals 'this is data'" }
+    },
+    "fontSize": {
+      "$type": "dimension",
+      "xs":   { "$value": "0.6875rem", "$description": "11px — type-label/eyebrow, uppercase" },
+      "sm":   { "$value": "0.75rem",   "$description": "12px" },
+      "base": { "$value": "0.875rem",  "$description": "14px — UI body (compact, Geist density)" },
+      "md":   { "$value": "0.9375rem", "$description": "15px" },
+      "lg":   { "$value": "1.0625rem", "$description": "17px" },
+      "xl":   { "$value": "1.25rem",   "$description": "20px" },
+      "2xl":  { "$value": "1.5rem",    "$description": "24px" },
+      "3xl":  { "$value": "2rem",      "$description": "32px" },
+      "4xl":  { "$value": "3rem",      "$description": "48px — display" }
+    },
+    "fontWeight": {
+      "normal":   { "$value": 400 },
+      "medium":   { "$value": 500 },
+      "semibold": { "$value": 600, "$description": "max display weight — Geist discipline, never heavier" }
+    },
+    "lineHeight": {
+      "tight":   { "$value": 1.1 },
+      "snug":    { "$value": 1.3 },
+      "normal":  { "$value": 1.5 },
+      "relaxed": { "$value": 1.65 }
+    },
+    "letterSpacing": {
+      "display": { "$value": "-0.03em", "$description": "negative tracking carries voice at large sizes" },
+      "tight":   { "$value": "-0.01em" },
+      "normal":  { "$value": "0" },
+      "label":   { "$value": "0.04em", "$description": "uppercase mono labels" }
+    }
+  },
+
+  "spacing": {
+    "$type": "dimension",
+    "0":  { "$value": "0" },
+    "1":  { "$value": "0.25rem" },
+    "2":  { "$value": "0.5rem" },
+    "3":  { "$value": "0.75rem" },
+    "4":  { "$value": "1rem" },
+    "5":  { "$value": "1.25rem" },
+    "6":  { "$value": "1.5rem" },
+    "8":  { "$value": "2rem" },
+    "10": { "$value": "2.5rem" },
+    "12": { "$value": "3rem" },
+    "16": { "$value": "4rem" },
+    "20": { "$value": "5rem" },
+    "24": { "$value": "6rem" }
+  },
+
+  "radius": {
+    "$type": "dimension",
+    "none": { "$value": "0" },
+    "sm":   { "$value": "0.25rem", "$description": "4px" },
+    "md":   { "$value": "0.375rem", "$description": "6px — Geist default (buttons, inputs)" },
+    "lg":   { "$value": "0.5rem", "$description": "8px — node cards" },
+    "xl":   { "$value": "0.75rem", "$description": "12px" },
+    "2xl":  { "$value": "1rem", "$description": "16px — glass overlay window" },
+    "full": { "$value": "9999px" }
+  },
+
+  "borderWidth": {
+    "$type": "dimension",
+    "hairline": { "$value": "1px" },
+    "thick":    { "$value": "2px" },
+    "status":   { "$value": "3px", "$description": "node left status bar" }
+  },
+
+  "shadow": {
+    "$type": "shadow",
+    "ring":  { "$value": "0 0 0 1px rgba(0,0,0,0.08)", "$description": "shadow-as-border — replaces CSS borders on raised surfaces" },
+    "xs":    { "$value": "0 1px 2px rgba(0,0,0,0.06)" },
+    "sm":    { "$value": "0 0 0 1px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.06)" },
+    "md":    { "$value": "0 0 0 1px rgba(0,0,0,0.06), 0 4px 8px -2px rgba(0,0,0,0.10), 0 2px 4px -2px rgba(0,0,0,0.06)" },
+    "lg":    { "$value": "0 0 0 1px rgba(0,0,0,0.06), 0 12px 24px -6px rgba(0,0,0,0.12), 0 4px 8px -4px rgba(0,0,0,0.08)" },
+    "glass": { "$value": "0 1px 1px rgba(0,0,0,0.04), 0 16px 40px -8px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 1px rgba(0,0,0,0.06)", "$description": "layered: ambient + drop + inner highlight + hairline ring" },
+    "node-hover": { "$value": "0 0 0 1px rgba(0,0,0,0.08), 0 8px 16px -4px rgba(0,0,0,0.12)", "$description": "the hover lift" }
+  },
+
+  "motion": {
+    "duration": {
+      "$type": "duration",
+      "instant": { "$value": "0ms" },
+      "fast":    { "$value": "120ms", "$description": "hover/press feedback" },
+      "base":    { "$value": "200ms", "$description": "most transitions" },
+      "slow":    { "$value": "320ms" },
+      "expand":  { "$value": "420ms", "$description": "node → overlay window" }
+    },
+    "easing": {
+      "$type": "cubicBezier",
+      "standard":   { "$value": [0.2, 0.8, 0.2, 1], "$description": "default — soft, no overshoot" },
+      "decelerate": { "$value": [0, 0, 0.2, 1], "$description": "entering" },
+      "accelerate": { "$value": [0.4, 0, 1, 1], "$description": "exiting" }
+    },
+    "spring": {
+      "$description": "JS spring config for Motion (the expand). Snappy but settled.",
+      "expand":   { "$value": { "type": "spring", "stiffness": 380, "damping": 32, "mass": 1 } },
+      "gentle":   { "$value": { "type": "spring", "stiffness": 260, "damping": 30 } }
+    }
+  },
+
+  "zIndex": {
+    "canvas":     { "$value": 0 },
+    "orbs":       { "$value": -1, "$description": "behind canvas content" },
+    "node":       { "$value": 1 },
+    "nodeRaised": { "$value": 5 },
+    "toolbar":    { "$value": 10 },
+    "panel":      { "$value": 100 },
+    "scrim":      { "$value": 900 },
+    "overlay":    { "$value": 1000 },
+    "modal":      { "$value": 1100 },
+    "popover":    { "$value": 1200 },
+    "toast":      { "$value": 1300 }
+  },
+
+  "size": {
+    "$type": "dimension",
+    "node-width":    { "$value": "220px" },
+    "node-min-h":    { "$value": "64px" },
+    "handle":        { "$value": "9px" },
+    "overlay-width": { "$value": "560px", "$description": "expanded window max width" },
+    "tap-target":    { "$value": "32px", "$description": "min interactive size" },
+    "dir-col-width": { "$value": "190px", "$description": "one Miller column in the directory navigator" },
+    "dir-max-h":     { "$value": "320px", "$description": "directory navigator scroll height" },
+    "dir-row-h":     { "$value": "28px", "$description": "directory row height" },
+    "field-min":     { "$value": "132px", "$description": "overlay config-block min column width" }
+  }
+}

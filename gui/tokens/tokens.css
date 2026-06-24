@@ -1,0 +1,272 @@
+/* ============================================================================
+   Flowmap design tokens — compiled CSS custom properties
+   Source of truth: tokens/design-tokens.json
+   Light is the design target. [data-theme="dark"] is scaffolding only.
+   ========================================================================== */
+
+:root {
+  /* --- neutrals (Geist scale) --- */
+  --ds-white: #ffffff;
+  --ds-neutral-50: #fafafa;
+  --ds-neutral-100: #f5f5f5;
+  --ds-neutral-200: #ebebeb;
+  --ds-neutral-300: #e0e0e0;
+  --ds-neutral-400: #d4d4d4;
+  --ds-neutral-500: #a3a3a3;
+  --ds-neutral-600: #737373;
+  --ds-neutral-700: #525252;
+  --ds-neutral-800: #404040;
+  --ds-neutral-900: #262626;
+  --ds-neutral-1000: #171717;
+
+  /* --- accent (the single chromatic voice) --- */
+  --ds-blue-50: #f0f7ff;
+  --ds-blue-100: #e0effe;
+  --ds-blue-200: #b9ddff;
+  --ds-blue-300: #7cc0ff;
+  --ds-blue-400: #3293ff;
+  --ds-blue-500: #0070f3;
+  --ds-blue-600: #0061d5;
+  --ds-blue-700: #0052b3;
+
+  /* --- semantic: background --- */
+  --ds-bg-canvas: var(--ds-white);
+  --ds-bg-soft: var(--ds-neutral-50);
+  --ds-bg-surface: var(--ds-white);
+  --ds-bg-raised: var(--ds-white);
+  --ds-bg-sunken: var(--ds-neutral-100);
+  --ds-bg-hover: var(--ds-neutral-50);
+  --ds-bg-active: var(--ds-neutral-100);
+
+  /* --- semantic: text --- */
+  --ds-text-primary: var(--ds-neutral-1000);
+  --ds-text-secondary: var(--ds-neutral-700);
+  --ds-text-tertiary: var(--ds-neutral-600);
+  --ds-text-disabled: var(--ds-neutral-500);
+  --ds-text-inverse: var(--ds-white);
+  --ds-text-accent: var(--ds-blue-600);
+  --ds-text-code: var(--ds-neutral-900);
+
+  /* --- semantic: border --- */
+  --ds-border-hairline: var(--ds-neutral-200);
+  --ds-border-strong: var(--ds-neutral-400);
+  --ds-border-accent: var(--ds-blue-500);
+  --ds-border-focus: var(--ds-blue-500);
+
+  /* --- accent states --- */
+  --ds-accent: var(--ds-blue-500);
+  --ds-accent-hover: var(--ds-blue-600);
+  --ds-accent-active: var(--ds-blue-700);
+  --ds-accent-subtle: var(--ds-blue-50);
+  --ds-accent-ring: rgba(0, 112, 243, 0.35);
+
+  /* --- feedback --- */
+  --ds-success: #15a14a;
+  --ds-success-fg: #0f7a38;
+  --ds-warning: #e08600;
+  --ds-warning-fg: #b46600;
+  --ds-error: #e5484d;
+  --ds-error-fg: #c1262b;
+  --ds-info: var(--ds-blue-500);
+
+  /* --- node status (left bar + ring) --- */
+  --ds-node-idle: var(--ds-neutral-400);
+  --ds-node-selected: var(--ds-blue-500);
+  --ds-node-running: var(--ds-blue-500);
+  --ds-node-success: var(--ds-success);
+  --ds-node-error: var(--ds-error);
+  --ds-node-agent: var(--ds-blue-500);
+  --ds-node-file: var(--ds-neutral-600);
+
+  /* --- edges --- */
+  --ds-edge-default: var(--ds-neutral-400);
+  --ds-edge-active: var(--ds-blue-500);
+
+  /* --- glass --- */
+  --ds-glass-bg: rgba(255, 255, 255, 0.72);
+  --ds-glass-bg-strong: rgba(255, 255, 255, 0.85);
+  --ds-glass-highlight: rgba(255, 255, 255, 0.65);
+  --ds-glass-ring: rgba(0, 0, 0, 0.06);
+  --ds-glass-blur: 18px;          /* overlay window (desktop luxury) */
+  --ds-glass-blur-soft: 12px;     /* floating toolbars */
+  --ds-glass-saturate: 180%;
+  /* node glass = the "regular" backdrop, bounded by onlyRenderVisibleElements + LOD */
+  --ds-node-glass: rgba(255, 255, 255, 0.55);
+  --ds-node-glass-hover: rgba(255, 255, 255, 0.7);
+  --ds-node-blur: 12px;
+  /* the game corner: sharp by default; bevel where corner-shape is supported */
+  --ds-bevel: 10px;
+
+  /* --- orbs (dynamic background) — must be present enough that the frosted
+     nodes actually have something to frost (glass needs a varied backdrop) --- */
+  --ds-orb-a: rgba(0, 112, 243, 0.20);
+  --ds-orb-b: rgba(96, 165, 250, 0.22);
+  --ds-orb-c: rgba(150, 130, 255, 0.16);
+  --ds-orb-size: 46vmax;
+  --ds-orb-drift: 32s;
+
+  /* --- typography --- */
+  --ds-font-sans: 'Geist', 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --ds-font-mono: 'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+  --ds-text-xs: 0.6875rem;
+  --ds-text-sm: 0.75rem;
+  --ds-text-base: 0.875rem;
+  --ds-text-md: 0.9375rem;
+  --ds-text-lg: 1.0625rem;
+  --ds-text-xl: 1.25rem;
+  --ds-text-2xl: 1.5rem;
+  --ds-text-3xl: 2rem;
+  --ds-text-4xl: 3rem;
+  --ds-weight-normal: 400;
+  --ds-weight-medium: 500;
+  --ds-weight-semibold: 600;
+  --ds-leading-tight: 1.1;
+  --ds-leading-snug: 1.3;
+  --ds-leading-normal: 1.5;
+  --ds-leading-relaxed: 1.65;
+  --ds-tracking-display: -0.03em;
+  --ds-tracking-tight: -0.01em;
+  --ds-tracking-normal: 0;
+  --ds-tracking-label: 0.04em;
+
+  /* --- spacing (4px base) --- */
+  --ds-space-0: 0;
+  --ds-space-1: 0.25rem;
+  --ds-space-2: 0.5rem;
+  --ds-space-3: 0.75rem;
+  --ds-space-4: 1rem;
+  --ds-space-5: 1.25rem;
+  --ds-space-6: 1.5rem;
+  --ds-space-8: 2rem;
+  --ds-space-10: 2.5rem;
+  --ds-space-12: 3rem;
+  --ds-space-16: 4rem;
+  --ds-space-20: 5rem;
+  --ds-space-24: 6rem;
+
+  /* --- radius --- */
+  --ds-radius-none: 0;
+  --ds-radius-sm: 0.25rem;
+  --ds-radius-md: 0.375rem;
+  --ds-radius-lg: 0.5rem;
+  --ds-radius-xl: 0.75rem;
+  --ds-radius-2xl: 1rem;
+  --ds-radius-full: 9999px;
+
+  /* --- border widths --- */
+  --ds-bw-hairline: 1px;
+  --ds-bw-thick: 2px;
+  --ds-bw-status: 3px;
+
+  /* --- shadows (Geist: shadow-as-border + layered elevation) --- */
+  --ds-shadow-ring: 0 0 0 1px rgba(0, 0, 0, 0.08);
+  --ds-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --ds-shadow-sm: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --ds-shadow-md: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 4px 8px -2px rgba(0, 0, 0, 0.10), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+  --ds-shadow-lg: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 12px 24px -6px rgba(0, 0, 0, 0.12), 0 4px 8px -4px rgba(0, 0, 0, 0.08);
+  --ds-shadow-glass: 0 1px 1px rgba(0, 0, 0, 0.04), 0 16px 40px -8px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  --ds-shadow-node-hover: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 16px -4px rgba(0, 0, 0, 0.12);
+
+  /* --- motion --- */
+  --ds-dur-instant: 0ms;
+  --ds-dur-fast: 120ms;
+  --ds-dur-base: 200ms;
+  --ds-dur-slow: 320ms;
+  --ds-dur-expand: 420ms;
+  --ds-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ds-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --ds-ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
+
+  /* --- z-index --- */
+  --ds-z-orbs: -1;
+  --ds-z-canvas: 0;
+  --ds-z-node: 1;
+  --ds-z-node-raised: 5;
+  --ds-z-toolbar: 10;
+  --ds-z-panel: 100;
+  --ds-z-scrim: 900;
+  --ds-z-overlay: 1000;
+  --ds-z-modal: 1100;
+  --ds-z-popover: 1200;
+  --ds-z-toast: 1300;
+
+  /* --- sizes --- */
+  --ds-node-width: 220px;
+  --ds-node-min-h: 64px;
+  --ds-handle: 9px;
+  --ds-overlay-width: 560px;
+  --ds-overlay-width-lg: 660px;   /* wider HUD variants (monitor / inspector) */
+  --ds-tap-target: 32px;
+
+  /* --- scrim (overlay backdrop) — heavier than a hint so the busy canvas
+     genuinely drops back behind the focused window, but still "light modal" --- */
+  --ds-scrim-bg: rgba(23, 23, 23, 0.34);
+  --ds-scrim-blur: 3px;
+
+  /* --- progress ("charge" bar) — the one continuously-animating node element.
+     Slim in a node (echoes the 3px game geometry); a taller block in the
+     overlay. Determinate fill set via --ds-p; a sheen sweeps it = "charging". --- */
+  --ds-progress-h: 3px;
+  --ds-progress-h-block: 8px;
+  --ds-progress-track: var(--ds-neutral-200);
+  --ds-progress-fill: var(--ds-accent);
+  --ds-progress-fill-success: var(--ds-success);
+  --ds-progress-fill-error: var(--ds-error);
+  --ds-progress-glow: var(--ds-accent-ring);
+  --ds-progress-sheen: rgba(255, 255, 255, 0.55);
+  --ds-progress-sweep: 1.6s;          /* sheen travel duration */
+  --ds-progress-indeterminate: 1.4s;  /* unknown-% segment loop */
+
+  /* --- directory panel (floating Miller-column folder navigator) --- */
+  --ds-dir-col-width: 190px;
+  --ds-dir-max-h: 320px;
+  --ds-dir-row-h: 28px;
+
+  /* --- field block (overlay per-node config rectangle) --- */
+  --ds-field-min: 132px;
+}
+
+/* ----------------------------------------------------------------------------
+   Dark scaffolding — NOT the design target, kept token-complete for future.
+   Glass inverts to dark-translucent; ink/canvas swap.
+   -------------------------------------------------------------------------- */
+[data-theme="dark"] {
+  --ds-bg-canvas: #0a0a0a;
+  --ds-bg-soft: #111111;
+  --ds-bg-surface: #161616;
+  --ds-bg-raised: #1c1c1c;
+  --ds-bg-sunken: #0d0d0d;
+  --ds-bg-hover: #1c1c1c;
+  --ds-bg-active: #222222;
+
+  --ds-text-primary: #ededed;
+  --ds-text-secondary: #a1a1a1;
+  --ds-text-tertiary: #8f8f8f;
+  --ds-text-disabled: #5a5a5a;
+  --ds-text-inverse: #0a0a0a;
+  --ds-text-accent: #3293ff;
+  --ds-text-code: #ededed;
+
+  --ds-border-hairline: #2a2a2a;
+  --ds-border-strong: #3a3a3a;
+
+  --ds-glass-bg: rgba(28, 28, 30, 0.62);
+  --ds-glass-bg-strong: rgba(28, 28, 30, 0.8);
+  --ds-glass-highlight: rgba(255, 255, 255, 0.08);
+  --ds-glass-ring: rgba(255, 255, 255, 0.08);
+  --ds-node-glass: rgba(28, 28, 30, 0.5);
+  --ds-node-glass-hover: rgba(40, 40, 44, 0.62);
+
+  --ds-orb-a: rgba(0, 112, 243, 0.14);
+  --ds-orb-b: rgba(124, 192, 255, 0.10);
+  --ds-orb-c: rgba(120, 140, 200, 0.10);
+
+  --ds-shadow-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --ds-shadow-node-hover: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 8px 16px -4px rgba(0, 0, 0, 0.6);
+  --ds-shadow-glass: 0 1px 1px rgba(0, 0, 0, 0.3), 0 16px 40px -8px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px rgba(255, 255, 255, 0.08);
+
+  /* heavier dark scrim + dark progress track */
+  --ds-scrim-bg: rgba(0, 0, 0, 0.55);
+  --ds-progress-track: #2a2a2a;
+  --ds-progress-sheen: rgba(255, 255, 255, 0.18);
+}
