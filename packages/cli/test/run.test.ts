@@ -9,7 +9,15 @@ import {
   runTemplate,
   type RunDeps,
 } from '../src/run.js';
-import { loadTemplate, compile, instantiateRun, piDir, nodeDir } from '@piflow/core';
+import {
+  loadTemplate,
+  compile,
+  instantiateRun,
+  piDir,
+  nodeDir,
+  LocalSandboxProvider,
+  type RunFromTemplateOpts,
+} from '@piflow/core';
 
 // loadTemplate (re)writes the template's generated workflow.json lock, so we run over a CLONE in a tmp
 // dir (the load-template.test convention) — the source fixture stays pristine.
@@ -45,6 +53,37 @@ describe('parseRunArgs — the run subcommand flag surface', () => {
   it('a value with an = sign survives (only the FIRST = splits k from v)', () => {
     const p = parseRunArgs([TEMPLATE_MIN, '--arg', 'eq=a=b=c']);
     expect(p.args.eq).toBe('a=b=c');
+  });
+
+  it('reads the real-run flags: --sandbox, --provider, --thinking, --model, --workspace, --from/--until', () => {
+    const p = parseRunArgs([
+      TEMPLATE_MIN,
+      '--run', 'g1',
+      '--workspace', '/w',
+      '--sandbox', 'local',
+      '--provider', 'mmgw',
+      '--thinking', 'low',
+      '--model', 'MiniMax-M3',
+      '--from', 's2',
+      '--until', 's5',
+      '--arg', 'prompt=hi',
+      '--arg', 'projectDir=out/g1',
+    ]);
+    expect(p.workspace).toBe('/w');
+    expect(p.sandbox).toBe('local');
+    expect(p.provider).toBe('mmgw');
+    expect(p.thinking).toBe('low');
+    expect(p.model).toBe('MiniMax-M3');
+    expect(p.from).toBe('s2');
+    expect(p.until).toBe('s5');
+    // multiple --arg still collect together (the real-run flags don't disturb arg collection).
+    expect(p.args.prompt).toBe('hi');
+    expect(p.args.projectDir).toBe('out/g1');
+  });
+
+  it('defaults --sandbox to inmemory when the flag is absent', () => {
+    const p = parseRunArgs([TEMPLATE_MIN, '--run', 'g1']);
+    expect(p.sandbox).toBe('inmemory');
   });
 });
 
@@ -101,72 +140,83 @@ describe('piflow run --dry-run — realized commands, no model', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (C) RUN WIRING — drive loadConfig → loadTemplate → instantiateRun → runFromConfig with the right args.
-// template-min is NOT runnable headless (its nodes declare `submit_result`, absent from the builtin
-// catalog → a tool-bind block, plus seed/inject the fixture has no product seed for). So we assert the
-// WIRING via injected spies (the right calls, the right args) and FLAG that a live E2E awaits a real
-// template (T6).
+// (C) RUN WIRING — the LIVE branch routes through core `runFromTemplate(dir, opts)` (the template-run
+// join: loadTemplate → instantiateRun → compile → runWorkflow, INSIDE core). The CLI no longer hand-
+// orchestrates those four seams; it just THREADS the resolved options. We assert via an injected
+// `runFromTemplate` spy that EVERY required option arrives: args · workspace · the sandbox provider
+// (LocalSandboxProvider vs none) · providerName · thinking · model · from/until · runDir.
+// template-min is not runnable headless (seed/inject the fixture has no product seed for), so the spy
+// stands in for the real run; a live E2E awaits a real template (T6).
 // ─────────────────────────────────────────────────────────────────────────────
-describe('piflow run — wires loadConfig→loadTemplate→instantiateRun→runFromConfig', () => {
-  let ws: string;
+describe('piflow run — LIVE branch routes through core runFromTemplate, threading every option', () => {
   let out: string;
   beforeAll(async () => {
-    ws = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-run-wire-ws-'));
     out = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-run-wire-out-'));
   });
   afterAll(async () => {
-    await fs.rm(ws, { recursive: true, force: true });
     await fs.rm(out, { recursive: true, force: true });
   });
 
-  it('passes the env/arg-resolved config AND the loadTemplate spec into runFromConfig', async () => {
-    const order: string[] = [];
-    let configSeen: { run?: string } | undefined;
-    let specPassed = false;
-    const realSpec = await loadTemplate(TEMPLATE_MIN);
+  it('threads args + workspace + a LocalSandboxProvider + providerName + thinking + model into runFromTemplate', async () => {
+    let templateDirSeen: string | undefined;
+    let optsSeen: RunFromTemplateOpts | undefined;
 
     const deps: RunDeps = {
-      loadConfig: (input) => {
-        order.push('loadConfig');
-        // it must receive the parsed run id as the required arg.
-        expect(input.args.run).toBe('gwire');
-        return { run: input.args.run!, providerName: 'cp' };
-      },
-      loadTemplate: async (dir) => {
-        order.push('loadTemplate');
-        expect(dir).toBe(TEMPLATE_MIN);
-        return realSpec;
-      },
-      instantiateRun: async (templateDir, runDir, opts) => {
-        order.push('instantiateRun');
-        expect(templateDir).toBe(TEMPLATE_MIN);
-        expect(runDir).toBe(out);
-        expect(opts.workspace).toBe(ws);
-        return { runDir, nodes: [] };
-      },
-      runFromConfig: async (config) => {
-        order.push('runFromConfig');
-        configSeen = config as { run?: string };
-        // the workflowSpec source is the SAME object loadTemplate returned (bridge = the template spec).
-        specPassed = (config as { workflowSpec?: unknown }).workflowSpec === realSpec;
-        // and the resolved config threaded through (the run id from loadConfig).
-        expect((config as { run?: string }).run).toBe('gwire');
-        return { status: { ok: true } as never, outDir: runDir(out) };
+      runFromTemplate: async (templateDir, opts) => {
+        templateDirSeen = templateDir;
+        optsSeen = opts;
+        return { status: { ok: true } as never, outDir: opts.runDir };
       },
       print: () => {},
     };
-    function runDir(d: string): string {
-      return d;
-    }
 
     await runTemplate(
-      { templateDir: TEMPLATE_MIN, dryRun: false, run: 'gwire', args: { run: 'gwire' }, workspace: ws, outDir: out },
+      {
+        templateDir: TEMPLATE_MIN,
+        dryRun: false,
+        run: 'gwire',
+        args: { prompt: 'hi' },
+        workspace: '/w',
+        outDir: out,
+        sandbox: 'local',
+        provider: 'mmgw',
+        thinking: 'low',
+        model: 'MiniMax-M3',
+        from: 's2',
+        until: 's5',
+      },
       deps,
     );
 
-    // the four seams ran IN ORDER (the load-bearing wiring).
-    expect(order).toEqual(['loadConfig', 'loadTemplate', 'instantiateRun', 'runFromConfig']);
-    expect(specPassed).toBe(true);
-    expect(configSeen?.run).toBe('gwire');
+    expect(templateDirSeen).toBe(TEMPLATE_MIN);
+    // THE load-bearing assertion: every option threads through (drop any one in run.ts ⇒ this goes red).
+    expect(optsSeen?.runDir).toBe(out);
+    expect(optsSeen?.run).toBe('gwire');
+    expect(optsSeen?.args).toEqual({ prompt: 'hi' });
+    expect(optsSeen?.workspace).toBe('/w');
+    expect(optsSeen?.providerName).toBe('mmgw');
+    expect(optsSeen?.thinking).toBe('low');
+    expect(optsSeen?.model).toBe('MiniMax-M3');
+    expect(optsSeen?.from).toBe('s2');
+    expect(optsSeen?.until).toBe('s5');
+    // --sandbox local ⇒ a real LocalSandboxProvider instance is constructed and passed.
+    expect(optsSeen?.provider).toBeInstanceOf(LocalSandboxProvider);
+    expect((optsSeen?.provider as { kind?: string } | undefined)?.kind).toBe('local');
+  });
+
+  it('--sandbox inmemory OMITS the provider (core default) — no LocalSandboxProvider', async () => {
+    let optsSeen: RunFromTemplateOpts | undefined;
+    const deps: RunDeps = {
+      runFromTemplate: async (_dir, opts) => {
+        optsSeen = opts;
+        return { status: { ok: true } as never, outDir: opts.runDir };
+      },
+      print: () => {},
+    };
+    await runTemplate(
+      { templateDir: TEMPLATE_MIN, dryRun: false, run: 'gmem', args: {}, outDir: out, sandbox: 'inmemory' },
+      deps,
+    );
+    expect(optsSeen?.provider).toBeUndefined();
   });
 });
