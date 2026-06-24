@@ -37,10 +37,12 @@ export interface BindReport {
  */
 export function verifyToolBinding(sel: ToolSelection, entries: ToolEntry[]): BindReport {
   const byAddress = new Map(entries.map((e) => [e.address, e]));
-  // Bare-name alias for builtins: a marker-authored `allow` carries BARE piNames (`read`,`bash`), not
-  // `ns:name` addresses, so resolve a declared token by address OR by a builtin's bare piName — else a
-  // legitimate bare builtin is falsely flagged MISSING (the marker-workflow bind bug U3 fixes).
-  const builtinByPiName = new Map(entries.filter((e) => e.source === 'builtin').map((e) => [e.piName, e]));
+  // Bare-name alias for the marker vocabulary: a marker-authored `allow` carries BARE piNames
+  // (`read`,`bash`,`submit_result`), not `ns:name` addresses, so resolve a declared token by address OR by
+  // a builtin/contract bare piName — else a legitimate bare builtin or the first-party `submit_result` is
+  // falsely flagged MISSING (the marker-workflow bind bug U3 fixes; submit_result is the S0 contract tool).
+  const isBare = (e: ToolEntry): boolean => e.source === 'builtin' || e.source === 'contract';
+  const builtinByPiName = new Map(entries.filter(isBare).map((e) => [e.piName, e]));
   const entryFor = (token: string): ToolEntry | undefined => byAddress.get(token) ?? builtinByPiName.get(token);
   const builtinAddresses = entries.filter((e) => e.source === 'builtin').map((e) => e.address);
   const deny = new Set(sel.deny ?? []);

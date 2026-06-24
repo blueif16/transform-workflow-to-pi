@@ -5,7 +5,8 @@
 // instead of the retired RUN_CWD-relative path.resolve — so a seed is relocation-invariant by construction.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, promises as fs } from 'node:fs';
+import path from 'node:path';
 import { resolveTokens, type ResolveCtx } from '../resolver.js';
 import { drillPath } from './util.js';
 
@@ -54,4 +55,71 @@ export function resolveSeedTokens(spec: string, ctx: ResolveCtx): string {
     });
   }
   return out;
+}
+
+/** The on-disk effect of one `stageSeed` call: whether the copy happened + the graceful reason it did not. */
+export interface SeedResult {
+  /** The (run-relative or absolute) dest, echoed for the caller's ledger. */
+  to: string;
+  /** True iff bytes were copied; false when skipped (dest already filled, or no source template). */
+  staged: boolean;
+  /** Graceful reason when `staged` is false. */
+  reason?: string;
+  /** True iff the source was a directory (copied recursively). */
+  dir?: boolean;
+}
+
+/**
+ * The seed PRE EXECUTOR (ports game-omni run.mjs:1517-1551). Stage one node's STARTING artifact at `to`
+ * from the (token-bearing) source `from`, BEFORE the model runs — so the model FILLs leaves (file) or
+ * skips a mechanical tree copy + explore (dir). Behavior, preserved:
+ *  - `to` resolves under `runDir` (a relative dest; an absolute dest passes through);
+ *  - `from` resolves through the U7 seed-token resolver ({{RUN}}/{{WORKSPACE}}/{{state.*}} then {file:field});
+ *  - IDEMPOTENT — never clobber an already-staged copy on a resume: a FILE dest is "filled" when it exists
+ *    with size > 0; a DIR dest is "filled" when EVERY top-level entry of the SOURCE already exists under it
+ *    (a per-SOURCE test, so a base-into-a-populated-root still stages while a genuine re-stage skips);
+ *  - a DIR source copies RECURSIVELY (overlay merges over base, second wins); a FILE source copies as a file;
+ *  - an ABSENT source is a graceful skip (the node hand-builds), never a throw.
+ */
+export async function stageSeed(seed: Seed, ctx: ResolveCtx, runDir: string): Promise<SeedResult> {
+  const toAbs = path.isAbsolute(seed.to) ? seed.to : path.resolve(runDir, seed.to);
+  const fr = resolveSeedTokens(seed.from, ctx);
+  const fromAbs = path.isAbsolute(fr) ? fr : path.resolve(runDir, fr);
+
+  // Source existence + kind.
+  let srcIsDir = false;
+  let srcExists = false;
+  try {
+    srcIsDir = (await fs.stat(fromAbs)).isDirectory();
+    srcExists = true;
+  } catch {
+    /* absent — handled below */
+  }
+
+  // Idempotency: is the dest already filled? (FILE: size>0; DIR: every source top-level entry present.)
+  let destFilled = false;
+  try {
+    const ds = await fs.stat(toAbs);
+    if (srcIsDir && ds.isDirectory()) {
+      const want = await fs.readdir(fromAbs);
+      const present = await Promise.all(want.map((e) => fs.stat(path.join(toAbs, e)).then(() => true).catch(() => false)));
+      destFilled = want.length > 0 && present.every(Boolean);
+    } else if (!srcIsDir) {
+      destFilled = ds.size > 0;
+    } // src dir vs dest file (or vice-versa) → not "filled"; the copy below resolves it
+  } catch {
+    /* dest absent ⇒ not filled */
+  }
+
+  if (destFilled) return { to: seed.to, staged: false, reason: 'dest present — not re-staging', dir: srcIsDir };
+  if (!srcExists) return { to: seed.to, staged: false, reason: `no template at source (node hand-builds): ${fromAbs}`, dir: false };
+
+  if (srcIsDir) {
+    await fs.mkdir(toAbs, { recursive: true });
+    await fs.cp(fromAbs, toAbs, { recursive: true, force: true });
+  } else {
+    await fs.mkdir(path.dirname(toAbs), { recursive: true });
+    await fs.copyFile(fromAbs, toAbs);
+  }
+  return { to: seed.to, staged: true, dir: srcIsDir };
 }

@@ -5,6 +5,7 @@
 
 import type { ToolEntry, ToolRegistry, ToolSelection, ResolveResult, ToolSource } from '../types.js';
 import { compileToolExtension, bundleExtension } from './compile.js';
+import { SUBMIT_RESULT_TOOL } from './contract-tool.js';
 
 /** pi's native built-in tools, addressed under `fs:` / `sh:`. */
 export const BUILTIN_TOOLS: ToolEntry[] = [
@@ -17,35 +18,47 @@ export const BUILTIN_TOOLS: ToolEntry[] = [
   { address: 'sh:bash', source: 'builtin', piName: 'bash', description: 'Run a shell command.', origin: { kind: 'native' } },
 ];
 
+/**
+ * The default registry SEED: the pi-natives PLUS the first-party `submit_result` contract tool, so every
+ * `DefaultToolRegistry()` carries it and a node declaring `submit_result` binds. It is NOT in
+ * `BUILTIN_TOOLS` on purpose — the empty-allow default (resolve/verify) stays native-only, so
+ * `submit_result` is OPT-IN (a node must declare it to get the generated `-e` extension that binds it).
+ */
+export const DEFAULT_TOOLS: ToolEntry[] = [...BUILTIN_TOOLS, SUBMIT_RESULT_TOOL];
+
+/** True for a tool addressable by its BARE piName (the marker vocabulary): pi-natives + first-party contract tools. */
+const isBareName = (e: ToolEntry): boolean => e.source === 'builtin' || e.source === 'contract';
+
 export class DefaultToolRegistry implements ToolRegistry {
   private readonly byAddress = new Map<string, ToolEntry>();
   private readonly piNames = new Set<string>();
   // Bare-name index: a builtin's bare `piName` (the name pi sees, e.g. `read`) aliases to its entry, so
   // a marker-authored selection — `parseMarkers` writes BARE names into `tools.allow` — resolves WITHOUT
-  // a `namespace:` address. Builtins only: sdk/mcp bare names are conflict-prefixed and not the marker
-  // vocabulary, so they keep requiring their `ns:name` address.
+  // a `namespace:` address. Builtins AND first-party `contract` tools (e.g. `submit_result`) are the bare
+  // vocabulary; sdk/mcp bare names are conflict-prefixed, so they keep requiring their `ns:name` address.
   private readonly builtinByPiName = new Map<string, ToolEntry>();
 
-  constructor(seed: ToolEntry[] = BUILTIN_TOOLS) {
+  constructor(seed: ToolEntry[] = DEFAULT_TOOLS) {
     for (const e of seed) this.register(e);
   }
 
   register(entry: ToolEntry): void {
     let piName = entry.piName;
-    // conflict-guard: a non-builtin tool must not collide with an existing bare name → prefix it.
+    // conflict-guard: an sdk/mcp tool must not collide with an existing bare name → prefix it. Builtin AND
+    // first-party `contract` tools keep their bare name (it IS the authored vocabulary).
     const existing = this.byAddress.get(entry.address);
     const collides = this.piNames.has(piName) && existing?.piName !== piName;
-    if (entry.source !== 'builtin' && collides) {
+    if (entry.source !== 'builtin' && entry.source !== 'contract' && collides) {
       piName = `${entry.source}_${piName}`.replace(/[^a-zA-Z0-9_]/g, '_');
     }
     if (existing) {
       this.piNames.delete(existing.piName);
-      if (existing.source === 'builtin') this.builtinByPiName.delete(existing.piName);
+      if (isBareName(existing)) this.builtinByPiName.delete(existing.piName);
     }
     const stored: ToolEntry = { ...entry, piName };
     this.byAddress.set(stored.address, stored);
     this.piNames.add(piName);
-    if (stored.source === 'builtin') this.builtinByPiName.set(stored.piName, stored);
+    if (isBareName(stored)) this.builtinByPiName.set(stored.piName, stored);
   }
 
   /** Resolve one selection token to its entry: a `namespace:name` address, or a BARE builtin piName. */

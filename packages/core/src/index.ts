@@ -39,12 +39,12 @@ export { applyReducer, mergeUpdate, loadState, persistState } from './workflow/s
 
 // U7 — the SINGLE runtime token resolver: `{{RUN}}`/`{{WORKSPACE}}`/`{{state.<channel>}}` made physical,
 // applied uniformly to every marker (retires the `BASE_ROOT→wtRoot` regex + `RUN_CWD`-relative tokens).
-export { resolveTokens, resolveAll, MissingChannelError } from './workflow/resolver.js';
+export { resolveTokens, resolveAll, MissingChannelError, MissingArgError } from './workflow/resolver.js';
 export type { ResolveCtx } from './workflow/resolver.js';
 
 // U7 — deterministic op executors (seed PRE · project/merge POST), re-rooted onto the logical resolver.
-export { driverSeed, resolveSeedTokens } from './workflow/ops/seed.js';
-export type { Seed } from './workflow/ops/seed.js';
+export { driverSeed, resolveSeedTokens, stageSeed } from './workflow/ops/seed.js';
+export type { Seed, SeedResult } from './workflow/ops/seed.js';
 export { ensureDir, projJson, drillPath, readJsonSafe, fileExists, absUnder } from './workflow/ops/util.js';
 export { applyProjectionOp } from './workflow/ops/project.js';
 export type { ProjectionResult } from './workflow/ops/project.js';
@@ -66,7 +66,11 @@ export { CHECK_KINDS, evaluateChecks, effectiveChecks, actionForVerdict, lastFen
 export type { CheckResult, FileBytes } from './checks.js';
 
 // Tool registry (namespace:name → bare pi names)
-export { DefaultToolRegistry, BUILTIN_TOOLS } from './tools/registry.js';
+export { DefaultToolRegistry, BUILTIN_TOOLS, DEFAULT_TOOLS } from './tools/registry.js';
+// The first-party `submit_result` contract tool (the typed terminating return tool): the catalog entry
+// (seeded into every DefaultToolRegistry) + its param schema + its inline-execute render for the `-e` ext.
+export { SUBMIT_RESULT_TOOL, SUBMIT_RESULT_PARAMETERS, SUBMIT_RESULT_ADDRESS, renderContractTool } from './tools/contract-tool.js';
+export type { ContractRenderable } from './tools/contract-tool.js';
 // Ingestion: MCP tools/list → ToolEntry[] (the effortless catalog fill)
 export { mcpToolsToEntries } from './tools/ingest.js';
 export type { McpToolListing, McpIngestOpts } from './tools/ingest.js';

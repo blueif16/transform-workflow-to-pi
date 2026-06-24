@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { compile, InMemorySandboxProvider, DefaultToolRegistry, mcpToolsToEntries, openClawPluginToEntries } from '../src/index.js';
@@ -15,7 +15,7 @@ import {
   type SecretResolver,
 } from '../src/runner/index.js';
 import type { NodeSpec, Sandbox, SandboxProvider, CreateOpts, OpenRunOpts } from '../src/types.js';
-import { runJsonFile } from '../src/runner/layout.js';
+import { runJsonFile, stateFile, piDir } from '../src/runner/layout.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -409,6 +409,318 @@ describe('runWorkflow — per-node staging isolation (parallel nodes never clobb
     expect(writes.find((w) => w.path === '_pi/a/prompt.md')!.data).toContain('do A');
     expect(writes.find((w) => w.path === '_pi/b/prompt.md')!.data).toContain('do B');
 
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── S1: token resolution at node launch — {{arg.*}}/{{WORKSPACE}}/{{RUN}} made physical in the prompt ─
+
+describe('runWorkflow — prompt token resolution at node launch (S1)', () => {
+  /** A recording provider that captures every writeFile (so a test can inspect the STAGED prompt bytes). */
+  function recorder(): { provider: SandboxProvider; writes: { path: string; data: string }[] } {
+    const writes: { path: string; data: string }[] = [];
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+    return { provider, writes };
+  }
+
+  it('resolves {{arg.*}} and {{WORKSPACE}}/{{RUN}} in the prompt BEFORE staging it on disk', async () => {
+    // The prompt prose carries logical tokens (exactly like w0-classify/prompt.md's {{arg.prompt}}).
+    const node: NodeIntent = {
+      label: 'Classify',
+      prompt: 'Build: {{arg.prompt}} | canon={{WORKSPACE}}/skills | out={{RUN}}/spec',
+      tools: {},
+      io: { reads: [], produces: ['s.txt'], artifacts: [{ path: 's.txt' }] },
+    };
+    const outDir = await tmpOut();
+    const { provider, writes } = recorder();
+
+    const { status } = await runWorkflow(compile(wf([node])), {
+      run: 'argres',
+      outDir,
+      provider,
+      buildCommand: stubBuilder(),
+      args: { prompt: 'a fast platformer' },
+      workspace: '/canon-root',
+    });
+    expect(status.nodes.classify.status).toBe('ok');
+
+    const staged = writes.find((w) => w.path === '_pi/classify/prompt.md')!;
+    expect(staged).toBeTruthy();
+    // The tokens are PHYSICAL on disk — not the verbatim {{…}} the pre-S1 runner staged.
+    expect(staged.data).toContain('Build: a fast platformer');
+    expect(staged.data).toContain('canon=/canon-root/skills');
+    expect(staged.data).toContain(`out=${outDir}/spec`); // {{RUN}} resolves to outDir
+    expect(staged.data).not.toContain('{{arg.prompt}}');
+    expect(staged.data).not.toContain('{{WORKSPACE}}');
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a missing {{arg.*}} fails the node loudly (MissingArgError) — never a silent unresolved prompt', async () => {
+    const node: NodeIntent = {
+      label: 'Need',
+      prompt: 'requires {{arg.absent}}',
+      tools: {},
+      io: { reads: [], produces: ['s.txt'], artifacts: [{ path: 's.txt' }] },
+    };
+    const outDir = await tmpOut();
+    // No `args` supplied → the {{arg.absent}} token cannot resolve.
+    const { status } = await runWorkflow(compile(wf([node])), { run: 'argmiss', outDir, buildCommand: stubBuilder() });
+    expect(status.nodes.need.status).toBe('error');
+    expect(status.nodes.need.issues.join(' ')).toMatch(/absent/);
+    expect(status.ok).toBe(false);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a prompt with NO tokens is staged byte-identical (additive — non-token prompts unchanged)', async () => {
+    const outDir = await tmpOut();
+    const { provider, writes } = recorder();
+    await runWorkflow(compile(wf([n('Plain', [], ['p.txt'])])), { run: 'plain-res', outDir, provider, buildCommand: stubBuilder() });
+    const staged = writes.find((w) => w.path === '_pi/plain/prompt.md')!;
+    // 'do Plain' prose survives intact (the markers tail still appends, as before).
+    expect(staged.data).toContain('do Plain');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── S2: the seed PRE op — a node's starting artifact is staged (host + sandbox) BEFORE the model runs ─
+
+describe('runWorkflow — seed PRE op staging (S2)', () => {
+  function recorder(): { provider: SandboxProvider; writes: { path: string; data: string }[] } {
+    const writes: { path: string; data: string }[] = [];
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+    return { provider, writes };
+  }
+
+  it('stages a {to,from} seed onto the host run dir AND into the sandbox before exec', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-ws-'));
+    await fs.mkdir(path.join(workspace, 'tpl'), { recursive: true });
+    await fs.writeFile(path.join(workspace, 'tpl', 'skeleton.json'), '{"seed":"shape"}');
+    const outDir = await tmpOut();
+    const { provider, writes } = recorder();
+
+    // The node declares a seed via ops (as the template loader carries it).
+    const node: NodeIntent = {
+      label: 'Scaffold',
+      prompt: 'fill the skeleton',
+      tools: {},
+      io: { reads: [], produces: ['out.txt'], artifacts: [{ path: 'out.txt' }] },
+      ops: { seed: [{ to: 'spec/skeleton.json', from: '{{WORKSPACE}}/tpl/skeleton.json' }] },
+    };
+
+    let cmdSawSeed = false;
+    // The builder runs AFTER staging; by then the seed must already be on the host run dir.
+    const builder = (nd: { id: string; io: { artifacts: { path: string }[] }; sandbox: { output: string } }): string => {
+      cmdSawSeed = existsSync(path.join(outDir, 'spec', 'skeleton.json'));
+      const a = nd.io.artifacts[0].path;
+      return `mkdir -p ${nd.sandbox.output} && printf '%s' done > ${nd.sandbox.output}/${a}`;
+    };
+
+    const { status } = await runWorkflow(compile(wf([node])), { run: 'seedrun', outDir, provider, workspace, buildCommand: builder });
+    expect(status.nodes.scaffold.status).toBe('ok');
+
+    // (1) host run dir: the seed bytes landed at ${RUN}/spec/skeleton.json.
+    expect(await fs.readFile(path.join(outDir, 'spec', 'skeleton.json'), 'utf8')).toBe('{"seed":"shape"}');
+    // (2) it was staged INTO the sandbox (so the model can read it) BEFORE the command ran.
+    const staged = writes.find((w) => w.path === 'spec/skeleton.json');
+    expect(staged?.data).toBe('{"seed":"shape"}');
+    // (3) and it was physically present on disk by the time the command was built.
+    expect(cmdSawSeed).toBe(true);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  it('a node with NO seed ops runs exactly as before (additive)', async () => {
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([n('Plain', [], ['p.txt'])])), { run: 'noseed', outDir, buildCommand: stubBuilder() });
+    expect(status.nodes.plain.status).toBe('ok');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── S3: promote + barrier-merge + state I/O — a node lifts an output into a RunState channel; the driver ─
+//        merges every parallel lane's promote SERIALLY at the stage barrier, persists once, and the next
+//        stage resolves {{state.*}} against the merged state.
+
+describe('runWorkflow — promote + barrier-merge + state I/O (S3)', () => {
+  // A builder that writes an artifact carrying a JSON field the node promotes (an ARTIFACT-source promote).
+  function jsonArtifactBuilder(contents: (id: string) => Record<string, string>) {
+    return (node: { id: string; sandbox: { output: string } }): string => {
+      const out = node.sandbox.output;
+      const writes = Object.entries(contents(node.id))
+        .map(([p, c]) => {
+          const dest = `${out}/${p}`;
+          const dir = dest.slice(0, dest.lastIndexOf('/'));
+          return `mkdir -p ${dir} && printf '%s' '${c}' > ${dest}`;
+        })
+        .join(' && ');
+      return `${writes} && printf '%s' '\`\`\`json\\n{"status":"ok"}\\n\`\`\`'`;
+    };
+  }
+
+  it('promotes a channel to ${RUN}/.pi/state.json and a downstream node resolves {{state.x}} from it', async () => {
+    // w0 promotes archetype (from its artifact) → state; a downstream node's prompt reads {{state.archetype}}.
+    const classify: NodeIntent = {
+      label: 'Classify',
+      prompt: 'classify',
+      tools: {},
+      io: { reads: [], produces: ['spec/classification.json'], artifacts: [{ path: 'spec/classification.json' }] },
+      ops: { promote: [{ from: 'spec/classification.json:archetype', to: 'archetype', merge: 'set' }] },
+    };
+    const build: NodeIntent = {
+      label: 'Build',
+      prompt: 'build for {{state.archetype}}',
+      tools: {},
+      io: { reads: ['spec/classification.json'], produces: ['out.txt'], artifacts: [{ path: 'out.txt' }] },
+    };
+    const outDir = await tmpOut();
+    const { provider, writes } = (() => {
+      const w: { path: string; data: string }[] = [];
+      const base = new InMemorySandboxProvider();
+      const p: SandboxProvider = {
+        kind: 'inmemory',
+        async create(opts: CreateOpts): Promise<Sandbox> {
+          const sb = await base.create(opts);
+          const orig = sb.writeFile.bind(sb);
+          sb.writeFile = async (pp: string, d: Uint8Array | string) => {
+            w.push({ path: pp, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+            return orig(pp, d);
+          };
+          return sb;
+        },
+      };
+      return { provider: p, writes: w };
+    })();
+
+    const { status } = await runWorkflow(compile(wf([classify, build])), {
+      run: 'promote',
+      outDir,
+      provider,
+      buildCommand: jsonArtifactBuilder((id) => (id === 'classify' ? { 'spec/classification.json': '{"archetype":"platformer"}' } : { 'out.txt': 'built' })),
+    });
+
+    expect(status.nodes.classify.status).toBe('ok');
+    expect(status.nodes.build.status).toBe('ok');
+
+    // (1) state.json holds the promoted channel.
+    const state = JSON.parse(await fs.readFile(stateFile(outDir), 'utf8'));
+    expect(state.archetype).toBe('platformer');
+
+    // (2) the downstream prompt resolved {{state.archetype}} to the promoted value (physical on disk).
+    const buildPrompt = writes.find((x) => x.path === '_pi/build/prompt.md')!;
+    expect(buildPrompt.data).toContain('build for platformer');
+    expect(buildPrompt.data).not.toContain('{{state.archetype}}');
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('barrier-merges two PARALLEL lanes that each promote a DIFFERENT channel (both land, persisted once)', async () => {
+    // Two independent producers (one parallel stage), each promoting its own channel.
+    const a: NodeIntent = {
+      label: 'A', prompt: 'a', tools: {},
+      io: { reads: [], produces: ['a.json'], artifacts: [{ path: 'a.json' }] },
+      ops: { promote: [{ from: 'a.json:k', to: 'alpha', merge: 'set' }] },
+    };
+    const b: NodeIntent = {
+      label: 'B', prompt: 'b', tools: {},
+      io: { reads: [], produces: ['b.json'], artifacts: [{ path: 'b.json' }] },
+      ops: { promote: [{ from: 'b.json:k', to: 'beta', merge: 'set' }] },
+    };
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([a, b])), {
+      run: 'barrier',
+      outDir,
+      buildCommand: jsonArtifactBuilder((id) => (id === 'a' ? { 'a.json': '{"k":"AA"}' } : { 'b.json': '{"k":"BB"}' })),
+    });
+    expect(status.ok).toBe(true);
+    const state = JSON.parse(await fs.readFile(stateFile(outDir), 'utf8'));
+    expect(state).toMatchObject({ alpha: 'AA', beta: 'BB' });
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a SET channel promoted by TWO parallel lanes is a ConflictError (the run fails loudly)', async () => {
+    // Both parallel lanes promote the SAME 'shared' channel under the default 'set' reducer → a conflict.
+    const a: NodeIntent = {
+      label: 'A', prompt: 'a', tools: {},
+      io: { reads: [], produces: ['a.json'], artifacts: [{ path: 'a.json' }] },
+      ops: { promote: [{ from: 'a.json:k', to: 'shared', merge: 'set' }] },
+    };
+    const b: NodeIntent = {
+      label: 'B', prompt: 'b', tools: {},
+      io: { reads: [], produces: ['b.json'], artifacts: [{ path: 'b.json' }] },
+      ops: { promote: [{ from: 'b.json:k', to: 'shared', merge: 'set' }] },
+    };
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([a, b])), {
+      run: 'conflict',
+      outDir,
+      buildCommand: jsonArtifactBuilder((id) => (id === 'a' ? { 'a.json': '{"k":"AA"}' } : { 'b.json': '{"k":"BB"}' })),
+    });
+    expect(status.ok).toBe(false);
+    expect(JSON.stringify(status.nodes)).toMatch(/conflict|concurrent/i);
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('promotes from the STRUCTURED @return (lastJsonBlock widened to carry arbitrary fields)', async () => {
+    // A zero-artifact-promote-source node that promotes a field from its @return JSON (not an artifact).
+    const gate: NodeIntent = {
+      label: 'Decide', prompt: 'decide', tools: {},
+      io: { reads: [], produces: ['d.txt'], artifacts: [{ path: 'd.txt' }] },
+      ops: { promote: [{ from: '@return:verdict', to: 'verdict', merge: 'set' }] },
+    };
+    const outDir = await tmpOut();
+    // The stub writes the artifact AND emits a fenced return carrying an extra `verdict` field.
+    const builder = (node: { sandbox: { output: string } }): string =>
+      `mkdir -p ${node.sandbox.output} && printf '%s' x > ${node.sandbox.output}/d.txt && ` +
+      `printf '%s' '\`\`\`json\\n{"status":"ok","verdict":"DESIGN_PASSED"}\\n\`\`\`'`;
+    const { status } = await runWorkflow(compile(wf([gate])), { run: 'atreturn', outDir, buildCommand: builder });
+    expect(status.nodes.decide.status).toBe('ok');
+    const state = JSON.parse(await fs.readFile(stateFile(outDir), 'utf8'));
+    expect(state.verdict).toBe('DESIGN_PASSED');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('loads PRE-EXISTING state at run start (a {{state.*}} from a prior run resolves on the first node)', async () => {
+    // Pre-seed state.json (as a prior run's barrier would have) → the first node's prompt reads it.
+    const outDir = await tmpOut();
+    await fs.mkdir(piDir(outDir), { recursive: true });
+    await fs.writeFile(stateFile(outDir), JSON.stringify({ archetype: 'voxel' }));
+    const node: NodeIntent = { label: 'Use', prompt: 'use {{state.archetype}}', tools: {}, io: { reads: [], produces: ['u.txt'], artifacts: [{ path: 'u.txt' }] } };
+    const { provider, writes } = (() => {
+      const w: { path: string; data: string }[] = [];
+      const base = new InMemorySandboxProvider();
+      const p: SandboxProvider = { kind: 'inmemory', async create(opts: CreateOpts): Promise<Sandbox> { const sb = await base.create(opts); const orig = sb.writeFile.bind(sb); sb.writeFile = async (pp: string, d: Uint8Array | string) => { w.push({ path: pp, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') }); return orig(pp, d); }; return sb; } };
+      return { provider: p, writes: w };
+    })();
+    const { status } = await runWorkflow(compile(wf([node])), { run: 'preload', outDir, provider, buildCommand: stubBuilder() });
+    expect(status.nodes.use.status).toBe('ok');
+    expect(writes.find((x) => x.path === '_pi/use/prompt.md')!.data).toContain('use voxel');
     await fs.rm(outDir, { recursive: true, force: true });
   });
 });
