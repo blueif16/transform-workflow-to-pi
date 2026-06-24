@@ -83,6 +83,24 @@
   GITIGNORED). A run's canonical home is ALWAYS `.piflow/<wf>/runs/<id>/` (= the D7 `${RUN}`) — REGARDLESS of
   execution venue: local, worktree, and remote runs all COLLECT results back here, so the tracked record is
   uniform across projects and venues. Full layout: the *Project filesystem* section below.
+- **D10 — state stores VALUES + HANDLES, never large CONTENT; reads are per-node DECLARED keys [decided
+  2026-06-24, LangGraph-grounded].** D6 put node→node values in a per-thread RunState; D10 fixes WHAT may go in
+  a channel and HOW a node reads it, from LangGraph production practice (LangChain's 2026 State-of-Agent-
+  Engineering report ties >60% of production incidents to state management, and the failure mode is ALWAYS
+  state BLOAT — checkpoints grow, every field is re-serialized every super-step AND injected into the LLM
+  context, latency and cost explode). Two rules. **(a) reference-not-content:** a channel holds a small value
+  (a scalar / decision / id) or a HANDLE to a large artifact (`{path, hash, status, …}`) — NEVER the bytes; the
+  artifact (the blueprint, assets, the `src/` tree) stays a file under `${RUN}` (D7), fetched on demand. Tests:
+  a single checkpoint > ~50KB, OR a field whose removal would change no routing/derive decision, does not belong
+  inline. **(b) declared read-keys:** every node DECLARES the channels it consumes (`reads: […]`); the runner
+  delivers ONLY that slice — small → inject inline in the prompt; a large handle → the node reads the file — and
+  the scope is enforced on EVERY egress (prompt · log · stream · trace), not just node input. This is
+  LangGraph's own "keep state raw, format prompts on-demand" + "external references, not content," made an
+  EXPLICIT per-node contract (which additionally buys static dangling-read checking the implicit input-schema
+  form does not). Parallel writers to one channel MUST declare a non-`set` reducer (`append`/`deepMerge`) or the
+  barrier silently drops a write (or raises the LangGraph `InvalidUpdateError`). Supersedes the earlier
+  "blueprint as a `deepMerge` channel" sketch — the blueprint is a HANDLE in state, bytes on disk. Full model:
+  the *State storage & retrieval model* section below.
 
 ## Build order (each: additive · test-first · its own commit · mirrors the named test file)
 
@@ -332,6 +350,109 @@ default (U8) + the init-template skill — so the SDK stays generic, the convent
 
 **Open naming nit:** `.piflow/` (project home) vs `${RUN}/.pi/` (per-run metadata) are close — keep, or rename
 the per-run dir (`_meta`/`.run`) to avoid confusion. Minor; flag for decision.
+
+## State storage & retrieval model (D10)
+
+> [decided 2026-06-24] The rules for WHAT a RunState channel (D6) may hold and HOW a node reads it. Grounded in
+> LangGraph's documented model + production practitioner experience (sources at the end of this section). The
+> principle in one line: **state is the single source of truth for COORDINATION (small values + handles), the
+> filesystem is the store for CONTENT (bytes); a node reads only the keys it declares.**
+
+### The channel taxonomy — what is allowed in a channel
+
+A RunState channel (`${RUN}/.pi/state.json`, D6) carries exactly one of:
+
+- **A value** — a scalar or small structured datum a downstream node reasons over or routes on: `archetype`,
+  `mode`, a verdict, a count, a small decision object. Injected directly where needed.
+- **A handle** — a reference to a large artifact that lives as a FILE under `${RUN}`: `{ path, hash, status,
+  … }` (e.g. `blueprint`, each asset, the `src/` tree, `dist/`). The bytes are NEVER in the channel; a node
+  that needs the content reads the file the handle points at.
+
+It NEVER carries large or binary CONTENT. Two observable tests decide placement (apply on every schema change):
+
+1. **The 50KB test.** Serialize the channel object; if a single checkpoint exceeds ~50KB, something large
+   belongs behind a handle, not inline. (Practitioner war-stories: a 3MB checkpoint drove Postgres writes to
+   600ms; stripping to ids+findings dropped it to 12ms.)
+2. **The routing/derive-relevance test.** If removing a field would change NO conditional-edge route and NO
+   derive op, it does not belong in state — recompute or fetch it on demand instead.
+
+**Config is NOT state.** The registry, schemas, genre/node catalogs, scaffold templates are immutable run
+inputs — they live under `${WORKSPACE}` (D6, read-only, out-of-thread), injected into derive functions as
+`(state, config) → partial-state`. They are never mutable channels. (This is LangGraph's context-vs-state split:
+the `Runtime`/`context` API for static run config, `state` for mutable run data, a cross-run `store` for durable
+data — distinct tiers, not one bag.)
+
+### Reads — the per-node declared read-key contract
+
+A node DECLARES the channels it consumes (`reads: [<channel>, …]`), the read-side twin of its write/`owns`
+declaration. The runner resolves that slice from state and delivers it — and ONLY it:
+
+- **Small value → inject inline** in the prompt (LangGraph: "keep state raw, format prompts on-demand" — build
+  the prompt from the named keys the node needs, never the whole state object).
+- **Large handle → point the node at the file** (it reads with its tools, on demand) — and, where the node only
+  needs a SECTION, deliver/point at that section, not the whole artifact.
+
+Why declared (not "the node function gets the whole state", LangGraph's runtime default): (1) it curates the
+window — every channel a node sees is serialized into its context, so a fat read is paid in latency + tokens +
+context-rot on every turn; (2) `reads` + `owns` make the producer→consumer ledger STATIC and checkable — a
+dangling read (a key no node produces) is caught before a run, not grep-discovered after. **Enforce the scope on
+every egress** — prompt, log, `stream`, trace — not just node input (LangGraph's own caveat: input/private
+schemas do NOT hide a channel from `stream`; a half-enforced scope leaks the very bytes it promised to withhold).
+
+### The blueprint — worked example (resolves the earlier over-correction)
+
+The blueprint is large, structured JSON the build side reasons over — exactly a HANDLE case, not an inline
+channel (an earlier sketch made it a `deepMerge` channel; that would re-serialize the whole blueprint into every
+super-step checkpoint — the bloat D10 forbids). So:
+
+- `state.blueprint = { path: "${RUN}/spec/blueprint.json", hash, status }`. The bytes are the file.
+- Harden writes the file; the runner ingests the HANDLE (not the bytes) into the channel. The model writes
+  files; the model never writes state — the runner lifts the handle (D6 `promote`).
+- A consumer (e.g. a chrome producer) declares `reads: [blueprint]`, and is delivered its declared SECTION of
+  the file (its seeded contract), not the whole thing.
+
+### Parallel contributions — fan-out → fragment files → append-handle → fan-in assembly
+
+When parallel lanes each contribute a section to a large artifact (shell ∥ guidance ∥ sound → the blueprint),
+do NOT concurrently mutate one file (a race) and do NOT inline the sections into one `set` channel (a conflict).
+The LangGraph-idiomatic shape:
+
+1. **Fan-out** to the lanes (static edges for a fixed set; the `Send` API for a runtime-sized set).
+2. Each lane writes its OWN disjoint **fragment file** under `${RUN}` and emits its fragment HANDLE.
+3. The handles land in ONE channel under a **non-`set` reducer** (`append`/`deepMerge`) — mandatory: a channel
+   written by ≥2 parallel nodes under the default `set` reducer silently drops all but one write, or raises
+   `InvalidUpdateError` ("can receive only one value per super-step"). The barrier merges deterministically in
+   node order (D6 `barrierMerge` already implements this + the conflict guard).
+4. **Fan-in** is a regular node (an assembly step) that runs after the barrier: it reads the fragment handles
+   and writes the merged `blueprint.json`, emitting the updated blueprint handle. (Deterministic derive — a
+   driver step, not an LLM node.)
+
+The merge discipline lives at the HANDLE layer in state (checkpointed, conflict-guarded); the bytes stay in
+files. This is the canonical replacement for ad-hoc filesystem fold-hooks.
+
+### Durability — surviving resume across schema change
+
+State is checkpointed per super-step (D6), so resume/fork/replay are free — but a long-lived workflow WILL
+change its channel schema, and an old checkpoint resumed after that change lacks the new fields (a silent crash
+on resume — a top production failure). Canon: carry a `schema_version` in state and run a migrator guard at
+graph entry that upgrades any incoming checkpoint to the current schema (fill new fields with safe defaults)
+before any node reads it — the same discipline as a database migration. (Phase-2 concern; flagged here so the
+state model is designed for it, not retrofitted.)
+
+### Why (evidence)
+
+- **LangGraph docs** — channels + reducers + the super-step barrier; `Send`/fan-out + reducer + fan-in node;
+  "keep state raw, format prompts on-demand"; context-vs-state (`Runtime`); checkpointer-vs-store tiers;
+  `InvalidUpdateError` on un-reduced concurrent writes. (docs.langchain.com/oss/python/langgraph: graph-api,
+  use-graph-api, thinking-in-langgraph, concepts/context, persistence, stores.)
+- **Production practice (convergent across many 2026 write-ups)** — "state management = >60% of LangGraph
+  production incidents" (LangChain State-of-Agent-Engineering); the universal fix is "external references, not
+  content — store the id/key in state, fetch the bytes in the node" with the explicit ~50KB checkpoint test
+  (activewizards, kalviumlabs, fast.io); the official LangChain forum's "large query result" thread lands the
+  exact pattern we adopt — keep the big payload behind a handle, return only metadata, retrieve a slice on
+  demand; schema-migration-on-resume as a named discipline (Medium/Vishal-lad, altersquare); SQLite saver
+  stores the full checkpoint inline so a stable-large channel re-serializes every step (langgraph#7843) — extra
+  reason large content must be a handle.
 
 ## Out of scope (Phase 2)
 The consumer opt-in: game-omni's `pi-runner/sdk/*` switching to import from `@piflow/core` and deleting its
