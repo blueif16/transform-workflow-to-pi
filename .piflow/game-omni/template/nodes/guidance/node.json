@@ -1,0 +1,50 @@
+{
+  "id": "guidance",
+  "phase": "producers",
+  "deps": [
+    "gameplay"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/author-guidance/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "spec/guidance.fragment.json"
+    ],
+    "owns": [
+      "spec/guidance.fragment.json"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/author-guidance",
+      "{{WORKSPACE}}/templates/genres.json",
+      "{{WORKSPACE}}/templates/modules"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "merge": {
+      "ops": [
+        {
+          "fold": {
+            "from": "spec/guidance.fragment.json",
+            "to": "spec/blueprint.json",
+            "into": "guidance"
+          }
+        }
+      ]
+    }
+  }
+}

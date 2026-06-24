@@ -1,0 +1,57 @@
+{
+  "id": "model",
+  "phase": "producers",
+  "deps": [
+    "gameplay"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/assets/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "model-queries.json"
+    ],
+    "owns": [
+      "model-queries.json",
+      "MEMORY.model.md"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/assets"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "merge": {
+      "ops": [
+        {
+          "run": {
+            "cmd": "{{WORKSPACE}}/packages/skills/assets/gen/.venv/bin/python",
+            "args": [
+              "{{WORKSPACE}}/packages/skills/assets/gen/fetch_models.py",
+              "--blueprint",
+              "{project}/spec/blueprint.json",
+              "--queries",
+              "{project}/model-queries.json",
+              "--out",
+              "{project}/public/assets/models"
+            ],
+            "note": "3D model retrieval (Poly Pizza library) — the programmatic sibling of the 2D image generator; misses are NON-FATAL (procedural fallback)."
+          }
+        }
+      ]
+    }
+  }
+}

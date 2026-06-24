@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { compile, InMemorySandboxProvider, DefaultToolRegistry, mcpToolsToEntries, openClawPluginToEntries } from '../src/index.js';
@@ -15,6 +15,7 @@ import {
   type SecretResolver,
 } from '../src/runner/index.js';
 import type { NodeSpec, Sandbox, SandboxProvider, CreateOpts, OpenRunOpts } from '../src/types.js';
+import { runJsonFile, stateFile, piDir } from '../src/runner/layout.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -131,8 +132,8 @@ describe('runWorkflow — end-to-end on InMemorySandboxProvider (no live pi)', (
       expect(await fs.readFile(path.join(outDir, f), 'utf8')).toBeTruthy();
     }
 
-    // run-status.json written with the right shape.
-    const onDisk = JSON.parse(await fs.readFile(path.join(outDir, 'run-status.json'), 'utf8'));
+    // the canonical .pi/run.json written with the right shape (D7 layout).
+    const onDisk = JSON.parse(await fs.readFile(runJsonFile(outDir), 'utf8'));
     expect(onDisk).toMatchObject({ run: 'e2e', done: true, ok: true, totals: { nodes: 3, ok: 3, failed: 0 } });
     expect(onDisk.startedAt).toBeTruthy();
     expect(onDisk.nodes.gamma.artifacts[0]).toMatchObject({ path: 'gamma.txt', exists: true });
@@ -257,6 +258,42 @@ describe('defaultPiCommand — production headless flags', () => {
     expect(cmd).toContain('--model m1');
     expect(cmd).toContain('--tools read,write');
     expect(cmd).toMatch(/@'_pi\/prompt\.md'$/);
+    // back-compat: the 3-arg call carries NEITHER of U4's new flags.
+    expect(cmd).not.toContain('--exclude-tools');
+    expect(cmd).not.toContain('--thinking');
+  });
+
+  it('emits --exclude-tools from resolved.excludeTools (NOT a node.tools read)', () => {
+    // The load-bearing assertion: exclude derives from the RESOLVED result. The node declares NO deny,
+    // so a node.tools-direct builder would emit nothing — only reading `resolved.excludeTools` works.
+    const node = compile(wf([n('X', [], ['x.txt'])])).nodes.x;
+    const cmd = defaultPiCommand(node, { piTools: ['read'], excludeTools: ['bash', 'web'] }, { promptFile: '_pi/prompt.md' });
+    expect(cmd).toContain('--exclude-tools bash,web');
+  });
+
+  it('emits --thinking ONLY when opts.thinking is set', () => {
+    const node = compile(wf([n('X', [], ['x.txt'])])).nodes.x;
+    const resolved = { piTools: ['read'] };
+    const ctx = { promptFile: '_pi/prompt.md' };
+    expect(defaultPiCommand(node, resolved, ctx, { thinking: 'high' })).toContain('--thinking high');
+    // absent opts ⇒ no flag.
+    expect(defaultPiCommand(node, resolved, ctx)).not.toContain('--thinking');
+  });
+
+  it('places each opts.extraExtensions -e BEFORE the ctx.extensionFile -e (order is load-bearing)', () => {
+    const node = compile(wf([n('X', [], ['x.txt'])])).nodes.x;
+    const cmd = defaultPiCommand(
+      node,
+      { piTools: ['read'] },
+      { promptFile: '_pi/prompt.md', extensionFile: '_pi/x/tools.ts' },
+      { extraExtensions: ['/abs/a.ts', '/abs/b.ts'] },
+    );
+    // each extra is an -e; the ctx extension is the LAST -e.
+    expect(cmd).toContain("-e '/abs/a.ts' -e '/abs/b.ts'");
+    expect(cmd).toContain("-e '_pi/x/tools.ts'");
+    // ORDER: both extras must come before the ctx extension in the argv string.
+    expect(cmd.indexOf("-e '/abs/a.ts'")).toBeLessThan(cmd.indexOf("-e '_pi/x/tools.ts'"));
+    expect(cmd.indexOf("-e '/abs/b.ts'")).toBeLessThan(cmd.indexOf("-e '_pi/x/tools.ts'"));
   });
 });
 
@@ -321,9 +358,10 @@ describe('runWorkflow — tool binding (the per-node pre-check + the generated -
     expect(status.nodes.issue.status).toBe('ok');
     // the allowlist carries the builtin AND the prefixed MCP bare name; -e points at the staged file.
     expect(captured).toContain('--tools write,github_create_issue');
-    expect(captured).toContain("-e '_pi/tools.ts'");
-    // the generated extension was actually staged, and it BINDS the declared tool (registerTool + bridge).
-    const ext = writes.find((w) => w.path === '_pi/tools.ts');
+    expect(captured).toContain("-e '_pi/issue/tools.ts'");
+    // the generated extension was actually staged (at the node's per-node staging dir), and it BINDS the
+    // declared tool (registerTool + bridge).
+    const ext = writes.find((w) => w.path === '_pi/issue/tools.ts');
     expect(ext).toBeTruthy();
     expect(ext!.data).toContain('name: "github_create_issue"');
     // the staged extension is now the self-contained BUNDLE (the bundle seam): the @piflow/tool-bridge
@@ -333,6 +371,356 @@ describe('runWorkflow — tool binding (the per-node pre-check + the generated -
     const extImports = ext!.data.split('\n').filter((l) => /^\s*import\s/.test(l));
     expect(extImports.some((l) => /@piflow\/tool-bridge/.test(l))).toBe(false);
 
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── per-node staging isolation: _pi/<id>/* (parallel nodes never clobber the staged prompt/ext) ───
+
+describe('runWorkflow — per-node staging isolation (parallel nodes never clobber _pi/*)', () => {
+  it('stages each node prompt at a per-node path _pi/<id>/prompt.md (distinct across a parallel stage)', async () => {
+    // A and B have no deps → ONE parallel stage. With a FIXED _pi/prompt.md, two nodes sharing an
+    // in-place workspace clobber each other's prompt (the OPEN-1 bug). Per-node namespacing prevents it.
+    const g = compile(wf([n('A', [], ['a.txt']), n('B', [], ['b.txt'])]));
+    const outDir = await tmpOut();
+
+    const writes: { path: string; data: string }[] = [];
+    const base = new InMemorySandboxProvider();
+    const recording: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+
+    const { status } = await runWorkflow(g, { run: 'stage-iso', outDir, provider: recording, buildCommand: stubBuilder() });
+    expect(status.ok).toBe(true);
+
+    // distinct, node-id-namespaced — NOT a shared '_pi/prompt.md' (the clobber the fix prevents).
+    const promptPaths = writes.filter((w) => w.path.endsWith('prompt.md')).map((w) => w.path).sort();
+    expect(promptPaths).toEqual(['_pi/a/prompt.md', '_pi/b/prompt.md']);
+    // …and each prompt kept ITS node's content (proves they did not overwrite one another).
+    expect(writes.find((w) => w.path === '_pi/a/prompt.md')!.data).toContain('do A');
+    expect(writes.find((w) => w.path === '_pi/b/prompt.md')!.data).toContain('do B');
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── S1: token resolution at node launch — {{arg.*}}/{{WORKSPACE}}/{{RUN}} made physical in the prompt ─
+
+describe('runWorkflow — prompt token resolution at node launch (S1)', () => {
+  /** A recording provider that captures every writeFile (so a test can inspect the STAGED prompt bytes). */
+  function recorder(): { provider: SandboxProvider; writes: { path: string; data: string }[] } {
+    const writes: { path: string; data: string }[] = [];
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+    return { provider, writes };
+  }
+
+  it('resolves {{arg.*}} and {{WORKSPACE}}/{{RUN}} in the prompt BEFORE staging it on disk', async () => {
+    // The prompt prose carries logical tokens (exactly like w0-classify/prompt.md's {{arg.prompt}}).
+    const node: NodeIntent = {
+      label: 'Classify',
+      prompt: 'Build: {{arg.prompt}} | canon={{WORKSPACE}}/skills | out={{RUN}}/spec',
+      tools: {},
+      io: { reads: [], produces: ['s.txt'], artifacts: [{ path: 's.txt' }] },
+    };
+    const outDir = await tmpOut();
+    const { provider, writes } = recorder();
+
+    const { status } = await runWorkflow(compile(wf([node])), {
+      run: 'argres',
+      outDir,
+      provider,
+      buildCommand: stubBuilder(),
+      args: { prompt: 'a fast platformer' },
+      workspace: '/canon-root',
+    });
+    expect(status.nodes.classify.status).toBe('ok');
+
+    const staged = writes.find((w) => w.path === '_pi/classify/prompt.md')!;
+    expect(staged).toBeTruthy();
+    // The tokens are PHYSICAL on disk — not the verbatim {{…}} the pre-S1 runner staged.
+    expect(staged.data).toContain('Build: a fast platformer');
+    expect(staged.data).toContain('canon=/canon-root/skills');
+    expect(staged.data).toContain(`out=${outDir}/spec`); // {{RUN}} resolves to outDir
+    expect(staged.data).not.toContain('{{arg.prompt}}');
+    expect(staged.data).not.toContain('{{WORKSPACE}}');
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a missing {{arg.*}} fails the node loudly (MissingArgError) — never a silent unresolved prompt', async () => {
+    const node: NodeIntent = {
+      label: 'Need',
+      prompt: 'requires {{arg.absent}}',
+      tools: {},
+      io: { reads: [], produces: ['s.txt'], artifacts: [{ path: 's.txt' }] },
+    };
+    const outDir = await tmpOut();
+    // No `args` supplied → the {{arg.absent}} token cannot resolve.
+    const { status } = await runWorkflow(compile(wf([node])), { run: 'argmiss', outDir, buildCommand: stubBuilder() });
+    expect(status.nodes.need.status).toBe('error');
+    expect(status.nodes.need.issues.join(' ')).toMatch(/absent/);
+    expect(status.ok).toBe(false);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a prompt with NO tokens is staged byte-identical (additive — non-token prompts unchanged)', async () => {
+    const outDir = await tmpOut();
+    const { provider, writes } = recorder();
+    await runWorkflow(compile(wf([n('Plain', [], ['p.txt'])])), { run: 'plain-res', outDir, provider, buildCommand: stubBuilder() });
+    const staged = writes.find((w) => w.path === '_pi/plain/prompt.md')!;
+    // 'do Plain' prose survives intact (the markers tail still appends, as before).
+    expect(staged.data).toContain('do Plain');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── S2: the seed PRE op — a node's starting artifact is staged (host + sandbox) BEFORE the model runs ─
+
+describe('runWorkflow — seed PRE op staging (S2)', () => {
+  function recorder(): { provider: SandboxProvider; writes: { path: string; data: string }[] } {
+    const writes: { path: string; data: string }[] = [];
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+    return { provider, writes };
+  }
+
+  it('stages a {to,from} seed onto the host run dir AND into the sandbox before exec', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-ws-'));
+    await fs.mkdir(path.join(workspace, 'tpl'), { recursive: true });
+    await fs.writeFile(path.join(workspace, 'tpl', 'skeleton.json'), '{"seed":"shape"}');
+    const outDir = await tmpOut();
+    const { provider, writes } = recorder();
+
+    // The node declares a seed via ops (as the template loader carries it).
+    const node: NodeIntent = {
+      label: 'Scaffold',
+      prompt: 'fill the skeleton',
+      tools: {},
+      io: { reads: [], produces: ['out.txt'], artifacts: [{ path: 'out.txt' }] },
+      ops: { seed: [{ to: 'spec/skeleton.json', from: '{{WORKSPACE}}/tpl/skeleton.json' }] },
+    };
+
+    let cmdSawSeed = false;
+    // The builder runs AFTER staging; by then the seed must already be on the host run dir.
+    const builder = (nd: { id: string; io: { artifacts: { path: string }[] }; sandbox: { output: string } }): string => {
+      cmdSawSeed = existsSync(path.join(outDir, 'spec', 'skeleton.json'));
+      const a = nd.io.artifacts[0].path;
+      return `mkdir -p ${nd.sandbox.output} && printf '%s' done > ${nd.sandbox.output}/${a}`;
+    };
+
+    const { status } = await runWorkflow(compile(wf([node])), { run: 'seedrun', outDir, provider, workspace, buildCommand: builder });
+    expect(status.nodes.scaffold.status).toBe('ok');
+
+    // (1) host run dir: the seed bytes landed at ${RUN}/spec/skeleton.json.
+    expect(await fs.readFile(path.join(outDir, 'spec', 'skeleton.json'), 'utf8')).toBe('{"seed":"shape"}');
+    // (2) it was staged INTO the sandbox (so the model can read it) BEFORE the command ran.
+    const staged = writes.find((w) => w.path === 'spec/skeleton.json');
+    expect(staged?.data).toBe('{"seed":"shape"}');
+    // (3) and it was physically present on disk by the time the command was built.
+    expect(cmdSawSeed).toBe(true);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  it('a node with NO seed ops runs exactly as before (additive)', async () => {
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([n('Plain', [], ['p.txt'])])), { run: 'noseed', outDir, buildCommand: stubBuilder() });
+    expect(status.nodes.plain.status).toBe('ok');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── S3: promote + barrier-merge + state I/O — a node lifts an output into a RunState channel; the driver ─
+//        merges every parallel lane's promote SERIALLY at the stage barrier, persists once, and the next
+//        stage resolves {{state.*}} against the merged state.
+
+describe('runWorkflow — promote + barrier-merge + state I/O (S3)', () => {
+  // A builder that writes an artifact carrying a JSON field the node promotes (an ARTIFACT-source promote).
+  function jsonArtifactBuilder(contents: (id: string) => Record<string, string>) {
+    return (node: { id: string; sandbox: { output: string } }): string => {
+      const out = node.sandbox.output;
+      const writes = Object.entries(contents(node.id))
+        .map(([p, c]) => {
+          const dest = `${out}/${p}`;
+          const dir = dest.slice(0, dest.lastIndexOf('/'));
+          return `mkdir -p ${dir} && printf '%s' '${c}' > ${dest}`;
+        })
+        .join(' && ');
+      return `${writes} && printf '%s' '\`\`\`json\\n{"status":"ok"}\\n\`\`\`'`;
+    };
+  }
+
+  it('promotes a channel to ${RUN}/.pi/state.json and a downstream node resolves {{state.x}} from it', async () => {
+    // w0 promotes archetype (from its artifact) → state; a downstream node's prompt reads {{state.archetype}}.
+    const classify: NodeIntent = {
+      label: 'Classify',
+      prompt: 'classify',
+      tools: {},
+      io: { reads: [], produces: ['spec/classification.json'], artifacts: [{ path: 'spec/classification.json' }] },
+      ops: { promote: [{ from: 'spec/classification.json:archetype', to: 'archetype', merge: 'set' }] },
+    };
+    const build: NodeIntent = {
+      label: 'Build',
+      prompt: 'build for {{state.archetype}}',
+      tools: {},
+      io: { reads: ['spec/classification.json'], produces: ['out.txt'], artifacts: [{ path: 'out.txt' }] },
+    };
+    const outDir = await tmpOut();
+    const { provider, writes } = (() => {
+      const w: { path: string; data: string }[] = [];
+      const base = new InMemorySandboxProvider();
+      const p: SandboxProvider = {
+        kind: 'inmemory',
+        async create(opts: CreateOpts): Promise<Sandbox> {
+          const sb = await base.create(opts);
+          const orig = sb.writeFile.bind(sb);
+          sb.writeFile = async (pp: string, d: Uint8Array | string) => {
+            w.push({ path: pp, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+            return orig(pp, d);
+          };
+          return sb;
+        },
+      };
+      return { provider: p, writes: w };
+    })();
+
+    const { status } = await runWorkflow(compile(wf([classify, build])), {
+      run: 'promote',
+      outDir,
+      provider,
+      buildCommand: jsonArtifactBuilder((id) => (id === 'classify' ? { 'spec/classification.json': '{"archetype":"platformer"}' } : { 'out.txt': 'built' })),
+    });
+
+    expect(status.nodes.classify.status).toBe('ok');
+    expect(status.nodes.build.status).toBe('ok');
+
+    // (1) state.json holds the promoted channel.
+    const state = JSON.parse(await fs.readFile(stateFile(outDir), 'utf8'));
+    expect(state.archetype).toBe('platformer');
+
+    // (2) the downstream prompt resolved {{state.archetype}} to the promoted value (physical on disk).
+    const buildPrompt = writes.find((x) => x.path === '_pi/build/prompt.md')!;
+    expect(buildPrompt.data).toContain('build for platformer');
+    expect(buildPrompt.data).not.toContain('{{state.archetype}}');
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('barrier-merges two PARALLEL lanes that each promote a DIFFERENT channel (both land, persisted once)', async () => {
+    // Two independent producers (one parallel stage), each promoting its own channel.
+    const a: NodeIntent = {
+      label: 'A', prompt: 'a', tools: {},
+      io: { reads: [], produces: ['a.json'], artifacts: [{ path: 'a.json' }] },
+      ops: { promote: [{ from: 'a.json:k', to: 'alpha', merge: 'set' }] },
+    };
+    const b: NodeIntent = {
+      label: 'B', prompt: 'b', tools: {},
+      io: { reads: [], produces: ['b.json'], artifacts: [{ path: 'b.json' }] },
+      ops: { promote: [{ from: 'b.json:k', to: 'beta', merge: 'set' }] },
+    };
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([a, b])), {
+      run: 'barrier',
+      outDir,
+      buildCommand: jsonArtifactBuilder((id) => (id === 'a' ? { 'a.json': '{"k":"AA"}' } : { 'b.json': '{"k":"BB"}' })),
+    });
+    expect(status.ok).toBe(true);
+    const state = JSON.parse(await fs.readFile(stateFile(outDir), 'utf8'));
+    expect(state).toMatchObject({ alpha: 'AA', beta: 'BB' });
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a SET channel promoted by TWO parallel lanes is a ConflictError (the run fails loudly)', async () => {
+    // Both parallel lanes promote the SAME 'shared' channel under the default 'set' reducer → a conflict.
+    const a: NodeIntent = {
+      label: 'A', prompt: 'a', tools: {},
+      io: { reads: [], produces: ['a.json'], artifacts: [{ path: 'a.json' }] },
+      ops: { promote: [{ from: 'a.json:k', to: 'shared', merge: 'set' }] },
+    };
+    const b: NodeIntent = {
+      label: 'B', prompt: 'b', tools: {},
+      io: { reads: [], produces: ['b.json'], artifacts: [{ path: 'b.json' }] },
+      ops: { promote: [{ from: 'b.json:k', to: 'shared', merge: 'set' }] },
+    };
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([a, b])), {
+      run: 'conflict',
+      outDir,
+      buildCommand: jsonArtifactBuilder((id) => (id === 'a' ? { 'a.json': '{"k":"AA"}' } : { 'b.json': '{"k":"BB"}' })),
+    });
+    expect(status.ok).toBe(false);
+    expect(JSON.stringify(status.nodes)).toMatch(/conflict|concurrent/i);
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('promotes from the STRUCTURED @return (lastJsonBlock widened to carry arbitrary fields)', async () => {
+    // A zero-artifact-promote-source node that promotes a field from its @return JSON (not an artifact).
+    const gate: NodeIntent = {
+      label: 'Decide', prompt: 'decide', tools: {},
+      io: { reads: [], produces: ['d.txt'], artifacts: [{ path: 'd.txt' }] },
+      ops: { promote: [{ from: '@return:verdict', to: 'verdict', merge: 'set' }] },
+    };
+    const outDir = await tmpOut();
+    // The stub writes the artifact AND emits a fenced return carrying an extra `verdict` field.
+    const builder = (node: { sandbox: { output: string } }): string =>
+      `mkdir -p ${node.sandbox.output} && printf '%s' x > ${node.sandbox.output}/d.txt && ` +
+      `printf '%s' '\`\`\`json\\n{"status":"ok","verdict":"DESIGN_PASSED"}\\n\`\`\`'`;
+    const { status } = await runWorkflow(compile(wf([gate])), { run: 'atreturn', outDir, buildCommand: builder });
+    expect(status.nodes.decide.status).toBe('ok');
+    const state = JSON.parse(await fs.readFile(stateFile(outDir), 'utf8'));
+    expect(state.verdict).toBe('DESIGN_PASSED');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('loads PRE-EXISTING state at run start (a {{state.*}} from a prior run resolves on the first node)', async () => {
+    // Pre-seed state.json (as a prior run's barrier would have) → the first node's prompt reads it.
+    const outDir = await tmpOut();
+    await fs.mkdir(piDir(outDir), { recursive: true });
+    await fs.writeFile(stateFile(outDir), JSON.stringify({ archetype: 'voxel' }));
+    const node: NodeIntent = { label: 'Use', prompt: 'use {{state.archetype}}', tools: {}, io: { reads: [], produces: ['u.txt'], artifacts: [{ path: 'u.txt' }] } };
+    const { provider, writes } = (() => {
+      const w: { path: string; data: string }[] = [];
+      const base = new InMemorySandboxProvider();
+      const p: SandboxProvider = { kind: 'inmemory', async create(opts: CreateOpts): Promise<Sandbox> { const sb = await base.create(opts); const orig = sb.writeFile.bind(sb); sb.writeFile = async (pp: string, d: Uint8Array | string) => { w.push({ path: pp, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') }); return orig(pp, d); }; return sb; } };
+      return { provider: p, writes: w };
+    })();
+    const { status } = await runWorkflow(compile(wf([node])), { run: 'preload', outDir, provider, buildCommand: stubBuilder() });
+    expect(status.nodes.use.status).toBe('ok');
+    expect(writes.find((x) => x.path === '_pi/use/prompt.md')!.data).toContain('use voxel');
     await fs.rm(outDir, { recursive: true, force: true });
   });
 });
@@ -511,16 +899,16 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
 
       expect(status.nodes.issue.status).toBe('ok');
 
-      // (1) _pi/mcp.json was staged VERBATIM (the runner writes the loose JSON it was handed).
-      const cfg = writes.find((w) => w.path === '_pi/mcp.json');
+      // (1) the MCP config was staged VERBATIM at the node's per-node staging dir (_pi/<id>/mcp.json).
+      const cfg = writes.find((w) => w.path === '_pi/issue/mcp.json');
       expect(cfg).toBeTruthy();
       expect(JSON.parse(cfg!.data)).toEqual(mcpConfig);
 
-      // (2) PIFLOW_MCP_CONFIG is set to an ABSOLUTE path ending in _pi/mcp.json, plus the referenced secret.
+      // (2) PIFLOW_MCP_CONFIG is set to an ABSOLUTE path ending in the node's _pi/<id>/mcp.json, plus the secret.
       const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e);
       expect(env).toBeTruthy();
       expect(path.isAbsolute(env!.PIFLOW_MCP_CONFIG)).toBe(true);
-      expect(env!.PIFLOW_MCP_CONFIG.endsWith(path.join('_pi', 'mcp.json')) || env!.PIFLOW_MCP_CONFIG.endsWith('_pi/mcp.json')).toBe(true);
+      expect(env!.PIFLOW_MCP_CONFIG.endsWith('_pi/issue/mcp.json') || env!.PIFLOW_MCP_CONFIG.endsWith(path.join('_pi', 'issue', 'mcp.json'))).toBe(true);
       expect(env!.GH_TOKEN).toBe('ghp_runner_secret');
     } finally {
       delete process.env.GH_TOKEN;
@@ -537,7 +925,7 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
     const { status } = await runWorkflow(g, { run: 'mcp-none', outDir, provider, mcpConfig, buildCommand: stubBuilder() });
 
     expect(status.nodes.plain.status).toBe('ok');
-    expect(writes.find((w) => w.path === '_pi/mcp.json')).toBeUndefined();
+    expect(writes.find((w) => w.path.endsWith('mcp.json'))).toBeUndefined();
     // …and PIFLOW_MCP_CONFIG was NOT injected for a node with no MCP tools.
     expect(createEnvs.every((e) => !(e && 'PIFLOW_MCP_CONFIG' in e))).toBe(true);
 
@@ -564,7 +952,7 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
       });
 
       expect(status.nodes.issue.status).toBe('ok');
-      expect(writes.find((w) => w.path === '_pi/mcp.json')).toBeTruthy();
+      expect(writes.find((w) => w.path === '_pi/issue/mcp.json')).toBeTruthy();
 
       const env = createEnvs.find((e) => e && 'PIFLOW_MCP_CONFIG' in e)!;
       expect(env).toBeTruthy();
@@ -600,8 +988,8 @@ describe('runWorkflow — MCP config staging (_pi/mcp.json + PIFLOW_MCP_CONFIG +
       const { status } = await runWorkflow(g, { run: 'oc-stage', outDir, provider, registry, mcpConfig: ocMcpConfig, buildCommand: stubBuilder() });
 
       expect(status.nodes.recall.status).toBe('ok');
-      // _pi/mcp.json was staged VERBATIM (carries the openclaw server with its $VAR ref).
-      const cfg = writes.find((w) => w.path === '_pi/mcp.json');
+      // the config was staged VERBATIM at the node's per-node staging dir (carries the openclaw server $VAR ref).
+      const cfg = writes.find((w) => w.path === '_pi/recall/mcp.json');
       expect(cfg).toBeTruthy();
       expect(JSON.parse(cfg!.data)).toEqual(ocMcpConfig);
       // PIFLOW_MCP_CONFIG + the referenced secret were injected into the node env.
@@ -868,7 +1256,7 @@ describe('runWorkflow — lane isolation (parallel-lane failures are contained, 
     expect(errored?.summary).toMatch(/sandbox create failed/i);
 
     // The terminal status is DURABLE on disk (finishNode awaits the write) and equals memory.
-    const onDisk = JSON.parse(await fs.readFile(path.join(outDir, 'run-status.json'), 'utf8'));
+    const onDisk = JSON.parse(await fs.readFile(runJsonFile(outDir), 'utf8'));
     expect(onDisk.done).toBe(true);
     expect(onDisk.ok).toBe(false);
 
@@ -903,7 +1291,7 @@ describe('runWorkflow — lane isolation (parallel-lane failures are contained, 
 describe('writeStatus — concurrent-writer safety (atomic publish, ordered, no torn reads)', () => {
   it('never yields a torn/partial file to a concurrent reader and lands the last-enqueued value', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-status-'));
-    const file = path.join(dir, 'run-status.json');
+    const file = runJsonFile(dir);
     const mk = (i: number): RunStatus => ({
       run: 'r', startedAt: 'x', updatedAt: 'x', done: false, ok: null, durationMs: i, stage: null, totals: null,
       // a large payload so a non-atomic write spans multiple syscalls (maximizes the torn-read window).
@@ -940,6 +1328,29 @@ describe('writeStatus — concurrent-writer safety (atomic publish, ordered, no 
     // Serialized chain ⇒ the last-ENQUEUED value is the one on disk (ordering preserved).
     const finalOnDisk = JSON.parse(await fs.readFile(file, 'utf8'));
     expect(finalOnDisk.durationMs).toBe(199);
+
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  // ── the writer re-point: writeStatus publishes the CANONICAL `.pi/run.json` (D7 layout) ───────────
+  // The status is the SINGLE source of truth the observe pipeline (readRunModel/watchRun) + the cli/tui
+  // consumers poll — and they read the engine-owned `.pi/run.json` via runJsonFile(), NEVER the legacy
+  // `run-status.json`. So the writer must publish THERE.
+  it('publishes to <dir>/.pi/run.json (runJsonFile), parseable to the RunStatus shape', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-repoint-'));
+    const status: RunStatus = {
+      run: 'rp', startedAt: 'x', updatedAt: 'x', done: true, ok: true, durationMs: 5,
+      stage: null, totals: { nodes: 1, ok: 1, failed: 0 },
+      nodes: { a: { id: 'a', label: 'A', status: 'ok', artifacts: [], issues: [] } },
+    };
+    await writeStatus(dir, status);
+
+    // It lands at the CANONICAL .pi/run.json path (the consumers' read surface), parseable.
+    const onDisk = JSON.parse(await fs.readFile(runJsonFile(dir), 'utf8'));
+    expect(onDisk).toMatchObject({ run: 'rp', done: true, ok: true, totals: { nodes: 1, ok: 1, failed: 0 } });
+    expect(onDisk.nodes.a.id).toBe('a');
+    // And NOT at the legacy run-status.json path (that surface is retired in @piflow/core).
+    await expect(fs.access(path.join(dir, 'run-status.json'))).rejects.toThrow();
 
     await fs.rm(dir, { recursive: true, force: true });
   });
@@ -982,6 +1393,162 @@ describe('runWorkflow — real cancellation (ExecOpts.signal)', () => {
     expect(status.nodes.reader.status).toBe('ok');
     expect(status.nodes.reader.killedTimeout).toBeFalsy();
 
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── S4: project/merge POST DERIVE ops — the discriminated DRIVER-MERGE grammar (fold|concat|reconcile|run)
+//        wired into runNode POST, ordered project → merge → promote. Stub exec + in-memory provider; the
+//        executor REACHED is proven by its on-disk effect (bypass the wiring ⇒ the effect is absent ⇒ RED).
+
+describe('runWorkflow — project/merge POST DERIVE ops (S4)', () => {
+  // A builder that writes EXACT file contents (JSON or text) into the node's sandbox output dir, then a
+  // return fence. Reused shape from contentBuilder, but single-quote-safe JSON via base64 is overkill —
+  // the contents here are single-quote-free.
+  function filesBuilder(files: (id: string) => Record<string, string>) {
+    return (node: { id: string; sandbox: { output: string } }): string => {
+      const out = node.sandbox.output;
+      const writes = Object.entries(files(node.id))
+        .map(([p, c]) => {
+          const dest = `${out}/${p}`;
+          const dir = dest.slice(0, dest.lastIndexOf('/'));
+          return `mkdir -p ${dir} && printf '%s' '${c}' > ${dest}`;
+        })
+        .join(' && ');
+      return `${writes} && printf '%s' '\`\`\`json\\n{"status":"ok"}\\n\`\`\`'`;
+    };
+  }
+
+  it('a `fold` merge op SETS blueprint[into] = the fragment (siblings intact) — the executor is REACHED', async () => {
+    // The node authors spec/shell.fragment.json AND a base spec/blueprint.json with a STALE shell + a meta
+    // sibling; its merge fold op must overwrite blueprint.shell with the fragment and leave meta untouched.
+    const node: NodeIntent = {
+      label: 'Shell',
+      prompt: 'author the shell fragment',
+      tools: {},
+      io: { reads: [], produces: ['spec/shell.fragment.json'], artifacts: [{ path: 'spec/shell.fragment.json' }] },
+      ops: { merge: { ops: [{ fold: { from: 'spec/shell.fragment.json', to: 'spec/blueprint.json', into: 'shell' } }] } },
+    };
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([node])), {
+      run: 'fold',
+      outDir,
+      buildCommand: filesBuilder(() => ({
+        'spec/shell.fragment.json': '{"hud":["score"],"intro":"go"}',
+        'spec/blueprint.json': '{"meta":{"x":1},"shell":{"STALE":true}}',
+      })),
+    });
+    expect(status.nodes.shell.status).toBe('ok');
+    const bp = JSON.parse(await fs.readFile(path.join(outDir, 'spec', 'blueprint.json'), 'utf8'));
+    // REACHED: blueprint.shell is the FRAGMENT (not the stale value), and the sibling survived. If the merge
+    // wiring were bypassed, blueprint.shell would still be {STALE:true} → this assertion goes RED.
+    expect(bp.shell).toEqual({ hud: ['score'], intro: 'go' });
+    expect(bp.meta).toEqual({ x: 1 });
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a `concat` merge op concatenates the glob set into one file, each under a heading', async () => {
+    const node: NodeIntent = {
+      label: 'Scaffold',
+      prompt: 'write memory fragments',
+      tools: {},
+      io: { reads: [], produces: ['MEMORY.a.md', 'MEMORY.b.md'], artifacts: [{ path: 'MEMORY.a.md' }, { path: 'MEMORY.b.md' }] },
+      ops: { merge: { ops: [{ concat: { glob: 'MEMORY.*.md', to: 'MEMORY.md', heading: '## {name}' } }] } },
+    };
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([node])), {
+      run: 'concat',
+      outDir,
+      buildCommand: filesBuilder(() => ({ 'MEMORY.a.md': 'A body', 'MEMORY.b.md': 'B body' })),
+    });
+    expect(status.nodes.scaffold.status).toBe('ok');
+    // Concatenated, stable lexical order, each under its heading, dest excluded.
+    expect(await fs.readFile(path.join(outDir, 'MEMORY.md'), 'utf8')).toBe(
+      '## MEMORY.a.md\n\nA body\n\n## MEMORY.b.md\n\nB body\n',
+    );
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('resolves {{WORKSPACE}}/{{RUN}} tokens in a `run` merge op before the executor runs', async () => {
+    // A run op whose cmd path tokens must be made physical by the per-node resolver ctx (not the executor's
+    // own {project} token). The node script reads {{RUN}}/marker.txt (proving {{RUN}} resolved) + a script at
+    // {{WORKSPACE}}/scripts/derive.js (proving {{WORKSPACE}} resolved) and writes a receipt.
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-ws4-'));
+    await fs.mkdir(path.join(workspace, 'scripts'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, 'scripts', 'derive.js'),
+      `const fs=require('fs');const run=process.argv[2];fs.writeFileSync(run+'/receipt.txt','derived from '+fs.readFileSync(run+'/marker.txt','utf8'));`,
+    );
+    const node: NodeIntent = {
+      label: 'Derive',
+      prompt: 'author the marker',
+      tools: {},
+      io: { reads: [], produces: ['marker.txt'], artifacts: [{ path: 'marker.txt' }] },
+      ops: { merge: { ops: [{ run: { cmd: 'node', args: ['{{WORKSPACE}}/scripts/derive.js', '{{RUN}}'] } }] } },
+    };
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([node])), {
+      run: 'runtok',
+      outDir,
+      workspace,
+      buildCommand: filesBuilder(() => ({ 'marker.txt': 'M1' })),
+    });
+    expect(status.nodes.derive.status).toBe('ok');
+    // The run op fired with BOTH tokens resolved physically (else node would ENOENT on the script / marker).
+    expect(await fs.readFile(path.join(outDir, 'receipt.txt'), 'utf8')).toBe('derived from M1');
+    await fs.rm(outDir, { recursive: true, force: true });
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  it('runs project BEFORE merge BEFORE promote (the run.mjs POST order)', async () => {
+    // The ordering is proven by DATA DEPENDENCY across the three ops:
+    //  - project `copy` derives spec/derived.json from a frozen source subtree;
+    //  - merge `run` executes a script that writes order.txt = "project-first" IFF spec/derived.json EXISTS
+    //    when it runs (i.e. project already ran), else "merge-first";
+    //  - promote lifts a field from spec/source.json → the `phase` channel, landing in state.json LAST.
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-ws-ord-'));
+    await fs.mkdir(path.join(workspace, 'scripts'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, 'scripts', 'order.js'),
+      `const fs=require('fs');const run=process.argv[2];const had=fs.existsSync(run+'/spec/derived.json');fs.writeFileSync(run+'/order.txt',had?'project-first':'merge-first');`,
+    );
+    const node: NodeIntent = {
+      label: 'Derive',
+      prompt: 'author the source',
+      tools: {},
+      io: { reads: [], produces: ['spec/source.json'], artifacts: [{ path: 'spec/source.json' }] },
+      ops: {
+        // project: copy the `payload` subtree of spec/source.json → spec/derived.json (a discriminated op).
+        project: [{ to: 'spec/derived.json', source: 'spec/source.json', copy: 'payload' } as unknown as { to: string; from: string }],
+        // merge: a run op that records whether the projection already landed.
+        merge: { ops: [{ run: { cmd: 'node', args: ['{{WORKSPACE}}/scripts/order.js', '{{RUN}}'] } }] },
+        // promote: lift a channel LAST (it lands at the stage barrier, after project+merge in-node).
+        promote: [{ from: 'spec/source.json:phase', to: 'phase', merge: 'set' }],
+      },
+    };
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([node])), {
+      run: 'order',
+      outDir,
+      workspace,
+      buildCommand: filesBuilder(() => ({ 'spec/source.json': '{"phase":"P1","payload":{"k":"v"}}' })),
+    });
+    expect(status.nodes.derive.status).toBe('ok');
+    // (1) project ran: spec/derived.json holds the copied subtree.
+    expect(JSON.parse(await fs.readFile(path.join(outDir, 'spec', 'derived.json'), 'utf8'))).toEqual({ k: 'v' });
+    // (2) merge ran AFTER project (the script saw spec/derived.json already on disk).
+    expect(await fs.readFile(path.join(outDir, 'order.txt'), 'utf8')).toBe('project-first');
+    // (3) promote ran (the barrier persisted the channel to state.json) — the LAST of the three.
+    const state = JSON.parse(await fs.readFile(stateFile(outDir), 'utf8'));
+    expect(state.phase).toBe('P1');
+    await fs.rm(outDir, { recursive: true, force: true });
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  it('a node with NO project/merge ops runs exactly as before (additive)', async () => {
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([n('Plain', [], ['p.txt'])])), { run: 'noderive', outDir, buildCommand: stubBuilder() });
+    expect(status.nodes.plain.status).toBe('ok');
     await fs.rm(outDir, { recursive: true, force: true });
   });
 });

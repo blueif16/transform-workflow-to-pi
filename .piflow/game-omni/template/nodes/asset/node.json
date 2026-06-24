@@ -1,0 +1,58 @@
+{
+  "id": "asset",
+  "phase": "producers",
+  "deps": [
+    "gameplay"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/assets/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "asset-prompts.json",
+      "public/assets/asset-manifest.json"
+    ],
+    "owns": [
+      "asset-prompts.json",
+      "MEMORY.asset.md"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/assets"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "merge": {
+      "ops": [
+        {
+          "run": {
+            "cmd": "{{WORKSPACE}}/packages/skills/assets/gen/.venv/bin/python",
+            "args": [
+              "{{WORKSPACE}}/packages/skills/assets/gen/generate_assets.py",
+              "--blueprint",
+              "{project}/spec/blueprint.json",
+              "--prompts",
+              "{project}/asset-prompts.json",
+              "--out",
+              "{project}/public/assets"
+            ],
+            "note": "Asset image generation — the programmatic step that replaced the W3b node."
+          }
+        }
+      ]
+    }
+  }
+}

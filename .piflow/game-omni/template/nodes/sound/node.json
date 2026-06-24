@@ -1,0 +1,50 @@
+{
+  "id": "sound",
+  "phase": "producers",
+  "deps": [
+    "gameplay"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/sound-author/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "spec/sound.fragment.json"
+    ],
+    "owns": [
+      "spec/sound.fragment.json"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/sound-author",
+      "{{WORKSPACE}}/templates/genres.json",
+      "{{WORKSPACE}}/templates/modules"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "merge": {
+      "ops": [
+        {
+          "fold": {
+            "from": "spec/sound.fragment.json",
+            "to": "spec/blueprint.json",
+            "into": "sound"
+          }
+        }
+      ]
+    }
+  }
+}

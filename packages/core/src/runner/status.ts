@@ -1,5 +1,6 @@
-// The run-status record — a future-viz-friendly mirror of the engine's `run-status.json` (run.mjs
-// schema + writeStatus 639–668), kept faithful enough that a viz/dashboard can read it unchanged.
+// The run-status record — a future-viz-friendly mirror of the engine's run-status digest (run.mjs
+// schema + writeStatus 639–668), now published as `.pi/run.json` (D7 layout) — kept faithful enough
+// that a viz/dashboard can read it unchanged.
 //
 // The status is the SINGLE source of truth a watcher polls: a node is `ok` only when its declared
 // artifacts exist ON DISK (the driver stat()s them — "verified, not trusted"). Because parallel lanes
@@ -11,6 +12,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { ReturnMode } from '../types.js';
 import type { CheckResult } from '../checks.js';
+import { piDir, runJsonFile } from './layout.js';
 
 /** Per-node status enum (run.mjs ladder): the terminal verdict the driver assigns each node. */
 export type NodeStatus =
@@ -99,9 +101,12 @@ const writeChains = new Map<string, Promise<void>>();
 let tmpSeq = 0;
 
 /**
- * Write the run status to `<dir>/run-status.json` (pretty-printed; mkdir -p first). Writes to a given
- * dir are SERIALIZED and each is ATOMIC (temp-file + rename), so parallel lanes + a polling watcher
- * never interleave or read a torn file.
+ * Write the run status to the CANONICAL `<dir>/.pi/run.json` (D7 layout; pretty-printed; mkdir -p the
+ * `.pi/` namespace first). This IS the single source of truth the observe pipeline (readRunModel /
+ * watchRun) and the cli/tui consumers poll — they read `runJsonFile(dir)`, the canonical `.pi/run.json`
+ * digest. Writes to a given dir are SERIALIZED and each is ATOMIC (temp-file + rename in the
+ * SAME `.pi/` dir, so the rename is intra-filesystem), so parallel lanes + a polling watcher never
+ * interleave or read a torn file.
  */
 export function writeStatus(dir: string, status: RunStatus): Promise<void> {
   status.updatedAt = nowISO();
@@ -113,9 +118,10 @@ export function writeStatus(dir: string, status: RunStatus): Promise<void> {
   const next = prev
     .catch(() => {}) // a prior write's failure must not poison the chain
     .then(async () => {
-      await fs.mkdir(dir, { recursive: true });
-      const finalPath = path.join(dir, 'run-status.json');
-      const tmpPath = path.join(dir, `.run-status.${process.pid}.${tmpSeq++}.tmp`);
+      const metaDir = piDir(dir);
+      await fs.mkdir(metaDir, { recursive: true });
+      const finalPath = runJsonFile(dir);
+      const tmpPath = path.join(metaDir, `.run.${process.pid}.${tmpSeq++}.tmp`);
       await fs.writeFile(tmpPath, body);
       await fs.rename(tmpPath, finalPath); // atomic publish — a reader never sees a partial file
     });

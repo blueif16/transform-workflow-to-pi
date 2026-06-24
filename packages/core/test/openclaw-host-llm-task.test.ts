@@ -142,7 +142,10 @@ describe('hostOpenClawTool — S3: real llm-task driven through the pi-bound run
     expect(text).toContain(TAPE_MARKER);
     // The thinking block in the tape must NOT leak into the answer (else JSON.parse would fail on prose).
     expect(text).not.toContain('I will return just the JSON');
-  });
+    // 30s timeout (not vitest's 5s default): this test dynamically imports the REAL openclaw plugin and runs
+    // the async adapter, so under heavy parallel-suite CPU contention a CORRECT run can exceed 5s and falsely
+    // time out. Every assertion above is unchanged — a WRONG adapter still reddens; only slow-but-right passes.
+  }, 30_000);
 
   it('ERROR: a non-zero/garbage pi run ⇒ adapter returns payloads with isError:true, not a host crash', async () => {
     // We assert the SEAM's behavior directly (the adapter returns an error payload rather than throwing),
@@ -160,7 +163,7 @@ describe('hostOpenClawTool — S3: real llm-task driven through the pi-bound run
     expect(res.payloads!.every((p) => p.isError === true)).toBe(true);
     // meta is populated (the required `durationMs` field of EmbeddedAgentRunMeta).
     expect(typeof res.meta.durationMs).toBe('number');
-  });
+  }, 30_000); // same load-sensitivity guard as the DETERMINISTIC case (dynamic import + async under contention)
 
   it('the loud-throw still guards the rest of runtime.agent.* (only runEmbeddedAgent is wired)', async () => {
     // Reaching `runtime.agent.subagent` (or any un-wired runtime.agent.* path) must still throw loudly with

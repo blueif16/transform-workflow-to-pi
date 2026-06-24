@@ -9,6 +9,54 @@ export * from './types.js';
 // DAG compiler (data-flow edge inference + topological staging + validation)
 export { compile, tryCompile, validate, inferEdges, stagesOf, slugify, WorkflowError } from './dag.js';
 
+// Workflow extraction: run a Claude Code Workflow .js under recording stubs → realized agent
+// records + structural DAG (the RAW recorded shape; the bridge maps it to a WorkflowSpec).
+export { extractWorkflow } from './workflow/extract.js';
+export type { ExtractedRecord, ExtractedStage, ExtractedMeta, ExtractResult } from './workflow/extract.js';
+
+// Template-format JSON Schemas (draft 2020-12): the on-disk AUTHORING contract for a workflow template
+// (docs/design/template-format.md §3/§5). A future loadTemplate/compile step validates node.json /
+// meta.json / the generated workflow.json against these fail-closed at author time.
+export { nodeSchema, metaSchema, workflowSchema } from './workflow/template/schema/index.js';
+
+// The template LOADER / compile gate (T2): `loadTemplate(dir) → WorkflowSpec` (template-format.md §8) —
+// the workflow's `tsc`. Scans nodes/*/, chains deps into the DAG, runs the fail-closed §8 static-check
+// suite, renders each node's DRIVER-* marker tail, (re)writes the generated workflow.json lock, and
+// returns the in-memory WorkflowSpec the existing `compile`/`runWorkflow` consume.
+export { loadTemplate, TemplateError } from './workflow/template/loader.js';
+export type { LoadTemplateOpts } from './workflow/template/loader.js';
+
+// init-RUN (T5 / template-format.md §10): instantiate a runnable THREAD from an authored template dir —
+// the four buckets (pure-copy node.json+prose · intrinsic {{RUN}}/{{WORKSPACE}} resolve, {{state.*}}
+// deferred · markersFromNode tail · EMPTY io.json/events.jsonl/state.json stubs). Template ≅ run (D7).
+export { instantiateRun } from './workflow/template/instantiate.js';
+export type { InstantiateRunOpts, InstantiateRunResult, InstantiatedNode } from './workflow/template/instantiate.js';
+export { renderRealizedPrompt } from './workflow/template/render.js';
+
+// RunState (D6): the per-thread channel object + its reducers + the only state I/O. `RunState`/`Reducer`
+// types come via `export * from './types.js'` above.
+export { applyReducer, mergeUpdate, loadState, persistState } from './workflow/state.js';
+
+// U7 — the SINGLE runtime token resolver: `{{RUN}}`/`{{WORKSPACE}}`/`{{state.<channel>}}` made physical,
+// applied uniformly to every marker (retires the `BASE_ROOT→wtRoot` regex + `RUN_CWD`-relative tokens).
+export { resolveTokens, resolveAll, MissingChannelError, MissingArgError } from './workflow/resolver.js';
+export type { ResolveCtx } from './workflow/resolver.js';
+
+// U7 — deterministic op executors (seed PRE · project/merge POST), re-rooted onto the logical resolver.
+export { driverSeed, resolveSeedTokens, stageSeed } from './workflow/ops/seed.js';
+export type { Seed, SeedResult } from './workflow/ops/seed.js';
+export { ensureDir, projJson, drillPath, readJsonSafe, fileExists, absUnder } from './workflow/ops/util.js';
+export { applyProjectionOp } from './workflow/ops/project.js';
+export type { ProjectionResult } from './workflow/ops/project.js';
+export { applyMergeOp, runMerge } from './workflow/ops/merge.js';
+export type { MergeResult, MergeSpec } from './workflow/ops/merge.js';
+
+// U7 — the `promote` POST-op (lift a node output into a RunState channel via the reducer) + the
+// stage-barrier merge (serial+deterministic parallel-promote merge; a `set` channel with two concurrent
+// writers is a flagged ConflictError — LangGraph InvalidUpdateError semantics).
+export { parsePromote, extractPromoteValue, applyPromotes, barrierMerge, ConflictError } from './workflow/ops/promote.js';
+export type { PromoteSpec, ResolvedPromote, PromoteCtx, NodeUpdate } from './workflow/ops/promote.js';
+
 // Contract-marker codec (DRIVER-*)
 export { emitMarkers, parseMarkers, markersFromNode } from './contract.js';
 export type { ContractMarkers } from './contract.js';
@@ -18,7 +66,11 @@ export { CHECK_KINDS, evaluateChecks, effectiveChecks, actionForVerdict, lastFen
 export type { CheckResult, FileBytes } from './checks.js';
 
 // Tool registry (namespace:name → bare pi names)
-export { DefaultToolRegistry, BUILTIN_TOOLS } from './tools/registry.js';
+export { DefaultToolRegistry, BUILTIN_TOOLS, DEFAULT_TOOLS } from './tools/registry.js';
+// The first-party `submit_result` contract tool (the typed terminating return tool): the catalog entry
+// (seeded into every DefaultToolRegistry) + its param schema + its inline-execute render for the `-e` ext.
+export { SUBMIT_RESULT_TOOL, SUBMIT_RESULT_PARAMETERS, SUBMIT_RESULT_ADDRESS, renderContractTool } from './tools/contract-tool.js';
+export type { ContractRenderable } from './tools/contract-tool.js';
 // Ingestion: MCP tools/list → ToolEntry[] (the effortless catalog fill)
 export { mcpToolsToEntries } from './tools/ingest.js';
 export type { McpToolListing, McpIngestOpts } from './tools/ingest.js';
@@ -44,6 +96,11 @@ export { OPENCLAW_COMMUNITY_CATALOG, OPENCLAW_PIN } from './tools/openclaw-commu
 
 // Sandbox providers (lifecycle; in-memory reference impl + not-implemented stubs)
 export { InMemorySandbox, InMemorySandboxProvider, NotImplementedProvider } from './sandbox/index.js';
+// Local in-place provider ('local' kind): roots the sandbox AT workdir (no temp dir), dispose is a NO-OP
+// (preserves the user's tree) — the semantic opposite of InMemory (which wipes on dispose).
+export { LocalSandbox, LocalSandboxProvider } from './sandbox/local.js';
+// Bounded stdout/stderr capture (guards every provider against the cumulative-snapshot string blow-up)
+export { tailAppend, DEFAULT_CAPTURE_MAX } from './sandbox/capture.js';
 // Seatbelt read-scope provider (macOS)
 export { SeatbeltSandbox, SeatbeltSandboxProvider, buildSeatbeltProfile } from './sandbox/seatbelt.js';
 // Worktree per-run git WRITE-isolation provider (run-scoped: branch pi/<run> + sibling .pi-worktrees/<run>)
@@ -71,6 +128,18 @@ export type { HookReport, RunHooksOpts } from './hooks/index.js';
 // Runner (M1 execution loop — create→stage→exec→collect→dispose; watchdogs · halt-on-failure ·
 // --from resume · run-status.json). The pi-spawn is injectable (buildCommand/execRunner) so it runs offline.
 export { runWorkflow, defaultExecRunner, defaultPiCommand, lastJsonBlock, writeStatus, artifactState, nowISO } from './runner/index.js';
+// The env-AGNOSTIC run entry (D5): a plain resolved-config object (workflowSpec | buildWorkflowSpec +
+// run opts) → compile → run. The bridge is consumer-injected; env resolution lives in `loadConfig`.
+export { runFromConfig } from './runner/index.js';
+export type { ResolvedRunConfig } from './runner/index.js';
+// runFromTemplate (U8 / §10): the TEMPLATE-run join — loadTemplate → instantiateRun → compile → runWorkflow,
+// the one entry that connects the spec-compile and run-folder-materialize halves into an end-to-end run.
+export { runFromTemplate } from './runner/index.js';
+export type { RunFromTemplateOpts } from './runner/index.js';
+// loadConfig — the env layer (D5): PI_RUNNER_* env + parsed args → the run-opts object runFromConfig
+// consumes (arg > env > default; timeouts seconds→ms). The ONLY place env is parsed; runFromConfig is pure.
+export { loadConfig, parseArgFlags } from './runner/index.js';
+export type { ConfigArgs, LoadConfigInput, ResolvedRunOpts } from './runner/index.js';
 // Post-node schema gate (injectable validator seam + best-effort ajv-2020 default)
 export { validateArtifactSchemas, defaultSchemaValidator } from './runner/index.js';
 export type { SchemaValidator, SchemaCheckResult } from './runner/index.js';
@@ -91,3 +160,52 @@ export type {
   ArtifactState,
   RunTotals,
 } from './runner/index.js';
+// Observability — `docker logs` for a run: per-node event capture (NodeRecorder) + the distill/tail/
+// follow reader the `piflow logs` CLI is built on. Any consumer streams a run via these or `npx piflow logs`.
+export {
+  NodeRecorder,
+  recordingSandbox,
+  slimEvent,
+  makeDistiller,
+  distillEvents,
+  tailNode,
+  followRun,
+  runLogsCli,
+  parseEventsFile,
+  eventsPath,
+  statusFilePath,
+  diagnoseRun,
+  renderDiagnosis,
+  auditWorkflow,
+  hasToolFindings,
+} from './runner/index.js';
+export type { PiEvent, EventSink, FollowOpts, NodeDiagnosis, NodeToolAudit } from './runner/index.js';
+// Per-run `.pi/` layout (D7): the engine-owned, project-identical path helpers + the io.json ledger
+// writer. Pure path joins (opaque `run` base — core never hardcodes `.piflow/<wf>/runs/`) except
+// writeNodeIo. `NodeIo` type comes via `export * from './types.js'` above.
+export {
+  piDir,
+  stateFile,
+  runJsonFile,
+  nodeDir,
+  nodeIoFile,
+  nodePromptFile,
+  nodeToolsFile,
+  nodeMcpFile,
+  nodeEventsFile,
+  writeNodeIo,
+} from './runner/layout.js';
+
+// Observability source (the shared CONTRACT): ONE reader, ONE model, ONE live stream that the CLI, the
+// TUI, and a future GUI all render. `readRunModel(runDir)` is the one-shot snapshot; `watchRun(runDir)`
+// is the live stream of `RunUpdate`s. Built over the engine-owned `.pi/` layout — a superset of what
+// packages/cli + packages/tui derive today.
+export { readRunModel, readRunJson, deriveStatus, watchRun } from './observe/index.js';
+export type {
+  RunModel,
+  RunUpdate,
+  NodeView,
+  StageView,
+  EdgeView,
+  WatchOpts,
+} from './observe/index.js';

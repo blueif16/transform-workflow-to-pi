@@ -1,0 +1,46 @@
+{
+  "id": "verify-1-design",
+  "phase": "verify-1",
+  "deps": [
+    "shell",
+    "guidance",
+    "asset",
+    "sound",
+    "model"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/verify-design/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "ls",
+      "grep",
+      "find",
+      "edit",
+      "write",
+      "bash",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "spec/DESIGN_REVIEW.md"
+    ],
+    "owns": [
+      "spec/**"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/verify-design",
+      "{{WORKSPACE}}/templates/genres.json",
+      "{{WORKSPACE}}/templates/modules"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  }
+}

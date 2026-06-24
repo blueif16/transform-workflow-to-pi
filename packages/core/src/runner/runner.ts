@@ -1,7 +1,7 @@
 // The runner — M1's execution loop. Takes a compiled `Workflow` and runs each node through the
 // `SandboxProvider` lifecycle (create → stage inputs → exec the agent command → collect+verify
-// artifacts → run hooks → dispose), stage-by-stage with parallel lanes within a stage, writing
-// `run-status.json`. A faithful PORT of templates/pi-runner/run.mjs onto the typed @piflow/core spine.
+// artifacts → run hooks → dispose), stage-by-stage with parallel lanes within a stage, writing the
+// `.pi/run.json` digest. A faithful PORT of templates/pi-runner/run.mjs onto the typed @piflow/core spine.
 //
 // Ported behaviors (run.mjs file:line): status schema + writeStatus (639–668, see ./status.ts);
 // headless command flags (700–728, see ./command.ts); runNode lifecycle (730–1178); node-timeout +
@@ -26,6 +26,9 @@ import type {
   ResolveResult,
   ExecResult,
   SecretResolver,
+  PiCommandOptions,
+  ReturnMode,
+  RunState,
 } from '../types.js';
 import { defaultSecretResolver } from '../types.js';
 import { DefaultToolRegistry } from '../tools/registry.js';
@@ -35,7 +38,15 @@ import { markersFromNode, emitMarkers } from '../contract.js';
 import { effectiveChecks, evaluateChecks, actionForVerdict, type FileBytes } from '../checks.js';
 import { validateArtifactSchemas, defaultSchemaValidator, type SchemaValidator } from './schema.js';
 import { runHooks } from '../hooks/index.js';
+import { NodeRecorder, recordingSandbox, type EventSink } from './events.js';
 import { defaultPiCommand, type CommandBuilder } from './command.js';
+import { resolveTokens, resolveDeep, type ResolveCtx } from '../workflow/resolver.js';
+import { stageSeed } from '../workflow/ops/seed.js';
+import { runMerge } from '../workflow/ops/merge.js';
+import { applyProjectionOp } from '../workflow/ops/project.js';
+import { readJsonSafe, absUnder } from '../workflow/ops/util.js';
+import { parsePromote, extractPromoteValue, barrierMerge, type NodeUpdate, type ResolvedPromote } from '../workflow/ops/promote.js';
+import { loadState, persistState } from '../workflow/state.js';
 import {
   type RunStatus,
   type NodeStatusRecord,
@@ -78,6 +89,16 @@ export interface RunOptions {
   outDir?: string;
   /** Base checkout root for a run-scoped provider (worktree-path source / prompt-rewrite anchor). Default cwd. */
   repoRoot?: string;
+  /**
+   * `{{WORKSPACE}}` — the canonical, read-only, OUT-OF-THREAD tree (skills · templates · registry) that
+   * tokens resolve against at node launch. Default `repoRoot` (the live tree for a local provider).
+   */
+  workspace?: string;
+  /**
+   * The run-level args (`--arg k=v` delivery) that `{{arg.<key>}}` tokens resolve against at node launch.
+   * A `{{arg.x}}` token with no matching key fails the node loudly (MissingArgError), never a silent ''.
+   */
+  args?: Record<string, string>;
   /** Sandbox backend. Default the in-memory reference provider. */
   provider?: SandboxProvider;
   /** Tool registry to resolve each node's selection. Default builtin registry. */
@@ -90,12 +111,24 @@ export interface RunOptions {
   providerName?: string;
   /** Optional model pin. */
   model?: string;
+  /** Reasoning-depth cap forwarded to the command builder as `pi --thinking <v>`. Omit ⇒ no flag. */
+  thinking?: string | boolean;
+  /** Extra `-e <path>` extensions forwarded to the builder, emitted BEFORE the staged tool extension. */
+  extensions?: string[];
   /** Per-node hard wall-clock cap (ms). Default 1_800_000 (30 min, matching run.mjs). */
   nodeTimeoutMs?: number;
   /** Silent-stall kill threshold (ms); 0 disables. Default 0 (off; the in-memory baseline is fast). */
   stallMs?: number;
   /** ms after SIGTERM before SIGKILL. Default 3000 (run.mjs 904–911). */
   killGraceMs?: number;
+  /**
+   * Run-level DEFAULT for the write-then-fence return handshake (any pi node needs it). PRECEDENCE: a
+   * node's own `io.returnMode` wins; else THIS run default applies to every node; else the artifact
+   * heuristic (a node with a satisfied artifact contract ⇒ 'optional', a zero-artifact node ⇒ 'required').
+   * Omit ⇒ the artifact heuristic alone (today's behavior). Set `'required'` to enforce the fenced-JSON
+   * handshake on every node regardless of artifacts; `'optional'` to make it advisory everywhere.
+   */
+  returnProtocol?: ReturnMode;
   /** Resume window: run from the first stage whose phase/label/id contains this (inclusive). */
   from?: string;
   /** Resume window: run up to the last stage whose phase/label/id contains this (inclusive). */
@@ -120,6 +153,18 @@ export interface RunOptions {
    * into the VM. Omit ⇒ `defaultSecretResolver` (reads `process.env`, today's behavior).
    */
   secretResolver?: SecretResolver;
+  /**
+   * Capture each node's agent stdout (the `pi --mode json` stream) to the canonical
+   * `.pi/nodes/<id>/events.jsonl` — the observability backbone the shared `watchRun` stream + `./logs.ts`
+   * tail (`docker logs` for a run). Default `true`; the archive is slimmed + lazy (a node that emits
+   * nothing leaves no file). Set `false` to disable.
+   */
+  recordEvents?: boolean;
+  /**
+   * Live event sink — called with `(nodeId, slimmedEvent)` as each event is parsed, the push seam a
+   * TUI/GUI subscribes to (the file archive is always written regardless). Never breaks the run if it throws.
+   */
+  onEvent?: EventSink;
 }
 
 /** The result of a run: the final status record + the host run dir it was written to. */
@@ -174,7 +219,9 @@ export const defaultExecRunner: ExecRunner = (sandbox, cmd, opts) =>
 
 // ── forgiving return-parse (run.mjs lastJsonBlock 670–698) ────────────────────────────────────────
 
-interface NodeReturn { status?: string; summary?: string; issues?: string[] }
+// The recovered structured return: the recognized fields PLUS any arbitrary `@return:<field>` payload a
+// promote may lift (§3.6 — `lastJsonBlock` already JSON.parses the WHOLE block; we just stop narrowing it).
+type NodeReturn = { status?: string; summary?: string; issues?: string[] } & Record<string, unknown>;
 
 /** Recover a node's return object from its stdout. Tries closed ```json, unclosed fence, last {…}. */
 export function lastJsonBlock(text: string): NodeReturn | null {
@@ -320,6 +367,10 @@ interface RunContext {
   execRunner: ExecRunner;
   providerName: string;
   model?: string;
+  /** ENV-FREE command-builder opts (thinking / extra -e extensions) forwarded at the call site. */
+  commandOpts: PiCommandOptions;
+  recordEvents: boolean;
+  onEvent?: EventSink;
   watchdog: ExecWatchdogOpts;
   status: RunStatus;
   /** Resolved schema validator (default ajv-2020 / injected / null=disabled) for the schema gate. */
@@ -330,6 +381,23 @@ interface RunContext {
   providerKind: SandboxProvider['kind'];
   /** Per-node secret resolver (the scoped-token / sealing-broker seam). Undefined ⇒ `defaultSecretResolver`. */
   secretResolver?: SecretResolver;
+  /** Run-level default for the return handshake (a node's own `returnMode` wins; else this; else the artifact heuristic). */
+  returnProtocol?: ReturnMode;
+  /** `{{WORKSPACE}}` — the canonical out-of-thread tree tokens resolve against (default repoRoot). */
+  workspace: string;
+  /** The run-level args `{{arg.<key>}}` tokens resolve against (`--arg k=v`). */
+  args: Record<string, string>;
+  /**
+   * The per-thread RunState `{{state.<channel>}}` tokens resolve against. Loaded once at run start and
+   * folded at each stage barrier (S3). MUTABLE: the barrier replaces it after each stage's merge.
+   */
+  runState: RunState;
+  /**
+   * The promote updates each node emitted this stage, keyed by node id — drained + barrier-merged at the
+   * stage barrier (LangGraph super-step: independent emits, ONE serial merge). A node writes only its own
+   * key (lane-safe); a non-ok node never writes (it promotes nothing).
+   */
+  promotesByNode: Map<string, NodeUpdate>;
 }
 
 /** Read a host-side input file as bytes (for staging a downstream node's reads). */
@@ -339,6 +407,44 @@ async function readHostFile(ctx: RunContext, rel: string): Promise<Uint8Array | 
   } catch {
     return null;
   }
+}
+
+/**
+ * Stage a host path (a seeded dest under `outDir`) INTO the sandbox at the same relative path, so the
+ * model reads it (the filesystem-as-contract bridge, mirroring the io.reads staging). A FILE writes once;
+ * a DIRECTORY is walked and each file written at its run-relative posix path. `rel` is run-relative;
+ * `'.'` (a dir seed at the run root) stages the dir's tree directly under the sandbox root.
+ */
+async function stageHostPathIntoSandbox(sandbox: Sandbox, outDir: string, rel: string): Promise<void> {
+  const abs = path.resolve(outDir, rel);
+  let isDir = false;
+  try {
+    isDir = (await fs.stat(abs)).isDirectory();
+  } catch {
+    return; // nothing to stage (a skipped seed reaches here only when staged:true, so this is defensive)
+  }
+  if (!isDir) {
+    const data = await fs.readFile(abs);
+    await sandbox.writeFile(toPosixRel(rel), data);
+    return;
+  }
+  // Walk the dir; stage each file at its run-relative posix path.
+  const walk = async (dirAbs: string): Promise<void> => {
+    for (const ent of await fs.readdir(dirAbs, { withFileTypes: true })) {
+      const childAbs = path.join(dirAbs, ent.name);
+      if (ent.isDirectory()) await walk(childAbs);
+      else {
+        const childRel = path.relative(outDir, childAbs);
+        await sandbox.writeFile(toPosixRel(childRel), await fs.readFile(childAbs));
+      }
+    }
+  };
+  await walk(abs);
+}
+
+/** Normalize a host path-relative string to a posix sandbox-relative path (no leading `./`). */
+function toPosixRel(rel: string): string {
+  return rel.split(path.sep).join('/').replace(/^\.\//, '');
 }
 
 /**
@@ -382,7 +488,12 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
   // below, after the sandbox exists) and, injected here, `PIFLOW_MCP_CONFIG` (absolute in-sandbox path) +
   // the referenced secret env vars. CLOUD providers forward ONLY the referenced (allowlisted) vars — never
   // the host env.
-  const MCP_CONFIG_FILE = '_pi/mcp.json';
+  // Per-node staging dir: the prompt, the generated tool extension, and the MCP config all land under
+  // `_pi/<id>/` so parallel nodes that SHARE a workspace (the in-place local case) never clobber each
+  // other's staged files. This is the root fix for the OPEN-1 prompt-clobber that a consumer otherwise
+  // works around three ways (an execCwd split + an absolute @prompt ref + a per-node `wf.nodes` mutation).
+  const nodeStage = path.posix.join('_pi', node.id);
+  const MCP_CONFIG_FILE = path.posix.join(nodeStage, 'mcp.json');
   const stageMcp = Boolean(resolved.extension) && selectedBridgedTool(node) && Boolean(ctx.mcpConfig);
   let mcpEnv: Record<string, string> | undefined;
   if (stageMcp && ctx.mcpConfig) {
@@ -416,6 +527,10 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     return finishNode(ctx, node, rec, t0, 'error', `sandbox create failed: ${(e as Error).message}`, []);
   }
 
+  // The per-node resolver ctx — ONE ctx threads the prompt resolve AND the seed/op resolution (U7). `{{RUN}}`
+  // is the host run dir (the collection namespace); state is the barrier-merged RunState loaded for this stage.
+  const resolveCtx: ResolveCtx = { run: ctx.outDir, workspace: ctx.workspace, state: ctx.runState, args: ctx.args };
+
   try {
     // STAGE io.reads from the host run dir INTO the sandbox at the same relative path (filesystem-as-
     // contract across sandboxes). A missing read is left to the node's own contract check downstream.
@@ -424,17 +539,41 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
       if (data) await sandbox.writeFile(rel, data);
     }
 
+    // SEED PRE op (S2): stage each declared starting artifact onto the host run dir (= `{{RUN}}`), then
+    // mirror the staged dest INTO the sandbox so the model reads it. A token-bearing `from` (incl
+    // `{{state.*}}`) resolves through the seed-token resolver; an absent source is a graceful skip, an
+    // already-filled dest is not re-staged (idempotent). A `{{state.*}}` naming a not-yet-promoted channel
+    // throws → fail the node loudly (a real wiring error), never a silent skip.
+    try {
+      for (const seed of node.ops?.seed ?? []) {
+        const res = await stageSeed(seed, resolveCtx, ctx.outDir);
+        if (res.staged) await stageHostPathIntoSandbox(sandbox, ctx.outDir, seed.to);
+      }
+    } catch (e) {
+      return finishNode(ctx, node, rec, t0, 'error', `seed staging failed: ${(e as Error).message}`, [], [(e as Error).message]);
+    }
+
+    // TOKEN RESOLUTION AT LAUNCH (U7): make `{{arg.*}}`/`{{WORKSPACE}}`/`{{RUN}}`/`{{state.*}}` PHYSICAL
+    // in the prompt before staging. A missing arg/channel throws loudly (MissingArgError/MissingChannelError)
+    // → the node fails with a clear issue, never a silently-unresolved prompt handed to the model.
+    let resolvedPrompt: string;
+    try {
+      resolvedPrompt = resolveTokens(node.prompt, resolveCtx);
+    } catch (e) {
+      return finishNode(ctx, node, rec, t0, 'error', `prompt token resolution failed: ${(e as Error).message}`, [], [(e as Error).message]);
+    }
+
     // The prompt carries the machine-readable contract markers (artifacts/owns/read-scope/tools) so a
     // future node-contract extension can self-gate; we append them exactly as run.mjs does.
     const markers = emitMarkers(markersFromNode(node, resolved));
-    const promptFile = '_pi/prompt.md';
-    await sandbox.writeFile(promptFile, node.prompt + (markers ? `\n\n${markers}` : ''));
+    const promptFile = path.posix.join(nodeStage, 'prompt.md');
+    await sandbox.writeFile(promptFile, resolvedPrompt + (markers ? `\n\n${markers}` : ''));
 
     // Stage the generated tool `-e` extension (binds the node's declared sdk/mcp tools) and pass its
     // in-sandbox path to the command builder. Absent when the node selected only builtins.
     let extensionFile: string | undefined;
     if (resolved.extension) {
-      extensionFile = '_pi/tools.ts';
+      extensionFile = path.posix.join(nodeStage, 'tools.ts');
       await sandbox.writeFile(extensionFile, resolved.extension);
     }
 
@@ -453,11 +592,16 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
       return finishNode(ctx, node, rec, t0, 'error', `pre-hook failed: ${(e as Error).message}`, []);
     }
 
-    const cmd = ctx.buildCommand(node, resolved, { promptFile, model: ctx.model, provider: ctx.providerName, extensionFile });
+    const cmd = ctx.buildCommand(node, resolved, { promptFile, model: ctx.model, provider: ctx.providerName, extensionFile }, ctx.commandOpts);
     rec.command = cmd;
 
     const nodeTimeoutMs = node.sandbox.timeoutMs ?? ctx.watchdog.nodeTimeoutMs;
-    const { result, killed } = await ctx.execRunner(sandbox, cmd, { ...ctx.watchdog, nodeTimeoutMs });
+    // Tee the agent's stdout into a per-node slimmed events archive (additive — the wrap chains the
+    // watchdog's own onStdout, so recording can never disable the stall kill). See ./events.ts.
+    const recorder = ctx.recordEvents ? new NodeRecorder(ctx.outDir, node.id, ctx.onEvent) : null;
+    const execSandbox = recorder ? recordingSandbox(sandbox, recorder) : sandbox;
+    const { result, killed } = await ctx.execRunner(execSandbox, cmd, { ...ctx.watchdog, nodeTimeoutMs });
+    await recorder?.close();
     rec.exitCode = result.code;
 
     // COLLECT: copy the node's sandbox output dir back to the host run dir. The convention (proven in
@@ -511,7 +655,8 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     // artifact (its structured return IS its only output) still REQUIRES the handshake. `returnMode`
     // overrides per node. This releases the redundant-handshake false-error (the W1-class defect) while
     // real corruption is still caught by the missing/schema/checks gates above.
-    const returnMode = node.io.returnMode ?? (node.io.artifacts.length ? 'optional' : 'required');
+    // PRECEDENCE: per-node override → run-level default (ctx.returnProtocol) → the artifact heuristic.
+    const returnMode = node.io.returnMode ?? ctx.returnProtocol ?? (node.io.artifacts.length ? 'optional' : 'required');
     rec.returnMode = returnMode;
 
     // The status ladder (run.mjs 1876–1883): kill/nonzero ⇒ error; then the driver-verified contract
@@ -551,6 +696,51 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     } catch (e) {
       st = 'error';
       issues.push(`post-hook failed: ${(e as Error).message}`);
+    }
+
+    // POST DERIVE ops (S4): on an OK node, run the node's `project` then `merge` ops — the deterministic
+    // "derive a mechanical output from frozen on-disk inputs" families (run.mjs runNode order: project →
+    // merge → promote). Each op's `{{RUN}}`/`{{WORKSPACE}}`/`{{state.*}}`/`{{arg.*}}` path tokens are made
+    // physical via the per-node resolver ctx BEFORE the executor runs (the executor still substitutes its
+    // OWN `{project}` token for `run` ops). `projectBase = outDir` (the resolved `{{RUN}}`). A missing input
+    // degrades gracefully inside the executors (skip, not throw); a `run` op that exits non-zero is recorded
+    // as `failed` (its receipt-artifact gate, not the op itself, blocks the node). project precedes merge so
+    // a projection that lays down a file (e.g. index.json rows) is in place before a merge reconciles it.
+    if (st === 'ok' && node.ops?.project?.length) {
+      for (const rawOp of node.ops.project) {
+        const op = resolveDeep(rawOp as Record<string, unknown>, resolveCtx);
+        // The projection derives from a FROZEN source JSON read ONCE (the first `from`, or `source`). A
+        // `{to,from}`-only authoring spec carries no copy/assemble/merge discriminator → applyProjectionOp
+        // returns `unknown`/wrote:false (a graceful no-op), never a corrupting copy.
+        const srcRel = (op.source as string) ?? (Array.isArray(op.from) ? (op.from[0] as string) : (op.from as string));
+        const spec = srcRel ? await readJsonSafe(absUnder(ctx.outDir, srcRel)) : undefined;
+        const name = String(op.op ?? Object.keys(op).find((k) => k === 'copy' || k === 'assemble' || k === 'merge') ?? 'project');
+        await applyProjectionOp(name, op, spec, ctx.outDir);
+      }
+    }
+    if (st === 'ok' && node.ops?.merge) {
+      // The merge spec is the `{ ops:[...] }` MergeSpec (the discriminated fold|concat|reconcile|run grammar).
+      await runMerge(resolveDeep(node.ops.merge, resolveCtx), ctx.outDir);
+    }
+
+    // PROMOTE POST op (S3): on an OK node, LIFT each declared output into a RunState channel (the value
+    // extracted now; the DRIVER merges it at the stage barrier — the "mechanical → driver hook" law, D6).
+    // An artifact source reads under `{{RUN}}` (= outDir); an `@return:<field>` source drills the parsed
+    // structured return (lastJsonBlock, widened). A promote of nothing throws → downgrade the node to error
+    // (a real wiring breach, surfaced loudly), and emit no update.
+    if (st === 'ok' && node.ops?.promote?.length) {
+      try {
+        const promotes: ResolvedPromote[] = [];
+        for (const raw of node.ops.promote) {
+          const spec = parsePromote(raw);
+          const value = await extractPromoteValue(spec, { run: ctx.outDir, returnValue: parsed ?? undefined });
+          promotes.push({ to: spec.to, value, merge: spec.merge });
+        }
+        ctx.promotesByNode.set(node.id, { nodeId: node.id, promotes });
+      } catch (e) {
+        st = 'error';
+        issues.push(`promote failed: ${(e as Error).message}`);
+      }
     }
 
     if (killed === 'timeout') rec.killedTimeout = true;
@@ -639,10 +829,20 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     execRunner: opts.execRunner ?? defaultExecRunner,
     providerName: opts.providerName ?? 'cp',
     model: opts.model,
+    commandOpts: { thinking: opts.thinking, extraExtensions: opts.extensions },
+    recordEvents: opts.recordEvents ?? true,
+    onEvent: opts.onEvent,
     validateSchema,
     mcpConfig: opts.mcpConfig,
     providerKind: provider.kind,
     secretResolver: opts.secretResolver,
+    returnProtocol: opts.returnProtocol,
+    workspace: opts.workspace ?? repoRoot,
+    args: opts.args ?? {},
+    // Load the per-thread RunState at run start (D6): a fresh run sees `{}`; a resume sees the prior
+    // barrier's persisted channels, so the resumed tail's `{{state.*}}` resolves from t=0.
+    runState: await loadState(outDir),
+    promotesByNode: new Map(),
     watchdog: {
       nodeTimeoutMs: opts.nodeTimeoutMs ?? 1_800_000,
       stallMs: opts.stallMs ?? 0,
@@ -737,6 +937,27 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
 
       // Parallel lanes within a stage (run.mjs 1313).
       const results = await Promise.all(s.nodeIds.map((id) => runNode(ctx, wf.nodes[id], scope)));
+
+      // STAGE-BARRIER MERGE (D6 / LangGraph super-step): fold every lane's promoted update into RunState
+      // SERIALLY + deterministically (in node order), persist ONCE, and advance ctx.runState so the NEXT
+      // stage resolves `{{state.*}}` against the merged channels. A `set` channel written by ≥2 parallel
+      // lanes is a `ConflictError` → the run HALTS loudly (a synthetic node, mirroring __resume__).
+      const updates: NodeUpdate[] = s.nodeIds
+        .map((id) => ctx.promotesByNode.get(id))
+        .filter((u): u is NodeUpdate => u !== undefined);
+      if (updates.length) {
+        try {
+          ctx.runState = barrierMerge(ctx.runState, updates);
+          await persistState(outDir, ctx.runState);
+        } catch (e) {
+          ctx.status.nodes['__barrier__'] = {
+            id: '__barrier__', label: 'state barrier merge', status: 'error', artifacts: [],
+            issues: [`stage barrier merge failed: ${(e as Error).message}`],
+          };
+          halted = true;
+        }
+        for (const id of s.nodeIds) ctx.promotesByNode.delete(id); // drain this stage's emits
+      }
 
       // HALT-on-failure (run.mjs 1315–1322): first error/blocked stops the run; downstream never runs.
       if (results.some((r) => r.status === 'error' || r.status === 'blocked')) halted = true;

@@ -3,6 +3,13 @@
 
 export { runWorkflow, defaultExecRunner, lastJsonBlock, selectedBridgedTool } from './runner.js';
 export type { RunOptions, RunResult, ExecRunner, ExecWatchdogOpts } from './runner.js';
+// The env-AGNOSTIC run entry (D5): a plain resolved-config object → compile → run. The bridge stays
+// consumer-injected (workflowSpec | buildWorkflowSpec). `loadConfig` resolves the env into this config.
+export { runFromConfig, runFromTemplate } from './entry.js';
+export type { ResolvedRunConfig, RunFromTemplateOpts } from './entry.js';
+// loadConfig: resolve PI_RUNNER_* env + parsed args → the run-opts subset runFromConfig consumes (env lives HERE).
+export { loadConfig, parseArgFlags } from './config.js';
+export type { ConfigArgs, LoadConfigInput, ResolvedRunOpts } from './config.js';
 // The scoped-token / sealing-broker seam (defined in ../types.js; re-exported so a host wiring a broker
 // alongside the runner finds it here too).
 export { defaultSecretResolver } from '../types.js';
@@ -19,3 +26,22 @@ export type {
   ArtifactState,
   RunTotals,
 } from './status.js';
+// Observability: per-node event capture (write side) + the docker-style logs reader (read side).
+export { NodeRecorder, recordingSandbox, slimEvent } from './events.js';
+export type { PiEvent, EventSink } from './events.js';
+export {
+  makeDistiller,
+  distillEvents,
+  tailNode,
+  followRun,
+  runLogsCli,
+  parseEventsFile,
+  eventsPath,
+  statusFilePath,
+  diagnoseRun,
+  renderDiagnosis,
+} from './logs.js';
+export type { FollowOpts, NodeDiagnosis } from './logs.js';
+// Static pre-run tool/wiring audit over a compiled workflow.
+export { auditWorkflow, hasToolFindings } from './audit.js';
+export type { NodeToolAudit } from './audit.js';

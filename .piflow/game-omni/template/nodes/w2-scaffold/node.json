@@ -1,0 +1,121 @@
+{
+  "id": "w2-scaffold",
+  "phase": "scaffold",
+  "deps": [
+    "verify-1-design"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/scaffold/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "STRUCTURE.md",
+      "index.json",
+      "verify/event-bindings.ok.json"
+    ],
+    "owns": [
+      "src/**",
+      "STRUCTURE.md",
+      "index.json",
+      "package.json",
+      "tsconfig.json",
+      "vite.config.js",
+      "index.html",
+      "dist/**",
+      "node_modules/**",
+      "verify/**",
+      "MEMORY.w2.md"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/scaffold",
+      "{{WORKSPACE}}/templates"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "seed": [
+      {
+        "to": ".",
+        "from": "{{WORKSPACE}}/templates/{templates/modules/{{state.archetype}}/genre.json:genres.0.coreBase}"
+      },
+      {
+        "to": "src",
+        "from": "{{WORKSPACE}}/templates/modules/{{state.archetype}}/src"
+      },
+      {
+        "to": "src/contract",
+        "from": "{{WORKSPACE}}/templates/core-contract/src"
+      }
+    ],
+    "merge": {
+      "ops": [
+        {
+          "concat": {
+            "glob": "MEMORY.*.md",
+            "to": "MEMORY.md",
+            "heading": "## {name}"
+          }
+        },
+        {
+          "reconcile": {
+            "from": "public/assets/asset-manifest.json",
+            "to": "index.json",
+            "key": "slot",
+            "fromAt": "slots",
+            "arrayAt": "slots",
+            "schema": "packages/skills/scaffold/index.schema.json",
+            "fields": [
+              "status",
+              { "name": "path", "when": { "field": "status", "equals": "generated" } },
+              { "name": "width", "when": { "field": "status", "equals": "generated" } },
+              { "name": "height", "when": { "field": "status", "equals": "generated" } }
+            ]
+          }
+        },
+        {
+          "reconcile": {
+            "from": "public/assets/models/model-manifest.json",
+            "to": "index.json",
+            "key": "slot",
+            "fromAt": "slots",
+            "arrayAt": "slots",
+            "schema": "packages/skills/scaffold/index.schema.json",
+            "fields": ["status"]
+          }
+        },
+        {
+          "run": {
+            "cmd": "node",
+            "args": [
+              "{{WORKSPACE}}/templates/registry/check-event-bindings.mjs",
+              "--catalog-dir",
+              "{{WORKSPACE}}/templates/modules",
+              "--blueprint",
+              "{project}/spec/blueprint.json",
+              "--gameconfig",
+              "{project}/src/gameConfig.json",
+              "--receipt",
+              "{project}/verify/event-bindings.ok.json"
+            ],
+            "note": "Consume-side event-wiring gate — every sfx/guidance/effects on:/event: binding must resolve in the event catalog (∪ custom emits), else status=blocked."
+          }
+        }
+      ]
+    }
+  }
+}

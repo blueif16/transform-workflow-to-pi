@@ -36,12 +36,40 @@ export interface NodeSpec {
   hooks?: { pre?: Hook[]; post?: Hook[] };
   /** 4. The filesystem contract — and the source of the inferred DAG edges. */
   io: NodeIO;
+  /**
+   * 5. The declarative DATA ops (template `node.json` `hooks`) the RUN LOOP executes around the node —
+   * PRE `seed` (stage a starting artifact), POST `project`/`merge` (derive outputs from frozen inputs),
+   * POST `promote` (lift an output into a RunState channel). DECLARATIVE (data, not `Hook` fns) so the
+   * runner owns the resolver-ctx threading + the stage barrier. OPTIONAL/additive: a node with no `ops`
+   * behaves exactly as before. Carried verbatim from `node.json.hooks` by the template loader.
+   */
+  ops?: NodeOps;
+}
+
+/**
+ * The authored, declarative op-specs a node carries (template `node.json` `hooks`). Each entry is DATA the
+ * run loop resolves + executes; the run loop — not a closure — owns the resolver ctx, the run/workspace
+ * roots, and the stage barrier. All fields optional.
+ */
+export interface NodeOps {
+  /** PRE: stage a starting artifact at `to` from the (token-bearing) source `from`. */
+  seed?: { to: string; from: string }[];
+  /** POST: derive `to` from one or many frozen on-disk sources `from`. */
+  project?: { to: string; from: string | string[] }[];
+  /**
+   * POST: the DRIVER-MERGE op set (the `applyMergeOp` discriminated grammar — `{fold|concat|reconcile|run}`),
+   * carried VERBATIM from the authoring source. Shape is the executor's `MergeSpec` (`{ ops: [...] }`), so the
+   * run loop hands it straight to `runMerge`. Each op is loose DATA (the executor discriminates on the op key).
+   */
+  merge?: { ops: Record<string, unknown>[] };
+  /** POST: lift a node output (`from`) into a RunState channel (`to`) via the reducer (default 'set'). */
+  promote?: { from: string; to: string; merge?: Reducer }[];
 }
 
 // 1 ── SANDBOX ────────────────────────────────────────────────────────────────
 
 /** Which execution backend a node runs in. New backends extend this union + add a SandboxProvider. */
-export type SandboxProviderKind = 'inmemory' | 'seatbelt' | 'worktree' | 'daytona' | 'e2b';
+export type SandboxProviderKind = 'inmemory' | 'local' | 'seatbelt' | 'worktree' | 'daytona' | 'e2b';
 
 /**
  * Where a node runs. `read` is OS-enforced locally (Seatbelt: deny-all-then-allow) and a *staging
@@ -120,6 +148,17 @@ export type Policy = Partial<Record<Exclude<Verdict, 'pass'>, PolicyAction>>;
 /** Whether the node's fenced-JSON return handshake is required or advisory. */
 export type ReturnMode = 'optional' | 'required';
 
+/**
+ * The AUTHORING-shape integrity checks (template node.json §3 `checks`): the DETECTION predicates split
+ * into the two firing lanes — `pre` (validate staged inputs BEFORE the model) and `post` (validate the
+ * produced artifacts AFTER). The runtime collapses these to the flat `NodeIO.checks` (post is what the
+ * runner runs); this preserves the structure so the codec round-trips the node.json shape losslessly.
+ */
+export interface ChecksPrePost {
+  pre?: Check[];
+  post?: Check[];
+}
+
 /** One declarative integrity check over an artifact (detection only — never judges GOODNESS). */
 export interface Check {
   /** The predicate to run (see CheckKind). An unknown kind is skipped with a warn. */
@@ -149,8 +188,23 @@ export interface NodeIO {
   artifacts: ArtifactReq[];
   /** Declarative integrity checks over the artifacts (detection). Empty/undefined ⇒ none. */
   checks?: Check[];
+  /**
+   * The AUTHORING-shape checks (template node.json §3): the same DETECTION predicates split into the
+   * `pre` lane (over staged inputs, before the model) and the `post` lane (over produced artifacts).
+   * SEPARATE from the flat `checks` above: `checks` is the runner's collapsed post-check list (what
+   * `effectiveChecks`/the runner consume); `checksPrePost` preserves the pre/post STRUCTURE so the
+   * codec round-trips the node.json shape losslessly. Additive — the runner ignores it.
+   */
+  checksPrePost?: ChecksPrePost;
   /** Verdict→action policy for failed checks (consequence). Undefined ⇒ the default (fail→block). */
   policy?: Policy;
+  /**
+   * The node's structured-result JSON-Schema (template node.json §3 `return`) — the contract for the
+   * fenced-JSON tail the node returns. DISTINCT from `returnMode` (the required/optional handshake):
+   * `returnMode` says WHETHER a return is mandatory, `returnSchema` says what SHAPE it must take. An
+   * arbitrary draft-2020-12 schema object; carried verbatim. Undefined ⇒ no schema declared.
+   */
+  returnSchema?: Record<string, unknown>;
   /** Return-handshake mode. Default: 'optional' when `artifacts` is non-empty, else 'required'. */
   returnMode?: ReturnMode;
   /**
@@ -167,9 +221,48 @@ export type HookWhen = 'always' | 'on-success' | 'on-failure';
 
 /** Context handed to an in-process hook fn (declared paths only — sandbox internals stay out). */
 export interface HookContext {
+  /** The `${WORKSPACE}` logical root — where the node's code/build runs. */
   workspace: string;
+  /**
+   * The `${RUN}` logical root — the per-run OUTPUT base (an opaque dir; the runner passes it). Core
+   * NEVER hardcodes the consumer's `.piflow/<wf>/runs/<id>/` convention. OPTIONAL; `runHooks`
+   * defaults it to `workspace` when the caller omits it.
+   */
+  projectBase?: string;
   inputs: string[];
   outputs: string[];
+}
+
+// 3.5 ── RUN STATE (D6) + the per-node I/O ledger (D7) ──────────────────────────
+
+/**
+ * The per-thread RunState — a LangGraph-style channel object. Each top-level key is a channel; values
+ * are arbitrary. The node NEVER writes this directly — the driver merges a node's promoted update via
+ * the channel's reducer at the stage barrier (`${RUN}/.pi/state.json` is the per-run checkpoint).
+ */
+export type RunState = Record<string, unknown>;
+
+/**
+ * Per-channel merge reducer. `set` = overwrite (DEFAULT, last-write); `append` = list concat (operands
+ * coerced to arrays); `deepMerge` = recursive plain-object merge (arrays REPLACE — treated as leaves).
+ */
+export type Reducer = 'set' | 'append' | 'deepMerge';
+
+/** The per-node I/O ledger record (`${RUN}/.pi/nodes/<id>/io.json`) — uniform across every project. */
+export interface NodeIo {
+  id: string;
+  label?: string;
+  phase?: string;
+  /** Inputs the node read (resolved paths), each optionally tagged with HOW it was sourced. */
+  reads: { path: string; via?: string }[];
+  /** Outputs the node wrote — `verified` is the on-disk existence check; `bytes` the size. */
+  writes: { path: string; verified: boolean; bytes?: number }[];
+  /** RunState channels this node promoted into, with the merged value + the reducer used. */
+  promotes: { to: string; merge: string; value: unknown }[];
+  status: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
 }
 
 /**
@@ -259,8 +352,11 @@ export interface Sandbox {
 /**
  * Run-level context for a provider that shares ONE backing resource across all of a run's nodes
  * (a git worktree, a cloud VM). The per-node `CreateOpts` carries no run identity; this supplies it.
- * `run` names the branch/dir/VM label, `repoRoot` is the base checkout the resource is seeded from
- * AND the anchor a worktree provider rewrites node-prompt paths against (`BASE_ROOT→worktree`).
+ * `run` names the branch/dir/VM label, `repoRoot` is the base checkout the resource is seeded from.
+ * (Historically `repoRoot` was also the anchor for a `BASE_ROOT→worktree` prompt-path text-rewrite; that
+ * string-regex re-rooting is RETIRED by the U7 logical-root resolver — a `{{RUN}}`/`{{WORKSPACE}}`-rooted
+ * reference is relocation-invariant by construction, so a provider only resolves the two roots, never
+ * rewrites prompts. See `workflow/resolver.ts`.)
  */
 export interface OpenRunOpts {
   /** Stable run id — names branch `pi/<run>`, `.pi-worktrees/<run>`, or the cloud VM label. */
@@ -326,8 +422,14 @@ export const defaultSecretResolver: SecretResolver = (name) => process.env[name]
 
 // ── TOOL REGISTRY (horizontal seam — the searchable catalog) ──────────────────
 
-/** Where a tool comes from. `builtin` is native pi; `sdk`/`mcp` need a generated `-e` extension. */
-export type ToolSource = 'builtin' | 'sdk' | 'mcp';
+/**
+ * Where a tool comes from. `builtin` is native pi (on `--tools`, no extension). `sdk`/`mcp` are
+ * third-party tools bound through a generated `-e` extension (execute routes to a plugin/the bridge).
+ * `contract` is a FIRST-PARTY SDK tool with its OWN inline execute (e.g. `submit_result`, the typed
+ * terminating return tool) — bound by bare name like a builtin, but NOT pi-native, so it ships in the
+ * generated `-e` extension with its real execute baked in (no bridge, no external plugin).
+ */
+export type ToolSource = 'builtin' | 'sdk' | 'mcp' | 'contract';
 
 /** One catalog entry. `address` is SDK-facing (`ns:name`); `piName` is the bare name pi sees. */
 export interface ToolEntry {
@@ -356,6 +458,23 @@ export interface ResolveResult {
    * are selected (pi exposes those natively, so no extension is needed).
    */
   extension?: string;
+  /**
+   * Bare names pi should EXCLUDE — derived from the selection's deny list (the command builder emits
+   * these as `--exclude-tools`). Undefined/absent when nothing is denied.
+   */
+  excludeTools?: string[];
+}
+
+/**
+ * Optional, ENV-FREE knobs the command builder accepts as a 4th argument — the consumer (the runner)
+ * maps env/config → these, so the builder itself reads no `process.env`. Omitted ⇒ today's 3-arg
+ * behavior, byte-identical.
+ */
+export interface PiCommandOptions {
+  /** Reasoning-depth cap → `pi --thinking <v>`. Emitted only when truthy (a level string, or `true`). */
+  thinking?: string | boolean;
+  /** Extra `-e <path>` extensions, emitted BEFORE `ctx.extensionFile` (order is load-bearing). */
+  extraExtensions?: string[];
 }
 
 /** The catalog: register tools, resolve a selection to pi flags, search, and enumerate. */
@@ -377,6 +496,7 @@ export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentTyp
   io: NodeIO;
   sandbox?: Partial<SandboxSpec>;
   hooks?: NodeSpec['hooks'];
+  ops?: NodeSpec['ops'];
 };
 
 /** A flat bag of nodes — NO edges. `compile` derives the DAG from each node's `io`. */

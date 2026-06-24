@@ -46,6 +46,7 @@ import { promises as fs } from 'node:fs';
 import fsSync from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { tailAppend } from './capture.js';
 import type {
   Sandbox,
   SandboxProvider,
@@ -149,12 +150,12 @@ export class WorktreeSandbox implements Sandbox {
       }
       child.stdout?.on('data', (d: Buffer) => {
         const s = d.toString();
-        stdout += s;
+        stdout = tailAppend(stdout, s);
         opts.onStdout?.(s);
       });
       child.stderr?.on('data', (d: Buffer) => {
         const s = d.toString();
-        stderr += s;
+        stderr = tailAppend(stderr, s);
         opts.onStderr?.(s);
       });
       child.on('error', (err) => finish({ stdout, stderr: stderr + String(err), code: 1 }));

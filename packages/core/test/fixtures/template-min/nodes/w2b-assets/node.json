@@ -1,0 +1,26 @@
+{
+  "id": "w2b-assets",
+  "phase": "build",
+  "deps": ["w0-classify"],
+  "prompt": { "skill": "{{WORKSPACE}}/packages/skills/assets/SKILL.md", "file": "prompt.md" },
+  "tools": { "allow": ["read", "write", "submit_result"], "deny": [] },
+  "mcp": { "ref": "{{WORKSPACE}}/.piflow/mcp/asset-gen.json" },
+  "inject": ["{{RUN}}/spec/classification.json"],
+  "contract": {
+    "artifacts": ["public/assets/manifest.json"],
+    "owns": ["public/assets/**"],
+    "readScope": ["{{RUN}}", "{{WORKSPACE}}/packages/skills/assets"]
+  },
+  "checks": {
+    "post": [{ "kind": "count-floor", "path": "public/assets/manifest.json", "param": { "path": "slots", "min": 1 } }]
+  },
+  "policy": { "fail": "block", "warn": "warn" },
+  "hooks": {
+    "project": [{ "to": "public/assets/manifest.json", "from": ["spec/classification.json", "public/assets"] }]
+  },
+  "return": {
+    "type": "object",
+    "required": ["generated"],
+    "properties": { "generated": { "type": "integer" } }
+  }
+}

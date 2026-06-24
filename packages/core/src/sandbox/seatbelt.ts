@@ -25,6 +25,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tailAppend } from './capture.js';
 import type {
   Sandbox,
   SandboxProvider,
@@ -266,12 +267,12 @@ export class SeatbeltSandbox implements Sandbox {
       }
       child.stdout?.on('data', (d: Buffer) => {
         const s = d.toString();
-        stdout += s;
+        stdout = tailAppend(stdout, s);
         opts.onStdout?.(s);
       });
       child.stderr?.on('data', (d: Buffer) => {
         const s = d.toString();
-        stderr += s;
+        stderr = tailAppend(stderr, s);
         opts.onStderr?.(s);
       });
       child.on('error', (err) => finish({ stdout, stderr: stderr + String(err), code: 1 }));
