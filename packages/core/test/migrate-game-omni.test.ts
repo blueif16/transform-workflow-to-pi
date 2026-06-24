@@ -35,7 +35,7 @@ describe('T6 migrate — game-omni-v1.6 → template loads GREEN', () => {
     expect(spec.nodes.map((n) => n.label).sort()).toEqual(ALL_NODES);
   });
 
-  it('carries the P2/P3 derive hooks onto NodeOps (seedContracts on gameplay, projectGenre on w2-scaffold)', async () => {
+  it('carries the P2/P3 derive hooks onto NodeOps (seedContracts on gameplay, registryProject on w2-scaffold)', async () => {
     const spec = await loadTemplate(TEMPLATE);
     const byId = Object.fromEntries(spec.nodes.map((n) => [n.label, n]));
     // P2 — gameplay seeds per-node contracts from the drift-gated catalog (RED if the schema/loader drops it).
@@ -43,11 +43,11 @@ describe('T6 migrate — game-omni-v1.6 → template loads GREEN', () => {
       source: 'spec/blueprint.json',
       catalog: '{{WORKSPACE}}/.agents/node-catalog.json',
     });
-    // P3 — W2 derives gameConfig/index/world from the genre record's projections map.
-    expect(byId['w2-scaffold'].ops?.projectGenre).toEqual({
+    // P3 — W2 derives its mechanical outputs from the registry record's projections map.
+    expect(byId['w2-scaffold'].ops?.registryProject).toEqual({
       source: 'spec/blueprint.json',
       mapRef: '{{WORKSPACE}}/templates/genres.json',
-      genre: '{{state.archetype}}',
+      key: '{{state.archetype}}',
     });
   });
 
