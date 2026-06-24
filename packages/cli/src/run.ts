@@ -14,10 +14,10 @@
 // deterministic in-memory spec; the defaults are the real @piflow/core calls.
 
 import {
-  loadConfig as coreLoadConfig,
   loadTemplate as coreLoadTemplate,
   instantiateRun as coreInstantiateRun,
-  runFromConfig as coreRunFromConfig,
+  runFromTemplate as coreRunFromTemplate,
+  LocalSandboxProvider,
   compile,
   DefaultToolRegistry,
   defaultPiCommand,
@@ -29,6 +29,8 @@ import {
   type InstantiateRunOpts,
   type InstantiateRunResult,
   type ResolvedRunConfig,
+  type RunFromTemplateOpts,
+  type SandboxProvider,
   type RunResult,
 } from '@piflow/core';
 
@@ -41,9 +43,17 @@ export interface RunDeps {
     runDir: string,
     opts: InstantiateRunOpts,
   ) => Promise<InstantiateRunResult>;
+  /** Library consumer path (holds a spec already). Kept intact for tests/consumers; LIVE uses runFromTemplate. */
   runFromConfig?: (config: ResolvedRunConfig) => Promise<RunResult>;
+  /** The LIVE template-run join — loadTemplate → instantiateRun → compile → runWorkflow, INSIDE core. */
+  runFromTemplate?: (templateDir: string, opts: RunFromTemplateOpts) => Promise<RunResult>;
+  /** Factory for the `--sandbox local` real-exec provider (injectable so a test asserts the instance). */
+  makeLocalProvider?: () => SandboxProvider;
   print?: (line: string) => void;
 }
+
+/** Which sandbox backend the LIVE run uses. `inmemory` = core default (no `pi`); `local` = real in-place exec. */
+export type SandboxChoice = 'inmemory' | 'local';
 
 /** The parsed `run` argv. `args` carries the repeated `--arg k=v` pairs (and the run id, mirrored in). */
 export interface ParsedRunArgs {
@@ -57,11 +67,19 @@ export interface ParsedRunArgs {
   from?: string;
   until?: string;
   args: Record<string, string>;
+  /** Sandbox backend: `inmemory` (default, core in-memory provider) or `local` (real in-place `pi` exec). */
+  sandbox: SandboxChoice;
+  /** The pi `--provider` gateway → threaded to the runner as `providerName`. */
+  provider?: string;
+  /** Reasoning-depth cap → `pi --thinking <v>`. */
+  thinking?: string;
+  /** Optional model pin → `pi --model <m>`. */
+  model?: string;
 }
 
 /** Parse the flat `run` argv → `ParsedRunArgs`. First positional = the template dir. */
 export function parseRunArgs(argv: string[]): ParsedRunArgs {
-  const out: ParsedRunArgs = { templateDir: '', dryRun: false, args: {} };
+  const out: ParsedRunArgs = { templateDir: '', dryRun: false, args: {}, sandbox: 'inmemory' };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--dry-run') out.dryRun = true;
@@ -70,6 +88,10 @@ export function parseRunArgs(argv: string[]): ParsedRunArgs {
     else if (k === '--out' || k === '--out-dir') out.outDir = argv[++i];
     else if (k === '--from') out.from = argv[++i];
     else if (k === '--until') out.until = argv[++i];
+    else if (k === '--sandbox') out.sandbox = (argv[++i] as SandboxChoice) ?? 'inmemory';
+    else if (k === '--provider') out.provider = argv[++i];
+    else if (k === '--thinking') out.thinking = argv[++i];
+    else if (k === '--model') out.model = argv[++i];
     else if (k === '--arg') {
       const kv = argv[++i] ?? '';
       const eq = kv.indexOf('='); // only the FIRST '=' splits k from v (values may contain '=').
@@ -129,15 +151,18 @@ export function dryRunPlan(wf: Workflow, opts: DryRunPlanOpts = {}): string {
 
 /**
  * Drive a template run. DRY-RUN: loadTemplate → compile → instantiateRun (materialize `${RUN}/.pi`) →
- * print the realized commands, then STOP (no model). LIVE: loadConfig → loadTemplate → instantiateRun →
- * runFromConfig (the loaded spec is the consumer-injected `workflowSpec` — a template run needs no
- * separate bridge).
+ * print the realized commands, then STOP (no model). LIVE: route through core `runFromTemplate` (the
+ * template-run join — loadTemplate → instantiateRun → compile → runWorkflow, INSIDE core), THREADING the
+ * resolved options the CLI collected: `args` (`{{arg.*}}` delivery), `workspace` (`{{WORKSPACE}}` root),
+ * the sandbox provider (`--sandbox local` ⇒ a real `LocalSandboxProvider`; `inmemory` ⇒ omit, core
+ * default), `providerName` (pi `--provider`), `thinking`, `model`, and the from/until resume window.
+ * `runFromConfig` stays in the seam for library consumers that already hold a spec.
  */
 export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Promise<RunResult | undefined> {
-  const loadConfig = deps.loadConfig ?? coreLoadConfig;
   const loadTemplate = deps.loadTemplate ?? coreLoadTemplate;
   const instantiateRun = deps.instantiateRun ?? coreInstantiateRun;
-  const runFromConfig = deps.runFromConfig ?? coreRunFromConfig;
+  const runFromTemplate = deps.runFromTemplate ?? coreRunFromTemplate;
+  const makeLocalProvider = deps.makeLocalProvider ?? (() => new LocalSandboxProvider());
   const print = deps.print ?? ((s: string) => process.stdout.write(s + '\n'));
 
   const { templateDir } = parsed;
@@ -156,15 +181,25 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     await instantiateRun(templateDir, outDir, { workspace });
     // reference the actual realized prompt path the run materialized (engine-owned layout helper).
     const samplePromptDir = nodePromptFile(outDir, '<id>').replace(/\/<id>\/prompt\.md$/, '');
-    print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: 'cp' }));
+    print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: parsed.provider ?? 'cp', model: parsed.model }));
     return undefined;
   }
 
-  // ── LIVE: resolve env+args → load+materialize → run. ──
-  const config = loadConfig({ args: { run: parsed.run, outDir, from: parsed.from, until: parsed.until } });
-  const spec = await loadTemplate(templateDir);
-  await instantiateRun(templateDir, outDir, { workspace });
-  return runFromConfig({ workflowSpec: spec, ...config, outDir });
+  // ── LIVE: route through the core template-run join, threading every collected option. ──
+  // --sandbox local ⇒ the real in-place exec provider; inmemory ⇒ omit (core's in-memory default).
+  const provider = parsed.sandbox === 'local' ? makeLocalProvider() : undefined;
+  return runFromTemplate(templateDir, {
+    runDir: outDir,
+    run: parsed.run,
+    workspace,
+    args: parsed.args,
+    from: parsed.from,
+    until: parsed.until,
+    providerName: parsed.provider,
+    thinking: parsed.thinking,
+    model: parsed.model,
+    ...(provider ? { provider } : {}),
+  });
 }
 
 /** `piflow run <templateDir> [--dry-run] [--run <id>] [--arg k=v ...]` — the bin body. */

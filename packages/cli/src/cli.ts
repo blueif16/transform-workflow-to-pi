@@ -22,7 +22,8 @@ import { runRunCli } from './run.js';
 const HELP = `piflow — drive + observe a pi-flow run over the .pi/ run layout
 
 USAGE
-  piflow run     <templateDir> [--dry-run] [--run <id>] [--arg k=v ...]  drive a template run
+  piflow run     <templateDir> [--run <id>] [flags]  drive a template run (real or --dry-run)
+  piflow inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
   piflow extract <templateDir>           free DAG preview (node count + parallel lanes; no model)
   piflow status  <rundir> [--every <s>]  per-node table + stage/rollup (verified on disk)
   piflow watch   <rundir> [--notify]     silent sentinel — one line on done / fail / dead-stall
@@ -32,9 +33,21 @@ RUN
   <templateDir> an authored template/ dir (meta.json + nodes/*/). Required.
   --dry-run     build + print the realized per-node pi command(s); invoke NO model (free).
   --run <id>    the instance id (keys out/<id>); aliases --id. Required for a live run.
-  --arg k=v     a workflow arg → args.k (repeatable).
+  --arg k=v     a workflow arg → {{arg.k}} (repeatable).
   --workspace <p>  the read-only {{WORKSPACE}} root (skills/templates/registry); default cwd.
+  --sandbox <local|inmemory>  exec backend; local = real in-place pi, inmemory (default) = no model.
+  --provider <gw>  the pi --provider gateway (e.g. mmgw).
+  --thinking <v>   reasoning-depth cap → pi --thinking.
+  --model <m>      model pin → pi --model.
+  --out <dir>      host run dir (= {{RUN}}); default out/<run>.
   --from / --until <substr>  resume / truncate the stage window.
+
+INSPECT
+  <templateDir> an authored template/ dir. Compiles it and prints each node's RESOLVED view —
+                sandbox (provider/workspace/read/write/output) · tools (allow/deny + resolved
+                piTools/excluded) · ops (seed/project/merge/promote) · io.artifacts · the prompt.
+  [nodeId]      restrict to one node; omit for all. An unknown id errors with the valid ids.
+  --full        print the FULL realized prompt (default: a head slice).
 
 EXTRACT
   <templateDir> an authored template/ dir. Prints stages + parallel lanes. FREE (no model).
