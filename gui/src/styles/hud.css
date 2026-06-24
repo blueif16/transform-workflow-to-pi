@@ -17,8 +17,8 @@
   height: 100%;
   pointer-events: auto;
   display: grid;
-  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr) minmax(200px, 280px);
-  grid-template-rows: auto minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr) minmax(200px, 260px);
+  grid-template-rows: auto minmax(150px, 1fr) auto;
   grid-template-areas:
     "top top top"
     "left mid right"
@@ -32,16 +32,16 @@
 .ds-hud__mid { grid-area: mid; align-self: stretch; position: relative; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; }
 /* LEFT input sources — no wrapper card; each source is its own small box, files clickable */
 .ds-hud__left { grid-area: left; align-self: center; display: flex; flex-direction: column; gap: var(--ds-space-3); max-height: 100%; overflow: auto; min-height: 0; }
-.ds-source { border: 1px solid var(--ds-border-hairline); border-left: 3px solid var(--scope); border-radius: var(--ds-radius-md); background: var(--ds-bg-surface); box-shadow: var(--ds-shadow-xs); padding: var(--ds-space-2); }
-.ds-source__head { display: flex; align-items: center; gap: var(--ds-space-2); font-family: var(--ds-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary); margin-bottom: 4px; }
+.ds-source { display: flex; flex-direction: column; }
+.ds-source__head { display: flex; align-items: center; gap: var(--ds-space-2); padding-bottom: var(--ds-space-2); border-bottom: 1px solid var(--ds-border-hairline); font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary); margin-bottom: 4px; }
 .ds-source__head svg { color: var(--scope); flex: 0 0 auto; }
-.ds-source__count { margin-left: auto; }
+.ds-source__count { margin-left: auto; font-variant-numeric: tabular-nums; }
 .ds-source__files { display: flex; flex-direction: column; gap: 1px; }
 .ds-filebtn { display: block; width: 100%; text-align: left; padding: 3px 6px; border: none; border-radius: var(--ds-radius-sm); background: transparent; font-family: var(--ds-font-mono); font-size: 11px; color: var(--ds-text-secondary); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ds-filebtn:hover { background: var(--ds-bg-sunken); color: var(--ds-text-primary); }
 .ds-filebtn.is-sel { background: var(--ds-bg-sunken); color: var(--ds-text-primary); box-shadow: inset 2px 0 0 var(--ds-accent); }
 
-/* --- a flat region card ------------------------------------------------- */
+/* --- a bare region (no card) — structure from one hairline + whitespace -- */
 .ds-hud-region {
   position: relative;
   min-width: 0;
@@ -49,36 +49,35 @@
   max-height: 100%;            /* but never exceed the cell — scroll the body instead */
   display: flex;
   flex-direction: column;
-  background: var(--ds-bg-surface);
-  border: 1px solid var(--ds-border-hairline);
-  border-radius: var(--ds-radius-lg);
-  box-shadow: var(--ds-shadow-xs);
+  border-radius: 0;
   overflow: hidden;
   outline: none;
-  transition: border-color 0.16s var(--ds-ease-standard), box-shadow 0.16s var(--ds-ease-standard);
 }
-.ds-hud-region.is-active,
-.ds-hud-region:focus-visible { border-color: var(--ds-accent); box-shadow: 0 0 0 1px var(--ds-accent-ring), var(--ds-shadow-sm); }
+/* keyboard focus must stay visible (regions are tabIndex 0) */
+.ds-hud-region:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px; }
 /* inputs + outputs ride the vertical center of the middle row */
 .ds-hud-region[data-area="left"], .ds-hud-region[data-area="right"] { align-self: center; }
 /* the two top cards stretch to one shared height (override the content-size default) */
 .ds-hud__top .ds-hud-region { align-self: stretch; }
 /* bottom progress: drop the header chrome — the bar IS the row */
-.ds-hud-region--bare .ds-hud-region__body { padding: var(--ds-space-3) var(--ds-space-4); }
+.ds-hud-region--bare .ds-hud-region__body { padding: var(--ds-space-3) 0; }
 .ds-hud-region__label {
   display: flex; align-items: center; justify-content: space-between; gap: var(--ds-space-2);
-  padding: var(--ds-space-2) var(--ds-space-3);
+  padding: 0 0 var(--ds-space-2);
   border-bottom: 1px solid var(--ds-border-hairline);
   font-family: var(--ds-font-mono); font-size: var(--ds-text-xs);
   text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary);
+  transition: color 0.16s var(--ds-ease-standard), border-color 0.16s var(--ds-ease-standard);
 }
+/* active affordance: label text + its hairline go accent, ⤢ hint reveals */
+.ds-hud-region.is-active .ds-hud-region__label { color: var(--ds-accent); border-bottom-color: var(--ds-accent); }
 .ds-hud-region__hint { opacity: 0; color: var(--ds-text-accent); transition: opacity 0.16s; }
 .ds-hud-region.is-active .ds-hud-region__hint { opacity: 1; }
-.ds-hud-region__body { padding: var(--ds-space-2) var(--ds-space-3); overflow: auto; flex: 1 1 auto; min-height: 0; }
+.ds-hud-region__body { padding: var(--ds-space-2) 0; overflow: auto; flex: 1 1 auto; min-height: 0; }
 
 /* --- TOP stat boxes ----------------------------------------------------- */
 .ds-hud-stat { display: flex; flex-direction: column; gap: 2px; }
-.ds-hud-stat__v { font-size: var(--ds-text-lg); font-weight: var(--ds-weight-semibold); letter-spacing: var(--ds-tracking-display); color: var(--ds-text-primary); font-family: var(--ds-font-mono); }
+.ds-hud-stat__v { font-size: var(--ds-text-lg); font-weight: var(--ds-weight-semibold); letter-spacing: var(--ds-tracking-display); color: var(--ds-text-primary); font-family: var(--ds-font-mono); font-variant-numeric: tabular-nums; }
 .ds-hud-stat__k { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
 .ds-hud-stat__k--wrap { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .ds-tooltag {
@@ -113,28 +112,31 @@
 }
 .ds-chip--more { color: var(--ds-text-tertiary); background: transparent; }
 
-/* --- RIGHT: output panel (distinct: sunken + accent spark) -------------- */
+/* --- RIGHT: output rows (bare — the accent spark is the only chrome) ----- */
 .ds-out { display: flex; flex-direction: column; gap: 4px; }
-.ds-out__row { display: flex; align-items: center; gap: var(--ds-space-2); padding: var(--ds-space-2); border-radius: var(--ds-radius-md); background: var(--ds-bg-sunken); border: 1px solid transparent; font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); }
-.ds-out__row--lg { font-size: var(--ds-text-sm); padding: var(--ds-space-2) var(--ds-space-3); }
-.ds-out__row[data-ok="true"]  { border-color: color-mix(in srgb, var(--ds-success) 28%, transparent); }
-.ds-out__row[data-ok="false"] { border-color: color-mix(in srgb, var(--ds-error) 30%, transparent); }
+.ds-out__row { display: flex; align-items: center; gap: var(--ds-space-2); padding: var(--ds-space-1) 0; font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); }
+.ds-out__row--lg { font-size: var(--ds-text-sm); padding: var(--ds-space-2) 0; }
+.ds-out__row[data-ok="false"] .ds-out__name { color: var(--ds-error-fg); }
 .ds-out__spark { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 2px; background: var(--ds-accent); box-shadow: 0 0 8px var(--ds-accent-ring); }
 .ds-out__row[data-ok="false"] .ds-out__spark { background: var(--ds-error); box-shadow: none; }
 .ds-out__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ds-text-primary); }
-.ds-out__meta { margin-left: auto; flex: 0 0 auto; color: var(--ds-text-tertiary); }
+.ds-out__meta { margin-left: auto; flex: 0 0 auto; color: var(--ds-text-tertiary); font-variant-numeric: tabular-nums; }
 
-/* --- BOTTOM: progress --------------------------------------------------- */
-.ds-prog { display: flex; justify-content: center; }
-.ds-prog .ds-progress { flex: 0 0 60%; width: 60%; height: 30px; border-radius: var(--ds-radius-md); }
-.ds-prog .ds-progress__fill { border-radius: inherit; }
-.ds-prog__pct { flex: 0 0 auto; font-family: var(--ds-font-mono); font-size: var(--ds-text-sm); color: var(--ds-text-accent); }
-.ds-prog__meta { flex: 0 0 auto; font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
+/* --- BOTTOM: progress (centered column, quiet 8px bar) ------------------- */
+.ds-prog { display: flex; flex-direction: column; gap: var(--ds-space-2); width: 100%; max-width: min(100%, 520px); margin: 0 auto; }
+.ds-prog__head { display: flex; align-items: baseline; justify-content: space-between; }
+/* angular "charge" bar — a skewed parallelogram to match the right-angle /
+   corner-bracket language (no pill); the fill + sheen + leading glow skew with it */
+.ds-prog .ds-progress { width: 100%; border-radius: 0; transform: skewX(-12deg); }
+.ds-prog .ds-progress__fill { border-radius: 0; }
+.ds-prog__state { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary); }
+.ds-prog__pct { font-family: var(--ds-font-mono); font-size: var(--ds-text-sm); color: var(--ds-text-accent); font-variant-numeric: tabular-nums; }
+.ds-prog__meta { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); font-variant-numeric: tabular-nums; }
 .ds-prog__meta b { color: var(--ds-text-secondary); font-weight: var(--ds-weight-medium); }
 
 /* --- MIDDLE: identity card (glass, morph target) ------------------------ */
-.ds-hud__ident { position: relative; flex: 0 0 auto; width: 100%; max-width: 520px; display: flex; }
-.ds-hud__ident .ds-hud-card__body { padding: var(--ds-space-4); display: flex; flex-direction: column; gap: var(--ds-space-2); width: 100%; }
+.ds-hud__ident { position: relative; flex: 0 0 auto; width: 100%; max-width: 440px; display: flex; }
+.ds-hud__ident .ds-hud-card__body { padding: var(--ds-space-3); display: flex; flex-direction: column; gap: var(--ds-space-2); width: 100%; }
 .ds-hud__ident-row { display: flex; align-items: center; gap: var(--ds-space-3); }
 .ds-hud__ident-id { min-width: 0; margin-right: auto; }
 .ds-hud__summary { margin: 0; font-size: var(--ds-text-sm); line-height: var(--ds-leading-relaxed); color: var(--ds-text-secondary); }
@@ -143,7 +145,8 @@
 .ds-hud-card__body { padding: var(--ds-space-4); }
 
 /* --- MIDDLE: the hover-expanded detail overlay -------------------------- */
-.ds-hud-detail { position: absolute; inset: 0; display: flex; flex-direction: column; z-index: 2; overflow: hidden; }
+.ds-hud-detail { position: absolute; inset: 0; margin: auto; width: min(100%, 760px); max-height: 100%; height: fit-content; display: flex; flex-direction: column; z-index: 2; overflow: hidden; }
+.ds-hud-detail--file { width: min(100%, 820px); }
 .ds-hud-detail__head { display: flex; align-items: center; gap: var(--ds-space-2); padding: var(--ds-space-2) var(--ds-space-4); border-bottom: 1px solid var(--ds-border-hairline); font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
 .ds-hud-detail__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ds-detail-x { margin-left: auto; flex: 0 0 auto; display: inline-flex; padding: 2px; border: none; background: transparent; color: var(--ds-text-tertiary); cursor: pointer; border-radius: var(--ds-radius-sm); }
@@ -166,7 +169,7 @@
 .ds-bar__label { color: var(--ds-text-secondary); text-align: right; }
 .ds-bar__track { height: 10px; background: var(--ds-bg-sunken); border-radius: var(--ds-radius-sm); overflow: hidden; }
 .ds-bar__fill { display: block; height: 100%; background: var(--tone, var(--ds-accent)); border-radius: var(--ds-radius-sm); }
-.ds-bar__val { color: var(--ds-text-tertiary); text-align: right; }
+.ds-bar__val { color: var(--ds-text-tertiary); text-align: right; font-variant-numeric: tabular-nums; }
 .ds-cmds { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--ds-border-hairline); padding-top: var(--ds-space-2); }
 .ds-cmds__head { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); text-transform: uppercase; letter-spacing: var(--ds-tracking-label); }
 .ds-cmd { font-family: var(--ds-font-mono); font-size: 11px; color: var(--ds-text-code); background: var(--ds-bg-sunken); padding: 3px 6px; border-radius: var(--ds-radius-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -183,16 +186,16 @@
 
 /* progress detail — timestamped timeline */
 .ds-timeline { display: flex; flex-direction: column; gap: var(--ds-space-3); }
-.ds-timeline__summary { display: flex; justify-content: space-between; font-family: var(--ds-font-mono); font-size: var(--ds-text-sm); color: var(--ds-text-secondary); }
+.ds-timeline__summary { display: flex; justify-content: space-between; font-family: var(--ds-font-mono); font-size: var(--ds-text-sm); color: var(--ds-text-secondary); font-variant-numeric: tabular-nums; }
 .ds-timeline__summary b { color: var(--ds-text-primary); font-weight: var(--ds-weight-semibold); }
 .ds-timeline__exp { color: var(--ds-text-tertiary); }
 .ds-timeline__track { position: relative; height: 22px; background: var(--ds-bg-sunken); border-radius: var(--ds-radius-sm); overflow: hidden; }
 .ds-timeline__tick { position: absolute; top: 3px; bottom: 3px; min-width: 2px; background: var(--tone, var(--ds-accent)); opacity: 0.7; border-radius: 1px; }
 .ds-timeline__list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; }
 .ds-timeline__row { display: grid; grid-template-columns: 72px 1fr auto; gap: var(--ds-space-2); align-items: center; font-family: var(--ds-font-mono); font-size: 11px; padding: 2px 0; border-left: 2px solid var(--tone, var(--ds-neutral-400)); padding-left: var(--ds-space-2); }
-.ds-timeline__t { color: var(--ds-text-tertiary); }
+.ds-timeline__t { color: var(--ds-text-tertiary); font-variant-numeric: tabular-nums; }
 .ds-timeline__name { color: var(--ds-text-primary); }
-.ds-timeline__dur { color: var(--ds-text-tertiary); text-align: right; }
+.ds-timeline__dur { color: var(--ds-text-tertiary); text-align: right; font-variant-numeric: tabular-nums; }
 
 /* --- corner brackets (two, on the square corners) ----------------------- */
 .ds-hud__corner { position: absolute; width: 14px; height: 14px; border: 1.5px solid var(--ds-accent); opacity: 0.85; pointer-events: none; z-index: 3; }

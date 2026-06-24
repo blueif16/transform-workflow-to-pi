@@ -198,10 +198,14 @@
   --ds-overlay-width-lg: 660px;   /* wider HUD variants (monitor / inspector) */
   --ds-tap-target: 32px;
 
-  /* --- scrim (overlay backdrop) — heavier than a hint so the busy canvas
-     genuinely drops back behind the focused window, but still "light modal" --- */
-  --ds-scrim-bg: rgba(23, 23, 23, 0.34);
-  --ds-scrim-blur: 3px;
+  /* --- scrim (overlay backdrop) — a LIGHT frosted focus layer. Since the HUD's
+     peripheral telemetry is bare (no card backs) and the text is DARK, the
+     backdrop must read LIGHT for that text to stay legible (darkening dark text
+     never works — Apple/web.dev/Comeau all use a semi-opaque light fill + blur).
+     A heavy blur turns the busy node canvas into a calm low-frequency field so
+     the bare text reads while the white glass card still pops as the focus. --- */
+  --ds-scrim-bg: rgba(233, 236, 240, 0.66);
+  --ds-scrim-blur: 14px;
 
   /* --- progress ("charge" bar) — the one continuously-animating node element.
      Slim in a node (echoes the 3px game geometry); a taller block in the

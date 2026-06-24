@@ -63,6 +63,11 @@ const TOOL_TONE: Record<string, string> = {
 };
 const toolTone = (t: string) => TOOL_TONE[t] ?? "muted";
 
+// status → the progress eyebrow word
+const STATUS_LABEL: Record<NonNullable<FlowNodeData["status"]>, string> = {
+  idle: "Idle", selected: "Selected", running: "Running", success: "Complete", error: "Failed",
+};
+
 const fileName = (p: string) => p.split("/").pop() || p;
 
 export interface NodeHudProps {
@@ -229,10 +234,17 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
         </div>
       </Region>
 
-      {/* ── BOTTOM: just the bar (60%, centered). took/avg live in the hover detail ── */}
+      {/* ── BOTTOM: quiet 8px bar with state + % head and elapsed/avg meta ── */}
       <Region rk="progress" area="bottom" label="Progress" bare focus={focus} hold={hold} release={release}>
         <div className="ds-prog">
+          <div className="ds-prog__head">
+            <span className="ds-prog__state">{STATUS_LABEL[status]}</span>
+            <span className="ds-prog__pct">{pct != null ? `${Math.round(pct * 100)}%` : "—"}</span>
+          </div>
           <ProgressBar size="block" value={pct} status={status} aria-label={`${data.title} progress · ${pct != null ? `${Math.round(pct * 100)}%` : "running"}`} />
+          <div className="ds-prog__meta">
+            <b>{formatMs(rv.durationMs)}</b> elapsed{expected != null ? ` · avg ${formatMs(expected)} / ${rv.priorSamples || 1} run${(rv.priorSamples || 1) === 1 ? "" : "s"}` : ""}
+          </div>
         </div>
       </Region>
     </div>
