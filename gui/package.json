@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "data:transcode": "node scripts/transcode-run.mjs",
     "data:view": "node scripts/build-run-view.mjs",
-    "data": "npm run data:transcode && npm run data:view",
+    "data:index": "node scripts/build-index.mjs",
+    "data": "npm run data:transcode && npm run data:view && npm run data:index",
     "test:distill": "node scripts/distill.test.mjs"
   },
   "dependencies": {
