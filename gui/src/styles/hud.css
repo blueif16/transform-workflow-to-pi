@@ -166,15 +166,27 @@
 .ds-fileview { flex: 1 1 auto; min-height: 0; max-height: 100%; overflow: auto; margin: 0; }
 .ds-hud-empty { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); padding: var(--ds-space-2) 0; }
 
-/* model detail — key/value */
+/* model detail — key/value + cache-hit donut */
+.ds-model-detail { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ds-space-4); }
+.ds-model-detail .ds-kv { flex: 1 1 auto; min-width: 0; }
 .ds-kv { display: grid; grid-template-columns: auto 1fr; gap: 6px var(--ds-space-4); align-content: start; }
 .ds-kv__row { display: contents; }
 .ds-kv__k { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); text-transform: uppercase; letter-spacing: var(--ds-tracking-label); color: var(--ds-text-tertiary); }
 .ds-kv__v { font-size: var(--ds-text-sm); color: var(--ds-text-primary); text-align: right; }
 .ds-kv__v--mono { font-family: var(--ds-font-mono); }
+.ds-cachedonut { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-tertiary); }
+.ds-cachedonut__pct { font-size: var(--ds-text-base); font-weight: var(--ds-weight-semibold); color: var(--ds-text-primary); }
 
-/* tools detail — bar chart + bash commands */
+/* tools detail — stacked-bar summary + per-tool bar chart + bash commands */
 .ds-detail-cols { display: grid; grid-template-columns: 1fr; gap: var(--ds-space-4); }
+.ds-toolstack-wrap { display: flex; flex-direction: column; }
+.ds-toolstack { display: flex; height: 8px; border-radius: var(--ds-radius-full); overflow: hidden; background: var(--ds-neutral-200); }
+.ds-toolstack__seg[data-tone="accent"]  { background: var(--ds-accent); }
+.ds-toolstack__seg[data-tone="success"] { background: var(--ds-success); }
+.ds-toolstack__seg[data-tone="warn"]    { background: var(--ds-warning); }
+.ds-toolstack__seg[data-tone="muted"]   { background: var(--ds-neutral-500); }
+.ds-toolstack-legend { display: flex; flex-wrap: wrap; gap: var(--ds-space-2); margin-top: var(--ds-space-2); font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-secondary); }
+.ds-toolstack-legend__dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
 .ds-bars { display: flex; flex-direction: column; gap: 6px; }
 .ds-bar { display: grid; grid-template-columns: 72px 1fr 28px; align-items: center; gap: var(--ds-space-2); font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); }
 .ds-bar__label { color: var(--ds-text-secondary); text-align: right; }

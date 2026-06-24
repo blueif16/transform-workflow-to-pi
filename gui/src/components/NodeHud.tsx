@@ -22,6 +22,8 @@ import { Button } from "./Button";
 import { ProgressBar } from "./ProgressBar";
 import { StatusPill, HudCorners } from "./HudBits";
 import { MarkdownReader } from "./MarkdownReader";
+import { ToolStackBar } from "./ToolStackBar";
+import { CacheDonut } from "./CacheDonut";
 import { expandTransition, easing } from "../motion/transitions";
 import type { FlowNodeData } from "./WorkflowNode";
 import { formatMs, formatBytes, type RunViewNode, type ScopeKind, type ReadRef } from "../data/runView";
@@ -57,12 +59,13 @@ const SCOPE_META: Record<ScopeKind, { label: string; hint: string }> = {
   repo: { label: "Repo source", hint: "repo" },
 };
 
-// tool → accent class (read=accent, write/edit=success, others neutral) for the bar chart + tags
-const TOOL_TONE: Record<string, string> = {
+// tool → accent class (read=accent, write/edit=success, others neutral) for the bar chart + tags.
+// Exported so ToolStackBar colors segments with the exact same mapping.
+export const TOOL_TONE: Record<string, string> = {
   read: "accent", grep: "accent", ls: "muted", find: "muted",
   edit: "success", write: "success", bash: "warn", submit_result: "accent",
 };
-const toolTone = (t: string) => TOOL_TONE[t] ?? "muted";
+export const toolTone = (t: string) => TOOL_TONE[t] ?? "muted";
 
 // status → the progress eyebrow word
 const STATUS_LABEL: Record<NonNullable<FlowNodeData["status"]>, string> = {
@@ -363,17 +366,20 @@ function Detail({ region, rv, expected, pct }: { region: RegionKey; rv: RunViewN
   if (region === "model") {
     const t = rv.tokens;
     return (
-      <div className="ds-kv">
-        <KV k="Model" v={rv.model ?? "—"} mono />
-        <KV k="Provider" v={rv.provider ?? "—"} mono />
-        <KV k="API" v={rv.api ?? "—"} mono />
-        {t && <>
-          <KV k="Input tokens" v={t.input.toLocaleString()} />
-          <KV k="Output tokens" v={t.output.toLocaleString()} />
-          <KV k="Cache read" v={t.cacheRead.toLocaleString()} />
-          <KV k="Billable" v={t.billable.toLocaleString()} />
-          <KV k="Context peak" v={t.contextPeak.toLocaleString()} />
-        </>}
+      <div className="ds-model-detail">
+        <div className="ds-kv">
+          <KV k="Model" v={rv.model ?? "—"} mono />
+          <KV k="Provider" v={rv.provider ?? "—"} mono />
+          <KV k="API" v={rv.api ?? "—"} mono />
+          {t && <>
+            <KV k="Input tokens" v={t.input.toLocaleString()} />
+            <KV k="Output tokens" v={t.output.toLocaleString()} />
+            <KV k="Cache read" v={t.cacheRead.toLocaleString()} />
+            <KV k="Billable" v={t.billable.toLocaleString()} />
+            <KV k="Context peak" v={t.contextPeak.toLocaleString()} />
+          </>}
+        </div>
+        {t && <CacheDonut cacheRead={t.cacheRead} input={t.input} />}
       </div>
     );
   }
@@ -383,6 +389,7 @@ function Detail({ region, rv, expected, pct }: { region: RegionKey; rv: RunViewN
     const max = Math.max(1, ...bars.map(([, c]) => c));
     return (
       <div className="ds-detail-cols">
+        <ToolStackBar breakdown={rv.toolBreakdown} />
         <div className="ds-bars">
           {bars.map(([t, c]) => (
             <div key={t} className="ds-bar" data-tone={toolTone(t)}>
