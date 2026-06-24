@@ -125,7 +125,12 @@ export async function stageSeed(seed: Seed, ctx: ResolveCtx, runDir: string): Pr
 
   if (srcIsDir) {
     await fs.mkdir(toAbs, { recursive: true });
-    await fs.cp(fromAbs, toAbs, { recursive: true, force: true });
+    // verbatimSymlinks: a seeded tree routinely contains node_modules with hundreds
+    // of .bin/* symlinks (and pnpm-style self-referential links). DEREFERENCING them
+    // (fs.cp's default) makes the copy slow AND throws EINVAL "cannot copy … to a
+    // subdirectory of self" when a link resolves back into the tree. Copy links AS
+    // links — correct for node_modules and relocation-invariant.
+    await fs.cp(fromAbs, toAbs, { recursive: true, force: true, verbatimSymlinks: true });
   } else {
     await fs.mkdir(path.dirname(toAbs), { recursive: true });
     await fs.copyFile(fromAbs, toAbs);
