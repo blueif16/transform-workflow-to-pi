@@ -41,6 +41,7 @@ import { runHooks } from '../hooks/index.js';
 import { NodeRecorder, recordingSandbox, type EventSink } from './events.js';
 import { defaultPiCommand, type CommandBuilder } from './command.js';
 import { resolveTokens, type ResolveCtx } from '../workflow/resolver.js';
+import { stageSeed } from '../workflow/ops/seed.js';
 import {
   type RunStatus,
   type NodeStatusRecord,
@@ -396,6 +397,44 @@ async function readHostFile(ctx: RunContext, rel: string): Promise<Uint8Array | 
 }
 
 /**
+ * Stage a host path (a seeded dest under `outDir`) INTO the sandbox at the same relative path, so the
+ * model reads it (the filesystem-as-contract bridge, mirroring the io.reads staging). A FILE writes once;
+ * a DIRECTORY is walked and each file written at its run-relative posix path. `rel` is run-relative;
+ * `'.'` (a dir seed at the run root) stages the dir's tree directly under the sandbox root.
+ */
+async function stageHostPathIntoSandbox(sandbox: Sandbox, outDir: string, rel: string): Promise<void> {
+  const abs = path.resolve(outDir, rel);
+  let isDir = false;
+  try {
+    isDir = (await fs.stat(abs)).isDirectory();
+  } catch {
+    return; // nothing to stage (a skipped seed reaches here only when staged:true, so this is defensive)
+  }
+  if (!isDir) {
+    const data = await fs.readFile(abs);
+    await sandbox.writeFile(toPosixRel(rel), data);
+    return;
+  }
+  // Walk the dir; stage each file at its run-relative posix path.
+  const walk = async (dirAbs: string): Promise<void> => {
+    for (const ent of await fs.readdir(dirAbs, { withFileTypes: true })) {
+      const childAbs = path.join(dirAbs, ent.name);
+      if (ent.isDirectory()) await walk(childAbs);
+      else {
+        const childRel = path.relative(outDir, childAbs);
+        await sandbox.writeFile(toPosixRel(childRel), await fs.readFile(childAbs));
+      }
+    }
+  };
+  await walk(abs);
+}
+
+/** Normalize a host path-relative string to a posix sandbox-relative path (no leading `./`). */
+function toPosixRel(rel: string): string {
+  return rel.split(path.sep).join('/').replace(/^\.\//, '');
+}
+
+/**
  * Run ONE node through the full lifecycle. Returns its terminal record (already in ctx.status.nodes).
  *
  * create → stage io.reads (from the host run dir) + write the prompt file → PRE hooks → exec the
@@ -475,6 +514,10 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     return finishNode(ctx, node, rec, t0, 'error', `sandbox create failed: ${(e as Error).message}`, []);
   }
 
+  // The per-node resolver ctx — ONE ctx threads the prompt resolve AND the seed/op resolution (U7). `{{RUN}}`
+  // is the host run dir (the collection namespace); state is the barrier-merged RunState loaded for this stage.
+  const resolveCtx: ResolveCtx = { run: ctx.outDir, workspace: ctx.workspace, state: ctx.runState, args: ctx.args };
+
   try {
     // STAGE io.reads from the host run dir INTO the sandbox at the same relative path (filesystem-as-
     // contract across sandboxes). A missing read is left to the node's own contract check downstream.
@@ -483,10 +526,23 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
       if (data) await sandbox.writeFile(rel, data);
     }
 
+    // SEED PRE op (S2): stage each declared starting artifact onto the host run dir (= `{{RUN}}`), then
+    // mirror the staged dest INTO the sandbox so the model reads it. A token-bearing `from` (incl
+    // `{{state.*}}`) resolves through the seed-token resolver; an absent source is a graceful skip, an
+    // already-filled dest is not re-staged (idempotent). A `{{state.*}}` naming a not-yet-promoted channel
+    // throws → fail the node loudly (a real wiring error), never a silent skip.
+    try {
+      for (const seed of node.ops?.seed ?? []) {
+        const res = await stageSeed(seed, resolveCtx, ctx.outDir);
+        if (res.staged) await stageHostPathIntoSandbox(sandbox, ctx.outDir, seed.to);
+      }
+    } catch (e) {
+      return finishNode(ctx, node, rec, t0, 'error', `seed staging failed: ${(e as Error).message}`, [], [(e as Error).message]);
+    }
+
     // TOKEN RESOLUTION AT LAUNCH (U7): make `{{arg.*}}`/`{{WORKSPACE}}`/`{{RUN}}`/`{{state.*}}` PHYSICAL
     // in the prompt before staging. A missing arg/channel throws loudly (MissingArgError/MissingChannelError)
     // → the node fails with a clear issue, never a silently-unresolved prompt handed to the model.
-    const resolveCtx: ResolveCtx = { run: ctx.outDir, workspace: ctx.workspace, state: ctx.runState, args: ctx.args };
     let resolvedPrompt: string;
     try {
       resolvedPrompt = resolveTokens(node.prompt, resolveCtx);

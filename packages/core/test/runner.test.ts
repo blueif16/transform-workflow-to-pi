@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { compile, InMemorySandboxProvider, DefaultToolRegistry, mcpToolsToEntries, openClawPluginToEntries } from '../src/index.js';
@@ -492,6 +492,74 @@ describe('runWorkflow — prompt token resolution at node launch (S1)', () => {
     const staged = writes.find((w) => w.path === '_pi/plain/prompt.md')!;
     // 'do Plain' prose survives intact (the markers tail still appends, as before).
     expect(staged.data).toContain('do Plain');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
+// ── S2: the seed PRE op — a node's starting artifact is staged (host + sandbox) BEFORE the model runs ─
+
+describe('runWorkflow — seed PRE op staging (S2)', () => {
+  function recorder(): { provider: SandboxProvider; writes: { path: string; data: string }[] } {
+    const writes: { path: string; data: string }[] = [];
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+    return { provider, writes };
+  }
+
+  it('stages a {to,from} seed onto the host run dir AND into the sandbox before exec', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-ws-'));
+    await fs.mkdir(path.join(workspace, 'tpl'), { recursive: true });
+    await fs.writeFile(path.join(workspace, 'tpl', 'skeleton.json'), '{"seed":"shape"}');
+    const outDir = await tmpOut();
+    const { provider, writes } = recorder();
+
+    // The node declares a seed via ops (as the template loader carries it).
+    const node: NodeIntent = {
+      label: 'Scaffold',
+      prompt: 'fill the skeleton',
+      tools: {},
+      io: { reads: [], produces: ['out.txt'], artifacts: [{ path: 'out.txt' }] },
+      ops: { seed: [{ to: 'spec/skeleton.json', from: '{{WORKSPACE}}/tpl/skeleton.json' }] },
+    };
+
+    let cmdSawSeed = false;
+    // The builder runs AFTER staging; by then the seed must already be on the host run dir.
+    const builder = (nd: { id: string; io: { artifacts: { path: string }[] }; sandbox: { output: string } }): string => {
+      cmdSawSeed = existsSync(path.join(outDir, 'spec', 'skeleton.json'));
+      const a = nd.io.artifacts[0].path;
+      return `mkdir -p ${nd.sandbox.output} && printf '%s' done > ${nd.sandbox.output}/${a}`;
+    };
+
+    const { status } = await runWorkflow(compile(wf([node])), { run: 'seedrun', outDir, provider, workspace, buildCommand: builder });
+    expect(status.nodes.scaffold.status).toBe('ok');
+
+    // (1) host run dir: the seed bytes landed at ${RUN}/spec/skeleton.json.
+    expect(await fs.readFile(path.join(outDir, 'spec', 'skeleton.json'), 'utf8')).toBe('{"seed":"shape"}');
+    // (2) it was staged INTO the sandbox (so the model can read it) BEFORE the command ran.
+    const staged = writes.find((w) => w.path === 'spec/skeleton.json');
+    expect(staged?.data).toBe('{"seed":"shape"}');
+    // (3) and it was physically present on disk by the time the command was built.
+    expect(cmdSawSeed).toBe(true);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  it('a node with NO seed ops runs exactly as before (additive)', async () => {
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(compile(wf([n('Plain', [], ['p.txt'])])), { run: 'noseed', outDir, buildCommand: stubBuilder() });
+    expect(status.nodes.plain.status).toBe('ok');
     await fs.rm(outDir, { recursive: true, force: true });
   });
 });

@@ -43,8 +43,8 @@ export { resolveTokens, resolveAll, MissingChannelError, MissingArgError } from 
 export type { ResolveCtx } from './workflow/resolver.js';
 
 // U7 — deterministic op executors (seed PRE · project/merge POST), re-rooted onto the logical resolver.
-export { driverSeed, resolveSeedTokens } from './workflow/ops/seed.js';
-export type { Seed } from './workflow/ops/seed.js';
+export { driverSeed, resolveSeedTokens, stageSeed } from './workflow/ops/seed.js';
+export type { Seed, SeedResult } from './workflow/ops/seed.js';
 export { ensureDir, projJson, drillPath, readJsonSafe, fileExists, absUnder } from './workflow/ops/util.js';
 export { applyProjectionOp } from './workflow/ops/project.js';
 export type { ProjectionResult } from './workflow/ops/project.js';
