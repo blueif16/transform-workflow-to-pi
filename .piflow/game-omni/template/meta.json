@@ -11,5 +11,10 @@
     "scaffold",
     "execute",
     "verify-2"
-  ]
+  ],
+  "profiles": {
+    "production": {},
+    "companion": { "elidePhases": ["verify-1", "verify-2"] }
+  },
+  "defaultProfile": "production"
 }
