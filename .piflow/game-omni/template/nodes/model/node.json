@@ -1,0 +1,47 @@
+{
+  "id": "model",
+  "phase": "producers",
+  "deps": [
+    "gameplay"
+  ],
+  "prompt": {
+    "skill": "{{WORKSPACE}}/packages/skills/assets/SKILL.md",
+    "file": "prompt.md"
+  },
+  "tools": {
+    "allow": [
+      "read",
+      "write",
+      "submit_result"
+    ],
+    "deny": []
+  },
+  "contract": {
+    "artifacts": [
+      "model-queries.json"
+    ],
+    "owns": [
+      "model-queries.json",
+      "MEMORY.model.md"
+    ],
+    "readScope": [
+      "{{RUN}}",
+      "{{WORKSPACE}}/packages/skills/assets"
+    ],
+    "fillSentinel": null
+  },
+  "policy": {
+    "fail": "block"
+  },
+  "hooks": {
+    "merge": [
+      {
+        "to": "public/assets/models",
+        "from": [
+          "spec/blueprint.json",
+          "model-queries.json"
+        ]
+      }
+    ]
+  }
+}
