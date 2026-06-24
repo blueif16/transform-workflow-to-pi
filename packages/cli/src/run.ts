@@ -17,6 +17,7 @@ import {
   loadTemplate as coreLoadTemplate,
   instantiateRun as coreInstantiateRun,
   runFromTemplate as coreRunFromTemplate,
+  applyProfileByName,
   LocalSandboxProvider,
   compile,
   DefaultToolRegistry,
@@ -66,6 +67,8 @@ export interface ParsedRunArgs {
   outDir?: string;
   from?: string;
   until?: string;
+  /** Active run PROFILE name → resolved against the template's declared `profiles` (elides nodes before compile). */
+  profile?: string;
   args: Record<string, string>;
   /** Sandbox backend: `inmemory` (default, core in-memory provider) or `local` (real in-place `pi` exec). */
   sandbox: SandboxChoice;
@@ -88,6 +91,7 @@ export function parseRunArgs(argv: string[]): ParsedRunArgs {
     else if (k === '--out' || k === '--out-dir') out.outDir = argv[++i];
     else if (k === '--from') out.from = argv[++i];
     else if (k === '--until') out.until = argv[++i];
+    else if (k === '--profile') out.profile = argv[++i];
     else if (k === '--sandbox') out.sandbox = (argv[++i] as SandboxChoice) ?? 'inmemory';
     else if (k === '--provider') out.provider = argv[++i];
     else if (k === '--thinking') out.thinking = argv[++i];
@@ -113,6 +117,8 @@ export interface DryRunPlanOpts {
   model?: string;
   /** Reasoning-depth cap → `pi --thinking <v>`. Rendered only when set, mirroring the LIVE command. */
   thinking?: string;
+  /** Active profile name → noted in the header (so the plan shows WHICH reduced DAG it reflects). */
+  profile?: string;
 }
 
 /**
@@ -126,8 +132,9 @@ export function dryRunPlan(wf: Workflow, opts: DryRunPlanOpts = {}): string {
   const registry = new DefaultToolRegistry();
   const promptDir = opts.promptDir ?? '_pi';
   const provider = opts.provider ?? 'cp';
+  const profileNote = opts.profile ? ` [profile: ${opts.profile}]` : '';
   const lines: string[] = [
-    `dry-run plan for "${wf.meta.name}" — ${Object.keys(wf.nodes).length} nodes, ${wf.stages.length} stages (no model invoked)`,
+    `dry-run plan for "${wf.meta.name}"${profileNote} — ${Object.keys(wf.nodes).length} nodes, ${wf.stages.length} stages (no model invoked)`,
   ];
   for (const stage of wf.stages) {
     const tag = stage.parallel ? ' (parallel lane)' : '';
@@ -178,12 +185,15 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
 
   // ── DRY-RUN: build + materialize + print, but invoke NO model. ──
   if (parsed.dryRun) {
-    const spec = await loadTemplate(templateDir);
+    const loaded = await loadTemplate(templateDir);
+    // Apply the active profile (elide nodes by the declared predicate) so the dry-run plan reflects the
+    // SAME reduced DAG the live run would execute — an unknown name errors loudly here too.
+    const spec = applyProfileByName(loaded, parsed.profile);
     const wf = compile(spec);
     await instantiateRun(templateDir, outDir, { workspace });
     // reference the actual realized prompt path the run materialized (engine-owned layout helper).
     const samplePromptDir = nodePromptFile(outDir, '<id>').replace(/\/<id>\/prompt\.md$/, '');
-    print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: parsed.provider ?? 'cp', model: parsed.model, thinking: parsed.thinking }));
+    print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: parsed.provider ?? 'cp', model: parsed.model, thinking: parsed.thinking, profile: parsed.profile }));
     return undefined;
   }
 
@@ -197,6 +207,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     args: parsed.args,
     from: parsed.from,
     until: parsed.until,
+    profile: parsed.profile,
     providerName: parsed.provider,
     thinking: parsed.thinking,
     model: parsed.model,
