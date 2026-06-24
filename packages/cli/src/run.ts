@@ -204,6 +204,24 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
   });
 }
 
+/**
+ * The loud top-level verdict for a FINISHED live run: `null` when it succeeded (or is still running),
+ * else the multi-line failure report the CLI prints to stderr before exiting non-zero — the blocking
+ * node(s) (`error`/`blocked`, e.g. the synthetic `__resume__` preflight) each followed by their `issues`,
+ * and a `piflow status` hint. PURE (no process/stderr side effects) so it is unit-tested directly: a
+ * blocked resume MUST surface its `__resume__` issue; an `ok` run MUST report nothing.
+ */
+export function runFailureReport(status: RunResult['status'], runDir: string): string | null {
+  if (!status?.done || status.ok !== false) return null;
+  const failed = Object.values(status.nodes ?? {}).filter(
+    (n) => n.status === 'error' || n.status === 'blocked',
+  );
+  const lines = [`piflow run: ✗ FAILED — ${failed.length || 'a'} node(s) blocked/errored`];
+  for (const n of failed) for (const issue of n.issues ?? []) lines.push(`  ✗ ${n.id}: ${issue}`);
+  lines.push(`  → inspect: piflow status ${runDir}`);
+  return lines.join('\n');
+}
+
 /** `piflow run <templateDir> [--dry-run] [--run <id>] [--arg k=v ...]` — the bin body. */
 export async function runRunCli(argv: string[]): Promise<void> {
   const parsed = parseRunArgs(argv);
@@ -212,5 +230,17 @@ export async function runRunCli(argv: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  await runTemplate(parsed);
+  const result = await runTemplate(parsed);
+  // SURFACE FAILURE — a LIVE run that ends `done && ok===false` (a blocked resume preflight, or an
+  // errored/blocked node) MUST NOT exit 0 in silence: print the blocking node(s) + their issues to stderr
+  // and exit non-zero. Without this a blocked `--from` resume wrote an EMPTY log and returned 0 — the only
+  // signal was a separate `piflow status`. The status/event archives stay the deep view; this is the loud
+  // top-level verdict every CLI consumer (and a backgrounded run's exit code) can rely on. (dry-run → no result.)
+  const report = result?.status
+    ? runFailureReport(result.status, parsed.outDir ?? `out/${parsed.run ?? '<id>'}`)
+    : null;
+  if (report) {
+    process.stderr.write(report + '\n');
+    process.exitCode = 1;
+  }
 }

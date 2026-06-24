@@ -7,6 +7,7 @@ import {
   parseRunArgs,
   dryRunPlan,
   runTemplate,
+  runFailureReport,
   type RunDeps,
 } from '../src/run.js';
 import {
@@ -226,5 +227,42 @@ describe('piflow run — LIVE branch routes through core runFromTemplate, thread
       deps,
     );
     expect(optsSeen?.provider).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (D) FAILURE SURFACING — a finished LIVE run that ended `done && ok===false` (a blocked resume preflight
+// or an errored/blocked node) must produce a LOUD, specific verdict (the silent-no-op / empty-log / exit-0
+// regression). runFailureReport is the pure core of that: it FAILS this suite if it drops the blocking
+// node's issue, or reports on a healthy run.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('runFailureReport — the loud verdict for a finished failed run', () => {
+  const blockedResume = {
+    done: true,
+    ok: false,
+    nodes: {
+      'w2-scaffold': { id: 'w2-scaffold', label: 'w2', status: 'reused', artifacts: [], issues: [] },
+      __resume__: {
+        id: '__resume__', label: 'resume preflight', status: 'blocked', artifacts: [],
+        issues: ['cannot --from "w4-execute-m2": missing upstream artifact(s): verify/report.M1.json (verify-2-m1)'],
+      },
+    },
+  } as never;
+
+  it('surfaces every blocked/errored node AND its issue text (drop the issue loop ⇒ red)', () => {
+    const report = runFailureReport(blockedResume, 'out/p06');
+    expect(report).not.toBeNull();
+    expect(report).toContain('✗ FAILED');
+    expect(report).toContain('__resume__');
+    // the LOAD-BEARING line: the actual blocking reason must reach the user, not just a count.
+    expect(report).toContain('missing upstream artifact(s): verify/report.M1.json (verify-2-m1)');
+    expect(report).toContain('piflow status out/p06');
+    // a `reused` (non-failed) node is not listed as a failure.
+    expect(report).not.toContain('w2-scaffold');
+  });
+
+  it('returns null on a healthy run (ok) and on a still-running run (no false alarm)', () => {
+    expect(runFailureReport({ done: true, ok: true, nodes: {} } as never, 'out/x')).toBeNull();
+    expect(runFailureReport({ done: false, ok: null, nodes: {} } as never, 'out/x')).toBeNull();
   });
 });
