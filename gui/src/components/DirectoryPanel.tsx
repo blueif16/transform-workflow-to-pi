@@ -35,6 +35,8 @@ export interface DirectoryPanelProps {
   title?: string;
   /** fired when a file leaf is chosen (e.g. to open its node overlay) */
   onOpenFile?: (entry: DirEntry, path: DirEntry[]) => void;
+  /** grow columns RIGHT→LEFT (root pinned right) — for a right-anchored panel like the menu-bar switcher */
+  reverse?: boolean;
 }
 
 function FolderGlyph() {
@@ -60,8 +62,10 @@ function Chevron() {
   );
 }
 
-export function DirectoryPanel({ tree, title = "Files", onOpenFile }: DirectoryPanelProps) {
+export function DirectoryPanel({ tree, title = "Files", onOpenFile, reverse = false }: DirectoryPanelProps) {
   const reduce = useReducedMotion() ?? false;
+  // columns slide in FROM the side they grow toward (left for default, right for reverse)
+  const enterX = reverse ? 10 : -10;
   // the chain of opened folders; columns derive from it
   const [path, setPath] = useState<DirEntry[]>([]);
   const [fileId, setFileId] = useState<string | null>(null);
@@ -97,7 +101,7 @@ export function DirectoryPanel({ tree, title = "Files", onOpenFile }: DirectoryP
         {crumb && <span className="ds-dir__crumb" title={crumb}>{crumb}</span>}
       </div>
 
-      <div className="ds-dir__cols">
+      <div className={`ds-dir__cols${reverse ? " ds-dir__cols--reverse" : ""}`}>
         <AnimatePresence initial={false}>
           {columns.map((col, depth) => {
             const selectedId = path[depth]?.id ?? null;
@@ -107,9 +111,9 @@ export function DirectoryPanel({ tree, title = "Files", onOpenFile }: DirectoryP
                 className="ds-dir__col"
                 role="listbox"
                 aria-label={depth === 0 ? title : path[depth - 1]?.name}
-                initial={reduce ? false : { opacity: 0, x: -10 }}
+                initial={reduce ? false : { opacity: 0, x: enterX }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={reduce ? { opacity: 0 } : { opacity: 0, x: -10 }}
+                exit={reduce ? { opacity: 0 } : { opacity: 0, x: enterX }}
                 transition={{ duration: reduce ? 0 : 0.18, ease: [0.2, 0.8, 0.2, 1] }}
               >
                 {col.entries.map((entry) => {

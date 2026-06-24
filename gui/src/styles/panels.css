@@ -63,6 +63,13 @@
 }
 .ds-dir__col:last-child { border-right: none; }
 
+/* reverse: grow RIGHT→LEFT (root pinned right). Separators move to the left edge
+   so they stay BETWEEN columns; the chevron points left to signal leftward drill. */
+.ds-dir__cols--reverse { flex-direction: row-reverse; }
+.ds-dir__cols--reverse .ds-dir__col { border-right: none; border-left: 1px solid var(--ds-border-hairline); }
+.ds-dir__cols--reverse .ds-dir__col:last-child { border-left: none; }
+.ds-dir__cols--reverse .ds-dir__chev { transform: rotate(180deg); }
+
 .ds-dir__row {
   display: flex;
   align-items: center;

@@ -74,26 +74,27 @@ export function findThread(ix: GlobalIndex, run: string): ActiveThread | null {
 export interface SwitcherEntry { run: string; viewable: boolean; productId: string; nsId: string; }
 
 /**
- * Project the global index into the Miller-column tree the DirectoryPanel renders
- * (products → namespaces → run leaves), plus a resolver from a leaf id → the run.
- * Mirrors the "same directory-structure menu" the canvas folder navigator uses.
+ * Project the global index into the Miller-column tree the DirectoryPanel renders.
+ * Root level = WORKSPACES (namespaces) directly — the product (e.g. "piflow") is
+ * NOT a column; workspaces from every product are flattened to the root, then each
+ * opens its run leaves. Returns a resolver from a leaf id → the run.
  */
 export function indexToTree(ix: GlobalIndex): { tree: DirEntry[]; resolve: (id: string) => SwitcherEntry | undefined } {
   const map = new Map<string, SwitcherEntry>();
-  const tree: DirEntry[] = ix.products.map((p) => ({
-    id: `p:${p.id}`,
-    name: p.name,
-    kind: "folder",
-    children: p.namespaces.map((ns) => ({
-      id: `n:${p.id}/${ns.id}`,
-      name: ns.name,
-      kind: "folder",
-      children: ns.threads.map((t) => {
-        const id = `t:${p.id}/${ns.id}/${t.run}`;
-        map.set(id, { run: t.run, viewable: t.viewable, productId: p.id, nsId: ns.id });
-        return { id, name: t.run, kind: "file" as const, typeLabel: t.state };
-      }),
-    })),
-  }));
+  const tree: DirEntry[] = [];
+  for (const p of ix.products) {
+    for (const ns of p.namespaces) {
+      tree.push({
+        id: `n:${p.id}/${ns.id}`,
+        name: ns.name,
+        kind: "folder",
+        children: ns.threads.map((t) => {
+          const id = `t:${p.id}/${ns.id}/${t.run}`;
+          map.set(id, { run: t.run, viewable: t.viewable, productId: p.id, nsId: ns.id });
+          return { id, name: t.run, kind: "file" as const, typeLabel: t.state };
+        }),
+      });
+    }
+  }
   return { tree, resolve: (id) => map.get(id) };
 }

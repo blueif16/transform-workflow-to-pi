@@ -82,6 +82,7 @@ export function MenuBar({ activeRun, onSelectRun }: { activeRun: string; onSelec
           <DirectoryPanel
             tree={tree}
             title="Workspaces · runs"
+            reverse
             onOpenFile={(entry) => {
               const hit = resolve(entry.id);
               if (!hit || !hit.viewable) return; // not served by this GUI — ignore for now
