@@ -46,6 +46,7 @@ import { WorkflowNode, type FlowNode } from "./WorkflowNode";
 import { NodeExpandOverlay } from "./NodeExpandOverlay";
 import { DirectoryPanel, type DirEntry } from "./DirectoryPanel";
 import { MenuBar } from "./MenuBar";
+import { Companion } from "./Companion";
 import { ExpandContext } from "./ExpandContext";
 import { loadRunView, toFlowGraph, buildDirectory } from "../data/runView";
 
@@ -146,6 +147,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
 
           <NodeExpandOverlay id={expandedId} data={expandedData} onClose={() => setExpandedId(null)} />
           <MenuBar activeRun={activeRun} onSelectRun={selectRun} />
+          <Companion activeRun={activeRun} />
         </div>
       </LayoutGroup>
     </ExpandContext.Provider>

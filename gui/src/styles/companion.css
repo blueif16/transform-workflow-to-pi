@@ -1,0 +1,122 @@
+/* ============================================================================
+   Companion — bottom-right AI assistant dock (portaled above the overlay scrim).
+   Collapsed launcher ↔ expanded glass-soft panel. Shell-level: present in both
+   the full-map and per-node views.
+   ========================================================================== */
+.ds-companion-layer {
+  position: fixed;
+  right: clamp(10px, 1.6vw, 18px);
+  bottom: clamp(10px, 1.6vh, 18px);
+  z-index: var(--ds-z-popover);
+  pointer-events: none;                 /* only the launcher/panel are interactive */
+}
+.ds-companion-layer > * { pointer-events: auto; }
+
+/* collapsed launcher */
+.ds-companion-launch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--ds-border-hairline);
+  border-radius: var(--ds-radius-full);
+  background: var(--ds-bg-surface);
+  color: var(--ds-accent);
+  box-shadow: var(--ds-shadow-md);
+  cursor: pointer;
+  transition: transform var(--ds-dur-fast) var(--ds-ease-standard), box-shadow var(--ds-dur-fast);
+}
+.ds-companion-launch:hover { transform: translateY(-1px); box-shadow: var(--ds-shadow-lg); }
+.ds-companion-launch:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px; }
+
+/* expanded panel */
+.ds-companion {
+  display: flex;
+  flex-direction: column;
+  width: min(86vw, 340px);
+  height: min(70vh, 440px);
+  border-radius: var(--ds-radius-lg);
+  overflow: hidden;
+}
+.ds-companion__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-2) var(--ds-space-3);
+  border-bottom: 1px solid var(--ds-border-hairline);
+}
+.ds-companion__spark { display: inline-flex; color: var(--ds-accent); flex: 0 0 auto; }
+.ds-companion__title { font-size: var(--ds-text-sm); font-weight: var(--ds-weight-semibold); color: var(--ds-text-primary); }
+.ds-companion__ctx {
+  margin-left: auto;
+  max-width: 150px;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  color: var(--ds-text-tertiary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: right;    /* keep the run/node tail visible */
+}
+.ds-companion__min {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; flex: 0 0 auto;
+  border: none; background: transparent; color: var(--ds-text-tertiary);
+  border-radius: var(--ds-radius-sm); cursor: pointer;
+}
+.ds-companion__min:hover { background: var(--ds-bg-hover); color: var(--ds-text-primary); }
+
+.ds-companion__log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-3);
+}
+.ds-companion__empty {
+  margin: auto;
+  display: flex; flex-direction: column; gap: var(--ds-space-1);
+  text-align: center;
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-tertiary);
+}
+.ds-companion__soon { font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); color: var(--ds-text-accent); }
+.ds-companion__msg {
+  max-width: 88%;
+  padding: var(--ds-space-2) var(--ds-space-3);
+  border-radius: var(--ds-radius-md);
+  font-size: var(--ds-text-sm);
+  line-height: var(--ds-leading-snug);
+}
+.ds-companion__msg--you { align-self: flex-end; background: var(--ds-accent-subtle); color: var(--ds-text-primary); }
+.ds-companion__msg--system { align-self: flex-start; background: var(--ds-bg-sunken); color: var(--ds-text-secondary); font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); }
+
+.ds-companion__composer {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-2);
+  border-top: 1px solid var(--ds-border-hairline);
+}
+.ds-companion__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--ds-space-2);
+  border: 1px solid var(--ds-border-hairline);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-bg-surface);
+  font-family: var(--ds-font-sans);
+  font-size: var(--ds-text-sm);
+  color: var(--ds-text-primary);
+}
+.ds-companion__input:focus-visible { outline: none; border-color: var(--ds-accent); box-shadow: 0 0 0 2px var(--ds-accent-ring); }
+.ds-companion__send {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: 0 0 auto;
+  border: none; border-radius: var(--ds-radius-md);
+  background: var(--ds-accent); color: var(--ds-text-inverse);
+  cursor: pointer;
+}
+.ds-companion__send:disabled { opacity: 0.4; cursor: not-allowed; }
