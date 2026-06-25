@@ -536,6 +536,16 @@ interface RunContext {
    * once (and a node's retries share the lane's single slot — the wrap is OUTSIDE the retry loop).
    */
   limiter: Limiter;
+  /**
+   * COLLECT MUTEX — a one-slot FIFO limiter that SERIALIZES the per-node output collection (`downloadDir`)
+   * across a parallel stage. The exec runs concurrently (the expensive part), but every lane copies its
+   * sandbox output dir back into the SHARED host run dir ONE-AT-A-TIME. WHY: two parallel nodes whose
+   * artifacts land under a common subdir (e.g. both write `shared/*`) race in the recursive copy on
+   * creating that common dir — one `fs.cp` throws EEXIST and (pre-fix) the error was swallowed, silently
+   * dropping that node's file → a MISLEADING "required artifact missing". Serializing collect removes the
+   * overlap entirely. (Separate from `limiter`, the G2 exec cap, which gates the `pi` spawns, not collect.)
+   */
+  collectMutex: Limiter;
   /** OPT-IN run-wide total-node ceiling (undefined ⇒ no cap); exceeding it HALTS via a synthetic record. */
   maxNodesPerRun?: number;
   /** Count of nodes that have ACQUIRED a slot this run (incremented once per node at admission) — for `maxNodesPerRun`. */
@@ -918,10 +928,28 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     // COLLECT: copy the node's sandbox output dir back to the host run dir. The convention (proven in
     // the test): a node writes each artifact at `<output>/<artifactPath>`, so downloadDir flattens
     // `<output>/*` onto `<hostRunDir>/*` and the artifact path IS the host-run-dir-relative path.
+    //
+    // CONCURRENCY CONTRACT: collection is SERIALIZED across the stage via `ctx.collectMutex` (a one-slot
+    // FIFO). Every parallel lane copies into the SAME shared host run dir, and two recursive copies that
+    // both create a common destination subdir (e.g. siblings under `shared/`) race → one `fs.cp` throws
+    // EEXIST. The mutex removes the overlap so neither collides; the costly exec already ran concurrently
+    // OUTSIDE this gate. (fusion keeps its disjoint-top-level-dir workaround, cb16658 — this is the
+    // general safety net underneath it.)
+    //
+    // ERROR CONTRACT: a collection failure is RECORDED, never swallowed. ENOENT (the source output dir
+    // genuinely does not exist ⇒ the node produced nothing) is a LEGITIMATE quiet no-op — the artifact
+    // gate below marks it blocked on its own. ANY OTHER error (EEXIST race, ENOSPC, EACCES, …) is a REAL
+    // collection failure captured into `collectError` and surfaced on the node's `issues` in the verdict
+    // block below — so a blocked node EXPLAINS that its file was lost in collection, not merely "missing".
+    let collectError: string | null = null;
     if (killed === null && result.code === 0) {
       try {
-        await sandbox.downloadDir(node.sandbox.output, ctx.outDir);
-      } catch { /* nothing produced — verification below will mark blocked */ }
+        await ctx.collectMutex(() => sandbox.downloadDir(node.sandbox.output, ctx.outDir));
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        if (err?.code !== 'ENOENT') collectError = `output collection failed: ${err?.message ?? String(e)}`;
+        // ENOENT ⇒ nothing produced — stay quiet; the artifact gate below marks it blocked.
+      }
     }
 
     // DERIVE ops (project → registryProject → merge), the mechanical "derive an output from frozen
@@ -1033,7 +1061,13 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
       else issues.push(`nonzero exit ${result.code}`);
     } else if (missing.length) {
       st = 'blocked';
-      issues.push(`contract breach — required artifact(s) missing: ${missing.join(', ')}`);
+      // If collection FAILED (not a quiet ENOENT), say so HERE — the lost copy is the REAL cause of the
+      // "missing" artifact (the swallowed-EEXIST footgun), not a model that produced nothing.
+      issues.push(
+        collectError
+          ? `${collectError} → required artifact(s) missing: ${missing.join(', ')}`
+          : `contract breach — required artifact(s) missing: ${missing.join(', ')}`,
+      );
     } else if (schema.invalid.length) {
       st = 'blocked';
       issues.push(`contract breach — artifact(s) violate the declared schema: ${schema.invalid.map((x) => `${x.path} [${x.errors.join('; ')}]`).join(' | ')}`);
@@ -1051,6 +1085,9 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     } else {
       st = 'ok';
     }
+    // A collection failure that did NOT already mask a missing artifact (the branch above) is still
+    // recorded — never let a real `downloadDir` error vanish (it may have dropped a non-required file).
+    if (collectError && !missing.length) issues.push(collectError);
     if (warningChecks.length) issues.push(`integrity warn — ${warningChecks.map((c) => `${c.kind} ${c.path || ''}: ${c.reason}`).join(' | ')}`);
     if (schema.skipped) issues.push(`schema gate skipped — ${schema.skipped}`);
     if (parsed?.issues?.length) issues.push(...parsed.issues);
@@ -1330,6 +1367,9 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     promotesByNode: new Map(),
     // The G2 concurrency cap: ONE global limiter, normalized (default 8, clamped [1,16], 0/NaN→1).
     limiter: createLimiter(normalizeConcurrent(opts.maxConcurrent)),
+    // The collect mutex: ONE serial (1-slot) limiter per run, so the per-node `downloadDir` back into the
+    // SHARED host run dir never overlaps (concurrent recursive copies into a common subdir race → EEXIST).
+    collectMutex: createLimiter(1),
     maxNodesPerRun: opts.maxNodesPerRun,
     spawnedNodes: { n: 0 },
     // G4 journal meta (runId/source). `envHash` is filled by `seedFromJournal` at run-start, then read

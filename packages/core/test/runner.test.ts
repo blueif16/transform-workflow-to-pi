@@ -142,6 +142,97 @@ describe('runWorkflow — end-to-end on InMemorySandboxProvider (no live pi)', (
   });
 });
 
+// ── 1b. concurrent collect into a SHARED dest subtree (the swallowed-EEXIST footgun) ───────────────
+//   Two parallel nodes whose outputs land under a SHARED subdir (shared/a.txt, shared/b.txt) race in
+//   the per-node `downloadDir` recursive copy on creating the common `shared/` dir; one copy throws
+//   EEXIST. Pre-fix that error was swallowed → the file never landed → a MISLEADING "required artifact
+//   missing" though the command exited 0. The fix serializes the runner's collect step (a collect
+//   mutex) so the two copies never overlap. See fix(core) commit + fusion's disjoint-dir workaround.
+
+describe('runWorkflow — concurrent collect into a shared dest subtree (parallel-safe collection)', () => {
+  /**
+   * A provider whose `downloadDir` DETERMINISTICALLY reproduces the production race: a timeout-barrier
+   * makes two lanes that enter `downloadDir` within a short window perform their recursive copies
+   * SIMULTANEOUSLY (so the shared-subdir `mkdir` collides → EEXIST, exactly as `fs.cp` does in prod).
+   * A lone lane (the runner serialized the collect) waits out the tiny timeout, then copies cleanly —
+   * the barrier NEVER deadlocks under serialization (it is timeout-bounded, not a 2-party hard barrier).
+   * This pins the runner's CONTRACT (collect is serialized), not an `fs.cp` timing accident.
+   */
+  function collidingProvider(windowMs = 50) {
+    const base = new InMemorySandboxProvider();
+    let parked: (() => void) | null = null; // a lane currently waiting at the barrier
+    const rendezvous = async (): Promise<void> => {
+      if (parked) { parked(); parked = null; return; } // a partner is here → release BOTH to copy together
+      await new Promise<void>((resolve) => {
+        parked = resolve;
+        setTimeout(() => { if (parked === resolve) { parked = null; resolve(); } }, windowMs);
+      });
+    };
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        const orig = sb.downloadDir.bind(sb);
+        sb.downloadDir = async (remote: string, local: string): Promise<void> => {
+          await rendezvous();        // two concurrent collects copy at the SAME instant (the prod race)
+          return orig(remote, local); // the REAL recursive fs.cp — collides iff overlapped
+        };
+        return sb;
+      },
+    };
+    return provider;
+  }
+
+  it('does NOT lose a file when two PARALLEL nodes collect into a SHARED subdir (both survive, both ok)', async () => {
+    // A and B have no deps → ONE parallel stage; each writes a DISTINCT artifact under shared/.
+    const g = compile(wf([n('A', [], ['shared/a.txt']), n('B', [], ['shared/b.txt'])]));
+    expect(g.stages[0]).toMatchObject({ parallel: true, nodeIds: ['a', 'b'] });
+    const outDir = await tmpOut();
+
+    const { status } = await runWorkflow(g, {
+      run: 'collide', outDir, provider: collidingProvider(), buildCommand: stubBuilder(),
+    });
+
+    // BOTH nodes finish ok — pre-fix, the lane whose copy lost the EEXIST race was marked a MISLEADING
+    // 'blocked' ("required artifact missing") though its stub command exited 0.
+    expect(status.nodes.a.status).toBe('ok');
+    expect(status.nodes.b.status).toBe('ok');
+    // …and BOTH files physically survive in the run root (the file the swallowed copy used to drop).
+    expect(await fs.readFile(path.join(outDir, 'shared', 'a.txt'), 'utf8')).toBe('a');
+    expect(await fs.readFile(path.join(outDir, 'shared', 'b.txt'), 'utf8')).toBe('b');
+    expect(status.ok).toBe(true);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('SURFACES a genuine collection failure on the node status (issues), never swallows it silently', async () => {
+    // A provider whose downloadDir throws a REAL fs failure (not an absent dir) for one node.
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        const sb = await base.create(opts);
+        sb.downloadDir = async (): Promise<void> => {
+          throw new Error('ENOSPC: simulated disk-full during collect');
+        };
+        return sb;
+      },
+    };
+    const g = compile(wf([n('Solo', [], ['out.txt'])]));
+    const outDir = await tmpOut();
+
+    const { status } = await runWorkflow(g, { run: 'collect-err', outDir, provider, buildCommand: stubBuilder() });
+
+    // The node exited 0 but its artifact never landed → blocked. The blocked reason MUST carry the real
+    // collection-failure text (pre-fix the bare `catch {}` discarded it → an undiagnosable 'missing').
+    expect(status.nodes.solo.status).toBe('blocked');
+    expect(status.nodes.solo.issues.join(' ')).toMatch(/collect|ENOSPC|disk-full/i);
+    expect(status.ok).toBe(false);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
 // ── 2. halt-on-failure ──────────────────────────────────────────────────────────────────────────
 
 describe('runWorkflow — halt-on-failure', () => {
