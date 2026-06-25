@@ -50,7 +50,7 @@ import { ModeBar } from "./ModeBar";
 import { Companion } from "./Companion";
 import { ExpandContext } from "./ExpandContext";
 import { ViewModeContext, type ViewMode } from "./ViewModeContext";
-import { loadRunView, loadRunTree, toFlowGraph, buildDirectory } from "../data/runView";
+import { loadRunView, loadRunTree, toFlowGraph, buildDirectory, loadAgentCatalog } from "../data/runView";
 import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
 import { useRunStream, RunStreamContext } from "../data/runStream";
 
@@ -110,10 +110,10 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       try {
-        const view = await loadRunView(activeRun);
+        const [view, agents] = await Promise.all([loadRunView(activeRun), loadAgentCatalog()]);
         if (!alive) return;
         setLoadError(null);
-        const { nodes: n, edges: e } = toFlowGraph(view);
+        const { nodes: n, edges: e } = toFlowGraph(view, agents); // (G6) resolve preset icons by agentType
         setNodes(n);
         setEdges(e);
         // The navigator shows the run's FULL on-disk tree (rooted at {{RUN}}); `fileToNode` still comes

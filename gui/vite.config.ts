@@ -388,7 +388,42 @@ function piflowCheckpointReply(): Plugin {
   };
 }
 
+/**
+ * (G6) AGENT-PRESET catalog — `GET /__piflow/agents.json` returns `{ [id]: { label, icon, color } }` read
+ * from the GLOBAL catalog `~/.piflow/agents/*.md` via the SHARED core parser (`@piflow/core`
+ * `loadAgentPreset` — NOT a GUI-local copy, same boundary rule as the run-view). The GUI keys a node's
+ * preset icon off `RunViewNode.agentType` → this map; the node carries only the label string, the display
+ * lives here (decision #3). No preset data is committed into the repo. Absent catalog ⇒ `{}` (the node
+ * renders the default chip — the icon is cosmetic and never blocks a view).
+ */
+function piflowAgents(): Plugin {
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    if (!req.url?.match(/^\/__piflow\/agents\.json(?:\?.*)?$/)) return next();
+    const mod = findUp("packages/core/dist/workflow/agent-preset.js");
+    if (!mod) return sendJson(res, 500, { error: "@piflow/core agent-preset dist not found — run: npm run build (at repo root)" });
+    try {
+      const { defaultAgentsDir, loadAgentPreset } = await import(pathToFileURL(mod).href);
+      const dir = defaultAgentsDir();
+      const catalog: Record<string, { label?: string; icon?: string; color?: string }> = {};
+      let files: string[] = [];
+      try { files = (await readdir(dir)).filter((f) => f.endsWith(".md")); } catch { /* no catalog yet ⇒ {} */ }
+      for (const f of files) {
+        const preset = loadAgentPreset(f.slice(0, -3), dir);
+        if (preset) catalog[preset.id] = preset.display ?? {};
+      }
+      sendJson(res, 200, catalog);
+    } catch (e) {
+      sendJson(res, 500, { error: `agents catalog build failed (${String(e)})` });
+    }
+  };
+  return {
+    name: "piflow-agents",
+    configureServer(server) { server.middlewares.use(handler); },
+    configurePreviewServer(server) { server.middlewares.use(handler); },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowFile(), piflowTree(), piflowCheckpointReply()],
+  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowFile(), piflowTree(), piflowCheckpointReply(), piflowAgents()],
   server: { port: 5173, host: true },
 });

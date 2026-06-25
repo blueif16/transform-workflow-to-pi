@@ -20,6 +20,8 @@ export interface RunViewNode {
   id: string;
   label: string;
   phase: string | null;
+  /** (G6) the agent-PRESET label (branding) — resolved to {icon,color,label} via the agents catalog. */
+  agentType?: string;
   status: string; // ok | reused | error | blocked | running | pending | gap | dry
   startedAt?: string;
   endedAt?: string;
@@ -83,6 +85,23 @@ export async function loadRunView(run: string): Promise<RunView> {
   const res = await fetch(`/__piflow/run-view/${encodeURIComponent(run)}`);
   if (!res.ok) throw new Error(`Failed to load run-view for "${run}": ${res.status} ${res.statusText}`);
   return (await res.json()) as RunView;
+}
+
+/** (G6) A preset's branding, as the catalog endpoint returns it (the node carries only `agentType`). */
+export interface AgentDisplay { label?: string; icon?: string; color?: string; }
+/** agentType id → its display branding, from `~/.piflow/agents/` via `/__piflow/agents.json`. */
+export type AgentCatalog = Record<string, AgentDisplay>;
+
+/** Fetch the agent-preset catalog (id → {icon,label,color}) from the dev middleware. The display lives in
+ *  `~/.piflow/agents/`, never on the node (decision #3). Absent/unreachable ⇒ {} (nodes render default chips). */
+export async function loadAgentCatalog(): Promise<AgentCatalog> {
+  try {
+    const res = await fetch("/__piflow/agents.json");
+    if (!res.ok) return {};
+    return (await res.json()) as AgentCatalog;
+  } catch {
+    return {};
+  }
 }
 
 /** Fetch the run's FULL on-disk file tree rooted at its `{{RUN}}` folder (the dev middleware
@@ -163,17 +182,23 @@ export function contextTone(frac: number): ContextTone {
 
 const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-/** Build the React Flow graph (positions by stage column / parallel-lane row) from a run-view. */
-export function toFlowGraph(view: RunView): { nodes: FlowNode[]; edges: Edge[] } {
+/** Build the React Flow graph (positions by stage column / parallel-lane row) from a run-view. The optional
+ *  agent-preset `catalog` resolves a node's `agentType` → its branded icon/color/label (G6); absent ⇒ the
+ *  node renders the default chip. */
+export function toFlowGraph(view: RunView, catalog: AgentCatalog = {}): { nodes: FlowNode[]; edges: Edge[] } {
   const COL = 300;
   const ROW = 132;
   const nodes: FlowNode[] = view.nodes.map((rv) => {
     const stageIndex = rv.stageIndex ?? 1;
     const lane = rv.lane ?? 0;
+    const preset = rv.agentType ? catalog[rv.agentType] : undefined;
     const data: FlowNodeData = {
       title: rv.label,
       kind: "agent",
       typeLabel: rv.phase ?? "node",
+      // (G6) the preset's branding, resolved from the catalog by the node's agentType label. The icon is
+      // a KEY the chip maps to a bundled glyph; absent/unknown ⇒ the default agent glyph (never blocks).
+      ...(preset ? { agentIcon: preset.icon, agentColor: preset.color, agentLabel: preset.label ?? rv.agentType } : {}),
       status: toNodeStatus(rv.status),
       preview: rv.summary ? truncate(rv.summary, 84) : `${rv.toolCalls} tools · ${rv.reads.length} reads`,
       progress: rv.status === "running" ? undefined : 1,

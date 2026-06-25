@@ -79,6 +79,12 @@ export type FlowNodeData = {
   /** The full real run-view payload for this node — the HUD's source of truth (model, tools,
    *  scope-bucketed reads, timeline, writes, artifacts). Present for data-driven nodes. */
   rv?: RunViewNode;
+  /** (G6) agent-PRESET branding, resolved from the catalog by the node's `agentType` (runView.toFlowGraph).
+   *  `agentIcon` is a KEY → a bundled glyph; `agentColor` tints the chip's icon; `agentLabel` is the
+   *  human label. Absent ⇒ the node renders its default agent/file glyph. */
+  agentIcon?: string;
+  agentColor?: string;
+  agentLabel?: string;
 };
 
 export type FlowNode = Node<FlowNodeData, "flowNode">;
@@ -101,11 +107,49 @@ function KindIcon({ kind }: { kind: FlowNodeData["kind"] }) {
   );
 }
 
+/** (G6) Agent-PRESET glyphs, keyed by the `icon` string a preset declares (display.icon). A preset's icon
+ *  is its headline — the pre-customized mark that makes a node feel purpose-built. An unknown key falls back
+ *  to the default agent glyph, so a missing/new icon never breaks the chip (the icon is cosmetic). */
+function AgentPresetIcon({ icon }: { icon?: string }) {
+  switch (icon) {
+    case "chart-trend": // market-research — an upward trend line
+      return (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2 12.5h12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          <path d="M3 10l3-3 2.5 2L13 4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M10.5 4H13v2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "file-search": // paper-analyzer — a document with a magnifier
+      return (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 2h5l3 3v4" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+          <path d="M4 2v12h4" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+          <circle cx="10.5" cy="11" r="2.3" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M12.2 12.7L14 14.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+      );
+    case "messages": // interview — two speech bubbles
+      return (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2 4.5A1.5 1.5 0 013.5 3h6A1.5 1.5 0 0111 4.5v3A1.5 1.5 0 019.5 9H6L3.5 11V9A1.5 1.5 0 012 7.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+          <path d="M13 6.5h.5A1.5 1.5 0 0115 8v3a1.5 1.5 0 01-1.5 1.5H13L10.5 14v-2" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+        </svg>
+      );
+    default: // unknown / no icon key → the default agent glyph
+      return <KindIcon kind="agent" />;
+  }
+}
+
 export function WorkflowNode({ id, data, selected }: NodeProps<FlowNode>) {
   const { expand } = useExpand();
   const { mode } = useViewMode();
   const status: NodeStatus = data.status ?? (selected ? "selected" : "idle");
-  const accentColor = data.kind === "agent" ? "var(--ds-node-agent)" : "var(--ds-node-file)";
+  // (G6) a preset node leads with its branded icon, tinted by the preset's color; otherwise the default
+  // agent/file accent. The icon is purely cosmetic — it never changes status, layout, or behavior.
+  const accentColor = data.agentIcon
+    ? (data.agentColor ?? "var(--ds-node-agent)")
+    : data.kind === "agent" ? "var(--ds-node-agent)" : "var(--ds-node-file)";
   // show the charge bar while running, or whenever a node carries a progress value
   const showProgress = data.progress != null || status === "running";
 
@@ -130,11 +174,11 @@ export function WorkflowNode({ id, data, selected }: NodeProps<FlowNode>) {
 
       <div className="ds-node__header">
         <span style={{ color: accentColor, display: "inline-flex" }}>
-          <KindIcon kind={data.kind} />
+          {data.agentIcon ? <AgentPresetIcon icon={data.agentIcon} /> : <KindIcon kind={data.kind} />}
         </span>
         <span className="ds-node__title">{data.title}</span>
         <span className="ds-node__type" style={{ marginLeft: "auto" }}>
-          {data.typeLabel}
+          {data.agentLabel ?? data.typeLabel}
         </span>
       </div>
 
