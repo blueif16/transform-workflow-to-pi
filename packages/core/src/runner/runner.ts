@@ -56,6 +56,17 @@ import {
   writeStatus,
   artifactState,
 } from './status.js';
+import {
+  type Journal,
+  type NodeDecision,
+  envelopeHash,
+  inputFilesOf,
+  decideResume,
+  descendantsMap,
+  hashFile,
+  loadJournal,
+  writeJournalEntry,
+} from './journal.js';
 
 /** How the runner spawns the agent command — the kill-seam-bearing exec primitive (injectable). */
 export interface ExecRunner {
@@ -157,6 +168,14 @@ export interface RunOptions {
   from?: string;
   /** Resume window: run up to the last stage whose phase/label/id contains this (inclusive). */
   until?: string;
+  /**
+   * G4 resume: when a `${RUN}/.pi/journal.json` from a prior run exists, the DEFAULT (omit / false) is
+   * to consult it — a node whose envelope hash AND every consumed-input content hash match the journal
+   * is REUSED; a changed node + all its DAG descendants RE-RUN. `--from/--until` layer ON TOP as a
+   * manual override (force-reuse a prefix / stop early). Set `noResume:true` to IGNORE the journal and
+   * re-run every selected node (a forced full re-run). A fresh run (no journal) is unaffected either way.
+   */
+  noResume?: boolean;
   /**
    * Active run PROFILE name — resolved against the WorkflowSpec's declared `profiles` BEFORE compile to
    * elide a subset of nodes (deps rewired transitively). The elision happens at the spec-compile sites
@@ -439,6 +458,13 @@ interface RunContext {
   maxNodesPerRun?: number;
   /** Count of nodes that have ACQUIRED a slot this run (incremented once per node at admission) — for `maxNodesPerRun`. */
   spawnedNodes: { n: number };
+  /**
+   * G4 journal context — present whenever journaling is active (always, today). `meta` keys the
+   * journal doc (runId/source); `envHash` is each node's envelope hash, computed ONCE at run-start (the
+   * SAME hash `decideResume` consulted) so `finishNode` records the identity the next resume compares
+   * against — never re-derived divergently. A node that RAN to a good verdict writes its entry here.
+   */
+  journal: { meta: { runId: string; source: string }; envHash: Record<string, string> };
 }
 
 /** Read a host-side input file as bytes (for staging a downstream node's reads). */
@@ -874,6 +900,32 @@ async function finishNode(
   // before its lane resolves, so the halt decision + final rollup never race an in-flight write. The
   // write is serialized + atomic (see writeStatus), so awaiting here cannot deadlock parallel lanes.
   await writeStatus(ctx.outDir, ctx.status);
+
+  // G4 JOURNAL — write this node's entry ONLY on a terminal-GOOD verdict (`ok`). A `running`/`error`/
+  // `blocked`/`gap` node writes NOTHING, so a crash mid-exec leaves the prior (or absent) entry and the
+  // next resume sees "no/stale entry" → re-runs. Record: the envelope hash (computed once at run-start),
+  // each CONSUMED input file's content hash, and each PRODUCED artifact's content hash (post-verify, so a
+  // half-produced output is never recorded). Atomic tmp+rename + .bak, serialized per dir (see journal.ts).
+  if (status === 'ok') {
+    const inputHashes: Record<string, string> = {};
+    for (const f of inputFilesOf(node, ctx.wf)) {
+      const h = await hashFile(path.resolve(ctx.outDir, f));
+      if (h) inputHashes[f] = h;
+    }
+    const outputHashes: Record<string, string> = {};
+    for (const a of artifacts) {
+      if (!a.exists) continue;
+      const h = await hashFile(path.resolve(ctx.outDir, a.path));
+      if (h) outputHashes[a.path] = h;
+    }
+    await writeJournalEntry(ctx.outDir, ctx.journal.meta, node.id, {
+      hash: ctx.journal.envHash[node.id] ?? envelopeHash(node, { piTools: [] }, ctx.model),
+      inputHashes,
+      outputHashes,
+      status: 'ok',
+      producedAt: nowISO(),
+    });
+  }
   return rec;
 }
 
@@ -912,6 +964,101 @@ async function openRunScope(provider: SandboxProvider, opts: OpenRunOpts): Promi
     create: (createOpts) => provider.create(createOpts),
     dispose: async () => { /* no shared resource — per-node dispose is the only teardown */ },
   };
+}
+
+// ── G4 resume: envelope-hash resolution + the journal-vs-window seed decision ──────────────────────
+
+/**
+ * Compute every node's envelope hash at run-start — the SAME identity `finishNode` will journal and the
+ * NEXT resume will compare against. We resolve the node's tools (the resolved `piTools`/`extension`
+ * surface) and REALIZE its prompt the SAME way the runner stages it (token resolution + the contract
+ * marker tail), so a prompt edit, a `{{arg}}`/`{{state}}` value change, OR a tool change flips the hash.
+ *
+ * Resilient by design: a node whose tools fail to resolve, or whose prompt has an unresolvable token at
+ * run-start (e.g. a `{{state.*}}` an upstream hasn't promoted yet on a FRESH run), falls back to the raw
+ * authored prompt / empty tool surface — that node has no journal entry on a fresh run anyway (so it
+ * RUNs), and on a resume its upstream state is already persisted (so the token resolves). Never throws.
+ */
+function envelopeHashOf(ctx: RunContext, node: NodeSpec): string {
+  let resolved: ResolveResult | { piTools: string[] };
+  try {
+    resolved = ctx.registry.resolve(node.tools);
+  } catch {
+    resolved = { piTools: [] };
+  }
+  const resolveCtx: ResolveCtx = { run: ctx.outDir, workspace: ctx.workspace, state: ctx.runState, args: ctx.args };
+  let realizedPrompt = node.prompt;
+  try {
+    const body = resolveTokens(node.prompt, resolveCtx);
+    const markers = emitMarkers(markersFromNode(node, resolved as ResolveResult));
+    realizedPrompt = body + (markers ? `\n\n${markers}` : '');
+  } catch {
+    /* keep the authored prompt — see the resilience note above */
+  }
+  // Hash a node clone carrying the REALIZED prompt (envelopeHash reads node.prompt).
+  return envelopeHash({ ...node, prompt: realizedPrompt }, resolved as ResolveResult, ctx.model);
+}
+
+/**
+ * The JOURNAL decision per node (§4c), layered with the `--from/--until` window (§4e). Returns each
+ * node's seeded status: `reused` (skip — provably unchanged or pinned by `--from`) vs `pending` (run).
+ *
+ * Precedence (§4e):
+ *  1. JOURNAL: a node `decideResume` marked REUSE is `reused`; RUN is `pending`. (`noResume` ⇒ every
+ *     selected node RUNs.)
+ *  2. `--from`: every node in a stage `< fromIdx` is FORCED `reused` (manual stale-prefix pin), even if
+ *     the journal said RUN.
+ *  3. `--until`: every node in a stage `> untilIdx` is left OUT of `selected` (a partial run) by the
+ *     caller's slice — handled by the existing window math, not here.
+ *  4. SAFETY: a node FORCED `reused` (by `--from` or the journal) whose declared artifacts are MISSING
+ *     on disk flips back to `pending` (re-run) — strictly safer than a hard HALT (handled at the
+ *     preflight site, not here).
+ */
+async function seedFromJournal(
+  ctx: RunContext,
+  journal: Journal | null,
+  fromIdx: number,
+  noResume: boolean,
+): Promise<{ decisions: Map<string, NodeDecision>; reused: Set<string> }> {
+  const wf = ctx.wf;
+  // Compute every node's envelope hash (the SAME identity finishNode journals), recorded on ctx so the
+  // run records the value the next resume compares against.
+  const envHash: Record<string, string> = {};
+  for (const id of Object.keys(wf.nodes)) envHash[id] = envelopeHashOf(ctx, wf.nodes[id]);
+  ctx.journal.envHash = envHash;
+
+  let decisions: Map<string, NodeDecision>;
+  if (noResume || !journal) {
+    // No journal (fresh run) or forced full re-run ⇒ every node RUNs.
+    decisions = new Map(
+      Object.keys(wf.nodes).map((id) => [id, { decision: 'RUN' as const, reason: noResume ? 'noResume' : 'no journal' }]),
+    );
+  } else {
+    // Hash each node's CURRENT consumed-file bytes off the host run dir (content hash, the §2b fix — a
+    // same-mtime hand-edit IS caught). An absent input is omitted (decideResume treats a journal-recorded
+    // file now-missing as a miss → re-run).
+    const inputHash: Record<string, Record<string, string>> = {};
+    for (const id of Object.keys(wf.nodes)) {
+      const map: Record<string, string> = {};
+      for (const f of inputFilesOf(wf.nodes[id], wf)) {
+        const h = await hashFile(path.resolve(ctx.outDir, f));
+        if (h) map[f] = h;
+      }
+      inputHash[id] = map;
+    }
+    decisions = decideResume(wf, journal, { envHash, inputHash });
+  }
+
+  // `--from` pin: every node in a stage strictly before fromIdx is FORCED reused (manual override).
+  const pinned = new Set<string>();
+  if (fromIdx > 0) for (const s of wf.stages.slice(0, fromIdx)) for (const id of s.nodeIds) pinned.add(id);
+
+  const reused = new Set<string>();
+  for (const id of Object.keys(wf.nodes)) {
+    const run = decisions.get(id)?.decision === 'RUN';
+    if (pinned.has(id) || !run) reused.add(id);
+  }
+  return { decisions, reused };
 }
 
 // ── the run loop ─────────────────────────────────────────────────────────────────────────────────
@@ -955,6 +1102,9 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     limiter: createLimiter(normalizeConcurrent(opts.maxConcurrent)),
     maxNodesPerRun: opts.maxNodesPerRun,
     spawnedNodes: { n: 0 },
+    // G4 journal meta (runId/source). `envHash` is filled by `seedFromJournal` at run-start, then read
+    // by `finishNode` to record the SAME identity the resume decision consulted.
+    journal: { meta: { runId: run, source: wf.meta.name }, envHash: {} },
     watchdog: {
       nodeTimeoutMs: opts.nodeTimeoutMs ?? 1_800_000,
       stallMs: opts.stallMs ?? 0,
@@ -988,7 +1138,17 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
   const skipped = wf.stages.slice(0, fromIdx);
   const selected = wf.stages.slice(fromIdx, untilIdx + 1);
 
-  // Seed the digest: skipped upstream → `reused`, the selected window → `pending`.
+  // G4 JOURNAL DECISION (§4c) layered with the `--from` window (§4e): load the prior run's journal and
+  // decide, per node, REUSE (provably unchanged — envelope + every consumed-input content hash match the
+  // journal) vs RUN (changed, or a DAG descendant of a changed node). `--from` force-reuses the prefix;
+  // `noResume` ignores the journal (full re-run). A fresh run (no journal) ⇒ every node RUNs.
+  const journal = await loadJournal(outDir);
+  const { reused: reusedSet } = await seedFromJournal(ctx, journal, fromIdx, opts.noResume ?? false);
+
+  // Seed the digest. A node in a `--from`-skipped stage is `reused`. WITHIN the selected window, the
+  // journal decides each node: `reused` (skip exec) vs `pending` (run). The run loop below skips any
+  // `reused` lane, so a later-stage node the journal proved unchanged is reused even if an earlier stage
+  // re-ran — the topological taint already forced every TRUE descendant to `pending`.
   const seed = (stage: Stage, status: NodeStatusRecord['status']): void => {
     for (const id of stage.nodeIds) {
       const n = wf.nodes[id];
@@ -996,7 +1156,13 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     }
   };
   for (const s of skipped) seed(s, 'reused');
-  for (const s of selected) seed(s, 'pending');
+  for (const s of selected) {
+    for (const id of s.nodeIds) {
+      const n = wf.nodes[id];
+      const status: NodeStatusRecord['status'] = reusedSet.has(id) ? 'reused' : 'pending';
+      ctx.status.nodes[id] = { id, label: n.label, status, artifacts: [], issues: [] };
+    }
+  }
   await writeStatus(outDir, ctx.status);
 
   // Persist the RESOLVED DAG (the profile already applied — elided nodes dropped, deps rewired) into the
@@ -1008,9 +1174,11 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     JSON.stringify({ meta: wf.meta, profile: opts.profile ?? null, stages: wf.stages, edges: wf.edges }, null, 2) + '\n',
   );
 
-  // RESUME PREFLIGHT (run.mjs 1282–1305): the skipped upstream nodes were NOT re-run, so their
-  // declared artifacts MUST already exist on the host or the resumed tail runs on absent inputs. Stat
-  // them in plain code; HALT loudly on any miss. Also record the reused nodes' verified artifacts.
+  // RESUME PREFLIGHT (run.mjs 1282–1305) — for the `--from` MANUAL OVERRIDE (fromIdx > 0): the
+  // `--from`-skipped upstream nodes were NOT re-run, so their declared artifacts MUST already exist on
+  // the host or the resumed tail runs on absent inputs. Stat them; HALT loudly on any miss (the
+  // documented `--from` contract — the human pinned the prefix, so a missing pinned artifact is a hard
+  // error). Also record the reused nodes' verified artifacts.
   if (fromIdx > 0) {
     const missing: string[] = [];
     for (const s of skipped) {
@@ -1035,6 +1203,34 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
       return { status: ctx.status, outDir };
     }
   }
+
+  // JOURNAL-REUSE SAFETY OVERRIDE (§4e.4): a node the JOURNAL marked `reused` WITHIN the selected window
+  // (not pinned by `--from`) whose declared artifacts are MISSING on disk flips back to `pending` — and
+  // so re-runs — instead of a hard HALT. Strictly safer than today's `__resume__` HALT: a reused node
+  // whose output was deleted simply regenerates. Its DAG descendants flip too (they would consume the
+  // regenerated output). Stat the verified artifacts onto the record either way.
+  const flipped = new Set<string>();
+  for (const s of selected) {
+    for (const id of s.nodeIds) {
+      if (ctx.status.nodes[id].status !== 'reused') continue;
+      const n = wf.nodes[id];
+      const states = await Promise.all(
+        n.io.artifacts.map((a) => artifactState(path.resolve(outDir, a.path), a.path)),
+      );
+      ctx.status.nodes[id].artifacts = states;
+      if (states.some((st) => !st.exists)) flipped.add(id);
+    }
+  }
+  if (flipped.size) {
+    const desc = descendantsMap(wf);
+    for (const id of flipped) {
+      for (const d of [id, ...(desc[id] ?? [])]) {
+        const rec = ctx.status.nodes[d];
+        if (rec && rec.status === 'reused') rec.status = 'pending';
+      }
+    }
+  }
+  await writeStatus(outDir, ctx.status);
 
   // Open the run scope AFTER the resume preflight (so a preflight bail never boots a VM / makes a
   // worktree). A provider with a shared per-run resource (worktree/cloud) sets it up here; a local
@@ -1072,6 +1268,11 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
       const results = await Promise.all(
         s.nodeIds.map((id) =>
           ctx.limiter(async () => {
+            // G4: a node the journal (or `--from`) decided to REUSE is SKIPPED — its seeded `reused`
+            // record (with stat-verified artifacts from the preflight) stands, it never spawns a `pi`,
+            // and it does NOT consume a concurrency slot or count against `maxNodesPerRun`. The
+            // safety override already flipped a reused-but-missing-artifact node back to `pending`.
+            if (ctx.status.nodes[id].status === 'reused') return ctx.status.nodes[id];
             if (ctx.maxNodesPerRun !== undefined && ctx.spawnedNodes.n >= ctx.maxNodesPerRun) {
               return cappedRecord(ctx, id);
             }

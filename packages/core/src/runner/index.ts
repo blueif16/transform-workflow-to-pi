@@ -26,6 +26,21 @@ export type {
   ArtifactState,
   RunTotals,
 } from './status.js';
+// G4 — content-hash journal/replay resume: the per-node envelope hash, the reuse decision, and the
+// atomic `.pi/journal.json` reader/writer. G5 (HITL checkpoint journaling) composes onto this.
+export {
+  envelopeHash,
+  inputFilesOf,
+  descendantsMap,
+  decideResume,
+  hashFile,
+  loadJournal,
+  writeJournalEntry,
+  journalFile,
+  journalBakFile,
+  JOURNAL_VERSION,
+} from './journal.js';
+export type { Journal, JournalNode, NodeDecision, Decision, ResumeInputs } from './journal.js';
 // Observability: per-node event capture (write side) + the docker-style logs reader (read side).
 export { NodeRecorder, recordingSandbox, slimEvent } from './events.js';
 export type { PiEvent, EventSink } from './events.js';

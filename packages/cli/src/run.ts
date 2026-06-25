@@ -89,6 +89,11 @@ export interface ParsedRunArgs {
   outDir?: string;
   from?: string;
   until?: string;
+  /**
+   * G4: force a FULL re-run, IGNORING the prior run's `.pi/journal.json` (the content-hash resume).
+   * Omit ⇒ the journal decides (reuse provably-unchanged nodes, re-run changed nodes + descendants).
+   */
+  noResume?: boolean;
   /** Active run PROFILE name → resolved against the template's declared `profiles` (elides nodes before compile). */
   profile?: string;
   args: Record<string, string>;
@@ -110,6 +115,7 @@ export function parseRunArgs(argv: string[]): ParsedRunArgs {
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--dry-run') out.dryRun = true;
+    else if (k === '--no-resume') out.noResume = true;
     else if (k === '--run' || k === '--id') out.run = argv[++i];
     else if (k === '--workspace') out.workspace = argv[++i];
     else if (k === '--out' || k === '--out-dir') out.outDir = argv[++i];
@@ -254,6 +260,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     args: parsed.args,
     from: parsed.from,
     until: parsed.until,
+    ...(parsed.noResume ? { noResume: true } : {}),
     profile: parsed.profile,
     providerName: parsed.provider,
     thinking: parsed.thinking,
