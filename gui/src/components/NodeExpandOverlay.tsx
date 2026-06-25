@@ -63,6 +63,13 @@ export function NodeExpandOverlay({ id, data, run, onClose }: NodeExpandOverlayP
               inset: 0,
               zIndex: "var(--ds-z-overlay)" as unknown as number,
               display: "grid",
+              // minmax(0,1fr) gives the single grid row a DEFINITE height tied to the
+              // fixed viewport. Without it the implicit row is `auto` (content-sized), so
+              // .ds-hud's `height:100%` resolves against content — the whole HUD grows with
+              // the center file content instead of bounding it, killing the scroll AND
+              // pushing the (vertically-centered) left/right panels. This is the anchor the
+              // entire HUD height chain depends on.
+              gridTemplateRows: "minmax(0, 1fr)",
               placeItems: "stretch",
               padding: "clamp(10px, 1.6vh, 18px)",
               pointerEvents: "none",

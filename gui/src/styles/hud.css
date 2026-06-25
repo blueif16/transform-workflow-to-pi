@@ -29,7 +29,11 @@
   outline: none;
 }
 .ds-hud__meta { grid-area: meta; align-self: start; justify-self: center; width: clamp(340px, 100%, 580px); display: grid; grid-template-columns: 1fr 1fr; gap: var(--ds-space-4); }
-.ds-hud__mid { grid-area: mid; align-self: stretch; position: relative; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; }
+/* CENTER cell: a HARD-BOUNDED box. flex-direction:column makes the child's max-height:100%
+   a MAIN-axis bound (resolves reliably against the cell's definite height) so the content
+   scrolls INSIDE the cell instead of growing it; overflow:hidden keeps every swap strictly
+   inside the middle column — it can never reflow the left/right panels. */
+.ds-hud__mid { grid-area: mid; align-self: stretch; position: relative; min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 /* LEFT input sources — no wrapper card; each source is its own small box, files clickable */
 .ds-hud__left { grid-area: left; align-self: center; display: flex; flex-direction: column; gap: var(--ds-space-3); max-height: 100%; overflow: auto; min-height: 0; }
 .ds-source { display: flex; flex-direction: column; }
@@ -146,7 +150,9 @@
 .ds-hud__ident-id { min-width: 0; margin-right: auto; }
 
 /* --- CENTER: at-rest overview (summary + real facts + issues), bare on the frost - */
-.ds-hud__overview { width: 100%; max-width: 580px; display: flex; flex-direction: column; gap: var(--ds-space-3); padding: var(--ds-space-2) var(--ds-space-4); }
+/* at-rest overview is bounded + scrolls (scrollbar hidden) so the cell's overflow:hidden never clips it */
+.ds-hud__overview { width: 100%; max-width: 580px; max-height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--ds-space-3); padding: var(--ds-space-2) var(--ds-space-4); scrollbar-width: none; -ms-overflow-style: none; }
+.ds-hud__overview::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .ds-hud__summary { margin: 0; font-size: var(--ds-text-sm); line-height: var(--ds-leading-relaxed); color: var(--ds-text-secondary); }
 .ds-hud__summary--muted { color: var(--ds-text-tertiary); font-style: italic; }
 .ds-hud__issues { display: flex; flex-direction: column; gap: var(--ds-space-2); }
