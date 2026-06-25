@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import fssync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createNodeAccumulator } from './distill.mjs';
+import { createNodeAccumulator } from '../lib/distill.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GUI = path.resolve(HERE, '..', '..');
