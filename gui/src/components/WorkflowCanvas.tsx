@@ -50,7 +50,7 @@ import { ModeBar } from "./ModeBar";
 import { Companion } from "./Companion";
 import { ExpandContext } from "./ExpandContext";
 import { ViewModeContext, type ViewMode } from "./ViewModeContext";
-import { loadRunView, toFlowGraph, buildDirectory } from "../data/runView";
+import { loadRunView, loadRunTree, toFlowGraph, buildDirectory } from "../data/runView";
 import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
 import { useRunStream, RunStreamContext } from "../data/runStream";
 
@@ -116,7 +116,14 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
         const { nodes: n, edges: e } = toFlowGraph(view);
         setNodes(n);
         setEdges(e);
-        setDir(buildDirectory(view));
+        // The navigator shows the run's FULL on-disk tree (rooted at {{RUN}}); `fileToNode` still comes
+        // from the run-view so clicking a produced file opens its node. Fall back to the produced-files
+        // tree if the fs endpoint is unavailable.
+        const { tree: producedTree, fileToNode } = buildDirectory(view);
+        let tree = producedTree;
+        try { const fsTree = await loadRunTree(activeRun); if (alive && fsTree.length) tree = fsTree; } catch { /* keep producedTree */ }
+        if (!alive) return;
+        setDir({ tree, fileToNode });
         if (!view.done) timer = setTimeout(load, 3000); // poll a live run for fresh status + telemetry
       } catch (err) {
         if (!alive) return;
@@ -206,7 +213,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
             <Panel position="top-left">
               <DirectoryPanel
                 tree={dir.tree}
-                title="Run output"
+                title="Run files"
                 onOpenFile={(entry) => {
                   // entry.id is `f:<displayPath>` — open the node that produced this file
                   const producer = dir.fileToNode[entry.id.slice(2)];

@@ -1,6 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { readFile, stat, realpath } from "node:fs/promises";
+import { readFile, readdir, stat, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, isAbsolute, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -274,7 +274,58 @@ function piflowFile(): Plugin {
   };
 }
 
+/**
+ * On-demand RUN FILE TREE — `GET /__piflow/tree/<run>` walks the run's `{{RUN}}` folder (= runDir) and
+ * returns the FULL on-disk file tree as DirEntry[] (`{id,name,kind,typeLabel?,children?}`), rooted at the
+ * run dir. Unlike the run-view's produced-files list, this is the real filesystem — every file the run
+ * holds, browsable in the top-left navigator. Internal/noise dirs (`.pi` telemetry, `node_modules`, `.git`)
+ * are skipped. File ids are `f:<run-relative path>` (folders `d:<…>`) so a leaf's id maps 1:1 onto the
+ * run-relative displayPath the run-view emits (→ click opens the producing node when there is one).
+ */
+function piflowTree(): Plugin {
+  const SKIP = new Set([".pi", "node_modules", ".git", ".DS_Store"]);
+  const MAX_ENTRIES = 5000;
+  const ext = (name: string) => { const i = name.lastIndexOf("."); return i > 0 ? name.slice(i + 1).toLowerCase() : undefined; };
+
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const m = req.url?.match(/^\/__piflow\/tree\/([^/?]+)/);
+    if (!m) return next();
+    const run = decodeURIComponent(m[1]);
+    const resolved = await resolveRunDir(run);
+    if (!resolved) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered?` });
+
+    let count = 0;
+    type Entry = { id: string; name: string; kind: "folder" | "file"; typeLabel?: string; children?: Entry[] };
+    const walk = async (absDir: string, rel: string, depth: number): Promise<Entry[]> => {
+      if (depth > 12 || count >= MAX_ENTRIES) return [];
+      let ents;
+      try { ents = await readdir(absDir, { withFileTypes: true }); } catch { return []; }
+      const dirs: Entry[] = [], files: Entry[] = [];
+      for (const e of ents.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (SKIP.has(e.name) || count >= MAX_ENTRIES) continue;
+        count += 1;
+        const childRel = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) dirs.push({ id: `d:${childRel}`, name: e.name, kind: "folder", children: await walk(join(absDir, e.name), childRel, depth + 1) });
+        else if (e.isFile()) files.push({ id: `f:${childRel}`, name: e.name, kind: "file", typeLabel: ext(e.name) });
+      }
+      return [...dirs, ...files]; // folders first, each already alpha-sorted
+    };
+
+    try {
+      const tree = await walk(resolved.runDir, "", 0);
+      sendJson(res, 200, { tree, truncated: count >= MAX_ENTRIES });
+    } catch (e) {
+      sendJson(res, 500, { error: `tree build failed for "${run}" (${String(e)})` });
+    }
+  };
+  return {
+    name: "piflow-tree",
+    configureServer(server) { server.middlewares.use(handler); },
+    configurePreviewServer(server) { server.middlewares.use(handler); },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowFile()],
+  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowFile(), piflowTree()],
   server: { port: 5173, host: true },
 });

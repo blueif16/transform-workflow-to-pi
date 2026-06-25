@@ -85,6 +85,17 @@ export async function loadRunView(run: string): Promise<RunView> {
   return (await res.json()) as RunView;
 }
 
+/** Fetch the run's FULL on-disk file tree rooted at its `{{RUN}}` folder (the dev middleware
+ *  `/__piflow/tree/<run>` walks runDir). This is the real filesystem — every file the run holds — not just
+ *  the produced-files set `buildDirectory` derives from the run-view. File leaf ids are `f:<run-relative>`,
+ *  which equals a produced file's run-relative displayPath, so the `fileToNode` map still maps clicks. */
+export async function loadRunTree(run: string): Promise<DirEntry[]> {
+  const res = await fetch(`/__piflow/tree/${encodeURIComponent(run)}`);
+  if (!res.ok) throw new Error(`Failed to load file tree for "${run}": ${res.status} ${res.statusText}`);
+  const { tree } = (await res.json()) as { tree: DirEntry[] };
+  return tree ?? [];
+}
+
 /** URL for the file read-back endpoint (`vite.config.ts` `piflowFile`) — serves a file's REAL bytes from
  *  disk (text or image), resolved under the run's workspace. The HUD uses this to render ANY file it has a
  *  path for — input read, output artifact, or write — not just the telemetry preview snapshot. */
