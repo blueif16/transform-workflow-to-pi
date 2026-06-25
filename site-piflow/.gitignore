@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated AI index — derived from content/docs/ by scripts/build-docs-index.mjs
+# (regenerated on prebuild; never hand-edit, never commit, so it cannot drift)
+/public/llms.txt

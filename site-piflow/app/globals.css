@@ -332,3 +332,25 @@ body {
 .react-flow__node { font-family: var(--font-sans); }
 .react-flow__background { opacity: 0.5; }
 .react-flow { background: transparent !important; }
+
+/* ============================================================
+   Public docs (/docs) — rendered markdown body. Uses the token
+   ladder so docs read as part of the same premium-dark surface.
+   ============================================================ */
+.doc-content { color: var(--fg-muted); line-height: 1.7; font-size: 0.975rem; }
+.doc-content > * + * { margin-top: 1rem; }
+.doc-content h2 { color: var(--fg); font-size: 1.3rem; font-weight: 600; letter-spacing: -0.01em; margin-top: 2.75rem; }
+.doc-content h3 { color: var(--fg); font-size: 1.05rem; font-weight: 600; margin-top: 1.85rem; }
+.doc-content a { color: var(--accent); text-decoration: none; }
+.doc-content a:hover { text-decoration: underline; }
+.doc-content strong { color: var(--fg); font-weight: 600; }
+.doc-content code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 4px; padding: 0.1em 0.36em; color: var(--fg); }
+.doc-content pre { background: var(--surface-1); border: 1px solid var(--hairline); border-radius: 10px; padding: 1rem 1.1rem; overflow-x: auto; margin-top: 1.25rem; }
+.doc-content pre code { background: none; border: 0; padding: 0; font-size: 0.82rem; line-height: 1.6; }
+.doc-content ul { list-style: disc; padding-left: 1.25rem; }
+.doc-content ol { list-style: decimal; padding-left: 1.25rem; }
+.doc-content li + li { margin-top: 0.35rem; }
+.doc-content blockquote { border-left: 2px solid var(--hairline-2); padding-left: 1rem; color: var(--fg-faint); }
+.doc-content table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 1.25rem; display: block; overflow-x: auto; }
+.doc-content th, .doc-content td { border: 1px solid var(--hairline); padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
+.doc-content th { color: var(--fg); background: var(--surface-2); font-weight: 600; }
