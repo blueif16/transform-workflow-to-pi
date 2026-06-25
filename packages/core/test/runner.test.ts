@@ -1600,3 +1600,238 @@ describe('runWorkflow — project/merge POST DERIVE ops (S4)', () => {
     await fs.rm(outDir, { recursive: true, force: true });
   });
 });
+
+// ── G2: concurrency cap (maxConcurrent) ───────────────────────────────────────────────────────────
+//
+// The observable seam is the injected `execRunner` — the per-node spawn primitive each node passes
+// through exactly once per attempt. A `gateExec` factory makes every exec PARK on a manual release so
+// admitted lanes pile up; it counts in-flight execs and records the PEAK. With the cap wrapping the
+// stage map, peak must never exceed `maxConcurrent`; with no cap it equals the stage size.
+
+/**
+ * An execRunner that PARKS each call until released, tracking in-flight + peak concurrency. After a
+ * release it delegates to `defaultExecRunner` so the stub builder's artifact-writing command actually
+ * runs in the sandbox (the node verifies green) — the park is the only thing the gate adds, so it
+ * measures EXACTLY the admission cap. `failFor(cmd)` (optional) forces a non-zero exit (drives the
+ * retry/error path) for the matching node, identified by a substring of its command.
+ */
+function gateExec(opts: { failFor?: (cmd: string) => boolean } = {}) {
+  let inFlight = 0;
+  let peak = 0;
+  const releases: Array<() => void> = [];
+  const calls: string[] = [];
+  const exec: ExecRunner = async (sandbox, cmd, watchOpts) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    calls.push(cmd);
+    try {
+      await new Promise<void>((resolve) => releases.push(resolve));
+      if (opts.failFor?.(cmd)) {
+        return { result: { stdout: '', stderr: 'forced failure', code: 1 }, killed: null };
+      }
+      return await defaultExecRunner(sandbox, cmd, watchOpts);
+    } finally {
+      inFlight--;
+    }
+  };
+  return {
+    exec,
+    get peak() { return peak; },
+    get inFlight() { return inFlight; },
+    get callCount() { return releases.length; },
+    get totalCalls() { return calls.length; },
+    /** Release the next-oldest parked exec (FIFO). */
+    releaseOne() { releases.shift()?.(); },
+    /** Release every currently-parked exec. */
+    releaseAll() { while (releases.length) releases.shift()!(); },
+  };
+}
+
+/** Spin the event loop a few macrotasks so any newly-admitted lane reaches its `execRunner` call. */
+async function settle(ticks = 5): Promise<void> {
+  for (let i = 0; i < ticks; i++) await new Promise((r) => setTimeout(r, 2));
+}
+
+/**
+ * Wait until `count()` reaches `want` (a lane's pre-exec async setup — create/stage/resolve — must
+ * complete before it parks at the gate, so a fixed sleep is racy). Polls up to `timeoutMs`. Returns
+ * once reached; if it OVERSHOOTS (more than `want` admitted — a broken cap) it returns immediately so
+ * the caller's equality assertion catches it. Throws on timeout (the gate never filled — a dead-queue).
+ */
+async function waitForCount(count: () => number, want: number, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (count() >= want) return; // reached (>= so an overshoot returns and the caller asserts ===)
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error(`waitForCount: never reached ${want} (last ${count()})`);
+}
+
+describe('runWorkflow — G2 concurrency cap', () => {
+  it('T1: peak concurrent spawns never exceeds maxConcurrent over a wide stage', async () => {
+    // 5 independent nodes (no reads between them) → compile puts them in ONE parallel stage.
+    const g = compile(wf([0, 1, 2, 3, 4].map((i) => n(`Node${i}`, [], [`n${i}.txt`]))));
+    expect(g.stages[0].nodeIds).toHaveLength(5);
+    const outDir = await tmpOut();
+    const gate = gateExec();
+
+    const runP = runWorkflow(g, { run: 't1', outDir, buildCommand: stubBuilder(), execRunner: gate.exec, maxConcurrent: 2 });
+
+    // Wait for the cap to admit its first wave, then give the loop extra ticks: a BROKEN cap would
+    // admit all 5, so we must let any over-admission surface before asserting the peak.
+    await waitForCount(() => gate.inFlight, 2);
+    await settle();
+    expect(gate.inFlight).toBe(2); // exactly the cap is parked — no more, no fewer
+    expect(gate.peak).toBe(2);
+
+    // Drain all 5 lanes; release one, wait for the next to be admitted+parked (or for the run to
+    // finish), and re-assert the peak after each. All 5 nodes pass through the gate exactly once.
+    for (let released = 0; released < 5; released++) {
+      gate.releaseOne();
+      // wait until either a new lane parks (callCount climbs) or every lane has been seen (totalCalls===5)
+      const before = gate.totalCalls;
+      await waitForCount(() => (gate.totalCalls > before || gate.totalCalls === 5 ? 1 : 0), 1).catch(() => {});
+      await settle(2);
+      expect(gate.peak).toBe(2); // NEVER exceeds the cap
+    }
+    const { status } = await runP;
+    expect(gate.totalCalls).toBe(5); // every node spawned exactly once
+    expect(gate.peak).toBe(2);
+    expect(status.ok).toBe(true);
+    expect(Object.values(status.nodes).every((nd) => nd.status === 'ok')).toBe(true);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('T2: admits exactly one queued lane per release (FIFO) and fully drains', async () => {
+    const g = compile(wf([0, 1, 2, 3, 4].map((i) => n(`Node${i}`, [], [`n${i}.txt`]))));
+    const outDir = await tmpOut();
+    const gate = gateExec();
+
+    const runP = runWorkflow(g, { run: 't2', outDir, buildCommand: stubBuilder(), execRunner: gate.exec, maxConcurrent: 2 });
+
+    await waitForCount(() => gate.totalCalls, 2);
+    await settle();
+    expect(gate.totalCalls).toBe(2); // only the first 2 admitted
+
+    // Releasing ONE admits exactly ONE more (total seen climbs by 1, never by 2+).
+    gate.releaseOne();
+    await waitForCount(() => gate.totalCalls, 3);
+    await settle();
+    expect(gate.totalCalls).toBe(3);
+    expect(gate.inFlight).toBe(2); // still exactly the cap in flight
+
+    // Drain the rest; the run completes and every node is terminal (no dead-queue). A self-pumping
+    // releaser is robust to event-loop pressure from sibling tests (a fixed sleep is not).
+    const pump = setInterval(() => gate.releaseAll(), 5);
+    const { status } = await runP.finally(() => clearInterval(pump));
+    expect(gate.totalCalls).toBe(5);
+    expect(Object.values(status.nodes).every((nd) => nd.status === 'ok')).toBe(true);
+    expect(status.done).toBe(true);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('T3: a retrying node holds ONE slot across all its attempts (no sibling interleaves)', async () => {
+    // 3 nodes, cap 1 (serial). node1 has retries:2 and its exec is forced to fail, so runNode runs 3×.
+    // Because the limiter wraps the WHOLE runNodeWithRetries (OUTSIDE the retry loop), node1 keeps its
+    // ONE slot for all 3 attempts — its exec calls are CONTIGUOUS in admission order, with NO sibling
+    // exec between them. A wrap INSIDE the retry loop would RELEASE the slot after each failed attempt,
+    // and the FIFO limiter would admit a waiting sibling in the gap — interleaving node0/node2 between
+    // node1's attempts. Asserting contiguity catches that; asserting peak alone would NOT (cap 1 forbids
+    // overlap regardless of wrap placement).
+    const g = compile(
+      wf([
+        n('Node0', [], ['n0.txt']),
+        n('Node1', [], ['n1.txt'], { io: { reads: [], produces: ['n1.txt'], artifacts: [{ path: 'n1.txt' }], retries: 2 } }),
+        n('Node2', [], ['n2.txt']),
+      ]),
+    );
+    expect(g.stages[0].nodeIds).toHaveLength(3);
+    const outDir = await tmpOut();
+    // Record the NODE id of each exec, in admission order. Force node1 to fail (exhaust its retries).
+    const order: string[] = [];
+    const baseGate = gateExec({ failFor: (cmd) => cmd.includes('node1') });
+    const recordingExec: ExecRunner = async (sandbox, cmd, o) => {
+      order.push(cmd.includes('node0') ? 'node0' : cmd.includes('node1') ? 'node1' : 'node2');
+      return baseGate.exec(sandbox, cmd, o);
+    };
+
+    const runP = runWorkflow(g, { run: 't3', outDir, buildCommand: stubBuilder(), execRunner: recordingExec, maxConcurrent: 1 });
+    const pump = setInterval(() => baseGate.releaseAll(), 5);
+    const { status } = await runP.finally(() => clearInterval(pump));
+
+    expect(baseGate.peak).toBe(1); // cap 1 honored
+    // node1 attempted 3× (1 + 2 retries); node0/node2 once each ⇒ 5 execs.
+    expect(order.filter((id) => id === 'node1')).toHaveLength(3);
+    expect(order).toHaveLength(5);
+    // CONTIGUITY: node1's three execs occupy three ADJACENT positions — its slot was never yielded to a
+    // sibling mid-retry. (firstIdx..lastIdx span is exactly 3.)
+    const firstN1 = order.indexOf('node1');
+    const lastN1 = order.lastIndexOf('node1');
+    expect(lastN1 - firstN1).toBe(2); // 3 attempts back-to-back, no sibling wedged between
+    expect(status.nodes.node1.status).toBe('error'); // exhausted retries → error
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('T4: maxNodesPerRun halts the run; the over-cap node never spawns', async () => {
+    // Two SERIAL stages (node2 reads node1's artifact). maxNodesPerRun:1 ⇒ node1 acquires the only
+    // slot, node2 is refused at admission, gets a synthetic error, and the run halts.
+    const g = compile(wf([n('Node1', [], ['n1.txt']), n('Node2', ['n1.txt'], ['n2.txt'])]));
+    expect(g.stages).toHaveLength(2); // serial: a 2-stage spine
+    const outDir = await tmpOut();
+    let node2Spawned = false;
+    const builder = stubBuilder((node) => {
+      if (node.id === 'node2') node2Spawned = true;
+      return node.io.artifacts.map((a) => a.path);
+    });
+
+    const { status } = await runWorkflow(g, {
+      run: 't4', outDir, buildCommand: builder, execRunner: defaultExecRunner, maxNodesPerRun: 1,
+    });
+
+    expect(status.done).toBe(true);
+    expect(status.ok).toBe(false); // the cap halted the run
+    expect(status.nodes.node1.status).toBe('ok'); // the one node under the cap ran
+    expect(status.nodes.node2.status).toBe('error'); // refused admission
+    expect(status.nodes.node2.issues.join(' ')).toMatch(/total node cap.*exceeded/i);
+    expect(node2Spawned).toBe(false); // node2's command was NEVER built/spawned
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('T5: a stage smaller than the cap is inert — both lanes run concurrently, result unchanged', async () => {
+    const mkWf = () => compile(wf([n('Alpha', [], ['a.txt']), n('Beta', [], ['b.txt'])]));
+    const outDir1 = await tmpOut();
+    const outDir2 = await tmpOut();
+
+    // Concurrency-observing runner (overlap via a small delay, like the e2e test) — under a generous cap.
+    const track = () => {
+      let inFlight = 0; let peak = 0;
+      const exec: ExecRunner = async (sandbox, cmd, o) => {
+        inFlight++; peak = Math.max(peak, inFlight);
+        try { await new Promise((r) => setTimeout(r, 5)); return await defaultExecRunner(sandbox, cmd, o); }
+        finally { inFlight--; }
+      };
+      return { exec, get peak() { return peak; } };
+    };
+    const capped = track();
+    const uncapped = track();
+
+    const { status: a } = await runWorkflow(mkWf(), { run: 't5a', outDir: outDir1, buildCommand: stubBuilder(), execRunner: capped.exec, maxConcurrent: 16 });
+    const { status: b } = await runWorkflow(mkWf(), { run: 't5b', outDir: outDir2, buildCommand: stubBuilder(), execRunner: uncapped.exec });
+
+    expect(capped.peak).toBe(2); // under-cap stage still runs both lanes concurrently
+    expect(uncapped.peak).toBe(2);
+    // Byte-identical verdict to a no-maxConcurrent run.
+    expect(a.ok).toBe(true);
+    expect(a.ok).toBe(b.ok);
+    expect(a.totals).toEqual(b.totals);
+    expect(a.nodes.alpha.status).toBe(b.nodes.alpha.status);
+    expect(a.nodes.beta.status).toBe(b.nodes.beta.status);
+
+    await fs.rm(outDir1, { recursive: true, force: true });
+    await fs.rm(outDir2, { recursive: true, force: true });
+  });
+});

@@ -47,6 +47,7 @@ import { applyProjectionOp, runProjection } from '../workflow/ops/project.js';
 import { readJsonSafe, absUnder } from '../workflow/ops/util.js';
 import { parsePromote, extractPromoteValue, barrierMerge, type NodeUpdate, type ResolvedPromote } from '../workflow/ops/promote.js';
 import { loadState, persistState } from '../workflow/state.js';
+import { createLimiter, normalizeConcurrent, type Limiter } from './limit.js';
 import {
   type RunStatus,
   type NodeStatusRecord,
@@ -129,6 +130,21 @@ export interface RunOptions {
   stallMs?: number;
   /** ms after SIGTERM before SIGKILL. Default 3000 (run.mjs 904–911). */
   killGraceMs?: number;
+  /**
+   * Max node processes IN-FLIGHT at once (the G2 concurrency cap) — ONE global limiter across the whole
+   * run (stages run sequentially, so global === per-stage at any instant). Bounds the stage fan-out that
+   * was previously UNBOUNDED. Default 8 (a fixed, process-per-node-conservative value), clamped to
+   * `[1, MAX_CONCURRENT=16]`; a 0/negative/NaN value degrades to 1 (serial). A node's retries share its
+   * ONE slot (the cap counts NODES in flight, not attempts). See `./limit.ts`.
+   */
+  maxConcurrent?: number;
+  /**
+   * OPT-IN run-wide ceiling on TOTAL nodes spawned. Omit ⇒ no total cap (default). When set, the
+   * (maxNodesPerRun+1)-th node to acquire a slot gets a synthetic `error` record (`total node cap …
+   * exceeded`) and the run HALTS at the stage boundary (the loud-failure convention, mirroring
+   * `__resume__`/`__barrier__`) — a fork-bomb safety valve, never a silent drop.
+   */
+  maxNodesPerRun?: number;
   /**
    * Run-level DEFAULT for the write-then-fence return handshake (any pi node needs it). PRECEDENCE: a
    * node's own `io.returnMode` wins; else THIS run default applies to every node; else the artifact
@@ -413,6 +429,16 @@ interface RunContext {
    * key (lane-safe); a non-ok node never writes (it promotes nothing).
    */
   promotesByNode: Map<string, NodeUpdate>;
+  /**
+   * The G2 concurrency cap — ONE global FIFO limiter for the whole run. Each stage lane's
+   * `runNodeWithRetries` is wrapped in it, so no more than `maxConcurrent` real `pi` children run at
+   * once (and a node's retries share the lane's single slot — the wrap is OUTSIDE the retry loop).
+   */
+  limiter: Limiter;
+  /** OPT-IN run-wide total-node ceiling (undefined ⇒ no cap); exceeding it HALTS via a synthetic record. */
+  maxNodesPerRun?: number;
+  /** Count of nodes that have ACQUIRED a slot this run (incremented once per node at admission) — for `maxNodesPerRun`. */
+  spawnedNodes: { n: number };
 }
 
 /** Read a host-side input file as bytes (for staging a downstream node's reads). */
@@ -851,6 +877,25 @@ async function finishNode(
   return rec;
 }
 
+/**
+ * The synthetic terminal record for a node REFUSED ADMISSION by the run-wide total cap (`maxNodesPerRun`).
+ * It NEVER ran (no sandbox, no `execRunner`, no `pi`): the cap was hit at slot-acquire. We stamp the
+ * node's existing seeded record to `error` with a loud `total node cap … exceeded` issue and persist —
+ * so the existing `results.some(... 'error')` halt at the stage boundary stops the run (the loud-failure
+ * convention, mirroring `__resume__`/`__barrier__`). Returns the record so the stage map's `results`
+ * array carries it like any lane.
+ */
+async function cappedRecord(ctx: RunContext, nodeId: string): Promise<NodeStatusRecord> {
+  const rec = ctx.status.nodes[nodeId];
+  rec.status = 'error';
+  rec.endedAt = nowISO();
+  rec.artifacts = [];
+  rec.issues = [`total node cap (maxNodesPerRun=${ctx.maxNodesPerRun}) exceeded — node not started`];
+  rec.summary = 'skipped: run-wide node cap reached';
+  await writeStatus(ctx.outDir, ctx.status);
+  return rec;
+}
+
 // ── run scope: per-run resource lifecycle (worktree/cloud) or a trivial per-node forwarder ─────────
 
 /**
@@ -906,6 +951,10 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     // barrier's persisted channels, so the resumed tail's `{{state.*}}` resolves from t=0.
     runState: await loadState(outDir),
     promotesByNode: new Map(),
+    // The G2 concurrency cap: ONE global limiter, normalized (default 8, clamped [1,16], 0/NaN→1).
+    limiter: createLimiter(normalizeConcurrent(opts.maxConcurrent)),
+    maxNodesPerRun: opts.maxNodesPerRun,
+    spawnedNodes: { n: 0 },
     watchdog: {
       nodeTimeoutMs: opts.nodeTimeoutMs ?? 1_800_000,
       stallMs: opts.stallMs ?? 0,
@@ -1013,8 +1062,24 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
       ctx.status.stage = { index: fromIdx + i + 1, total: wf.stages.length, nodeIds: s.nodeIds };
       await writeStatus(outDir, ctx.status);
 
-      // Parallel lanes within a stage (run.mjs 1313).
-      const results = await Promise.all(s.nodeIds.map((id) => runNodeWithRetries(ctx, wf.nodes[id], scope)));
+      // Parallel lanes within a stage (run.mjs 1313), gated by the G2 concurrency cap. The limiter
+      // wraps the WHOLE `runNodeWithRetries` call (OUTSIDE the retry loop) so a node's retries share
+      // ONE slot — the cap counts NODES in flight, not attempts. It only DELAYS when a lane STARTS;
+      // every lane still resolves to a `NodeStatusRecord` (lane isolation), so the barrier merge + halt
+      // check below read `results` exactly as before. The OPT-IN run-wide total ceiling is enforced at
+      // slot-acquire: the (maxNodesPerRun+1)-th node gets a synthetic `error` (drives the halt) and its
+      // real `runNodeWithRetries`/`execRunner` NEVER runs.
+      const results = await Promise.all(
+        s.nodeIds.map((id) =>
+          ctx.limiter(async () => {
+            if (ctx.maxNodesPerRun !== undefined && ctx.spawnedNodes.n >= ctx.maxNodesPerRun) {
+              return cappedRecord(ctx, id);
+            }
+            ctx.spawnedNodes.n++;
+            return runNodeWithRetries(ctx, wf.nodes[id], scope);
+          }),
+        ),
+      );
 
       // STAGE-BARRIER MERGE (D6 / LangGraph super-step): fold every lane's promoted update into RunState
       // SERIALLY + deterministically (in node order), persist ONCE, and advance ctx.runState so the NEXT
