@@ -1,7 +1,34 @@
+import Link from "next/link";
+
+const GITHUB_URL = "https://github.com/blueif16/PiFlow";
+
 const COLS = [
-  { head: "Product", links: ["How it works", "Layers", "Findings", "Capabilities"] },
-  { head: "Docs", links: ["Architecture", "Design canon", "Roadmap", "Quickstart"] },
-  { head: "Project", links: ["GitHub", "OpenClaw tools", "License (MIT)"] },
+  {
+    head: "Product",
+    links: [
+      { label: "How it works", href: "#loop" },
+      { label: "Layers", href: "#layers" },
+      { label: "Findings", href: "#findings" },
+      { label: "Capabilities", href: "#capabilities" },
+    ],
+  },
+  {
+    head: "Docs",
+    links: [
+      { label: "Getting started", href: "/docs/start/getting-started" },
+      { label: "Architecture", href: "/docs/concepts/architecture" },
+      { label: "Compose", href: "/docs/concepts/compose" },
+      { label: "Run on pi", href: "/docs/guides/run-on-pi" },
+    ],
+  },
+  {
+    head: "Project",
+    links: [
+      { label: "GitHub", href: GITHUB_URL },
+      { label: "Docs", href: "/docs" },
+      { label: "License (MIT)", href: `${GITHUB_URL}/blob/main/LICENSE` },
+    ],
+  },
 ];
 
 export default function Footer() {
@@ -21,13 +48,26 @@ export default function Footer() {
           <div key={c.head}>
             <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint">{c.head}</p>
             <ul className="mt-4 space-y-2.5">
-              {c.links.map((l) => (
-                <li key={l}>
-                  <a href="#" className="text-sm text-fg-muted transition-colors hover:text-fg">
-                    {l}
-                  </a>
-                </li>
-              ))}
+              {c.links.map((l) => {
+                const cls = "text-sm text-fg-muted transition-colors hover:text-fg";
+                return (
+                  <li key={l.label}>
+                    {l.href.startsWith("/") ? (
+                      <Link href={l.href} className={cls}>
+                        {l.label}
+                      </Link>
+                    ) : (
+                      <a
+                        href={l.href}
+                        {...(l.href.startsWith("http") ? { target: "_blank", rel: "noreferrer" } : {})}
+                        className={cls}
+                      >
+                        {l.label}
+                      </a>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         ))}

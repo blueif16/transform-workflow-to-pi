@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Motif } from "@/components/iso/Motif";
 
 export default function CTA() {
@@ -18,18 +19,18 @@ export default function CTA() {
           loop makes it better — every run.
         </p>
         <div className="reveal mt-10 flex flex-wrap items-center justify-center gap-3">
-          <a
-            href="#"
+          <Link
+            href="/docs/start/getting-started"
             className="inline-flex h-11 items-center rounded-full bg-accent px-6 text-sm font-medium text-[var(--accent-ink)] transition-opacity hover:opacity-90"
           >
             Start a flow
-          </a>
-          <a
-            href="#"
+          </Link>
+          <Link
+            href="/docs"
             className="inline-flex h-11 items-center rounded-full border border-[var(--hairline)] px-6 text-sm font-medium text-fg transition-colors hover:border-[var(--hairline-2)]"
           >
             Read the docs →
-          </a>
+          </Link>
         </div>
         <p className="reveal mt-9 inline-flex items-center gap-2 font-mono text-xs text-fg-faint">
           <span className="size-1.5 rounded-full bg-accent" aria-hidden />

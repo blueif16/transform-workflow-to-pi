@@ -1,8 +1,12 @@
+import Link from "next/link";
+
+const GITHUB_URL = "https://github.com/blueif16/PiFlow";
+
 const LINKS = [
   { label: "How it works", href: "#loop" },
   { label: "Layers", href: "#layers" },
   { label: "Findings", href: "#findings" },
-  { label: "Docs", href: "#" },
+  { label: "Docs", href: "/docs" },
 ];
 
 export default function Nav() {
@@ -15,20 +19,32 @@ export default function Nav() {
         </a>
 
         <div className="hidden items-center gap-7 md:flex">
-          {LINKS.map((l) => (
-            <a
-              key={l.label}
-              href={l.href}
-              className="text-sm text-fg-muted transition-colors hover:text-fg"
-            >
-              {l.label}
-            </a>
-          ))}
+          {LINKS.map((l) =>
+            l.href.startsWith("/") ? (
+              <Link
+                key={l.label}
+                href={l.href}
+                className="text-sm text-fg-muted transition-colors hover:text-fg"
+              >
+                {l.label}
+              </Link>
+            ) : (
+              <a
+                key={l.label}
+                href={l.href}
+                className="text-sm text-fg-muted transition-colors hover:text-fg"
+              >
+                {l.label}
+              </a>
+            ),
+          )}
         </div>
 
         <div className="flex items-center gap-3">
           <a
-            href="#"
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noreferrer"
             className="hidden text-sm text-fg-muted transition-colors hover:text-fg sm:inline"
           >
             GitHub
