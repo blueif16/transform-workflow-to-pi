@@ -707,6 +707,23 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     // breaches (missing → schema-invalid → blocking integrity check), each beating any self-report; then
     // a non-ok self-report is honored; then a MISSING handshake errors ONLY when it was required; else ok.
     const parsed = lastJsonBlock(result.stdout);
+
+    // POST-NODE RETURN-SCHEMA GATE (mirrors the artifact schema gate, runner.ts above): a node's authored
+    // `returnSchema` (node.json top-level `return`) constrains the SHAPE of its structured result. We
+    // validate the PARSED return — VALIDATE-IF-PRESENT — with the SAME injected validator the artifact gate
+    // uses. A present-but-NON-CONFORMING result is a contract breach under `required` (it BLOCKS, like a
+    // present-but-invalid artifact); under `optional` it is advisory (recorded as a warn, never blocks; a
+    // missing result is the existing handshake clause's job, never this gate's). Skips when no return
+    // schema is declared, no result was parsed, or no validator resolved.
+    let returnSchemaInvalid: string[] = [];
+    if (node.io.returnSchema && Object.keys(node.io.returnSchema).length && parsed && ctx.validateSchema) {
+      const r = ctx.validateSchema(node.io.returnSchema, parsed);
+      if (!r.ok) returnSchemaInvalid = r.errors;
+    }
+    if (returnSchemaInvalid.length) rec.returnSchemaInvalid = returnSchemaInvalid;
+    // The breach BLOCKS only under `required`; under `optional` it is advisory (a warn issue below).
+    const returnSchemaBreach = returnSchemaInvalid.length > 0 && returnMode === 'required';
+
     let st: NodeStatusRecord['status'];
     const issues: string[] = [];
     if (killed === 'timeout' || killed === 'stall' || result.code !== 0) {
@@ -722,6 +739,9 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
     } else if (blockingChecks.length) {
       st = 'blocked';
       issues.push(`integrity check FAILED — ${blockingChecks.map((c) => `${c.kind} ${c.path || ''}: ${c.reason}`).join(' | ')}`);
+    } else if (returnSchemaBreach) {
+      st = 'blocked';
+      issues.push(`contract breach — return violates the declared returnSchema: ${returnSchemaInvalid.join('; ')}`);
     } else if (parsed?.status && parsed.status !== 'ok') {
       st = parsed.status === 'gap' || parsed.status === 'blocked' ? parsed.status : 'gap';
     } else if (!parsed && returnMode === 'required') {
@@ -731,6 +751,8 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope): Promis
       st = 'ok';
     }
     if (warningChecks.length) issues.push(`integrity warn — ${warningChecks.map((c) => `${c.kind} ${c.path || ''}: ${c.reason}`).join(' | ')}`);
+    // An OPTIONAL node whose present result violates its returnSchema: advisory (recorded above, surfaced here), never blocks.
+    if (returnSchemaInvalid.length && !returnSchemaBreach) issues.push(`return-schema warn — ${returnSchemaInvalid.join('; ')}`);
     if (schema.skipped) issues.push(`schema gate skipped — ${schema.skipped}`);
     if (parsed?.issues?.length) issues.push(...parsed.issues);
 

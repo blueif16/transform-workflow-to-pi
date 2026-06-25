@@ -50,6 +50,9 @@ export function renderRealizedPrompt(def: TemplateNode, prose: string): string {
       checks: collectChecks(def),
       policy: toPolicy(def.policy),
       returnMode: c.returnMode as ReturnMode | undefined,
+      // The authored structured-return JSON-Schema (node.json top-level `return`) → DRIVER-RETURN-SCHEMA
+      // in the realized prompt, so the executor sees the required result shape (the codec emits it when set).
+      returnSchema: def.return as Record<string, unknown> | undefined,
       fillSentinel: c.fillSentinel ?? undefined,
     },
   } as unknown as NodeSpec;

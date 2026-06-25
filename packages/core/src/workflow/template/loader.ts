@@ -126,6 +126,11 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
       checks: collectChecks(n.def),
       policy: toPolicy(n.def.policy),
       returnMode: c.returnMode as ReturnMode | undefined,
+      // Carry the AUTHORED structured-return JSON-Schema (node.json top-level `return`, §3) onto the
+      // runtime NodeIO — parallel to how the artifact `schema` is carried above. Until now this was read
+      // by the loader but never set, so `returnMode` was live while the return SCHEMA stayed dormant; the
+      // runner now enforces a `required` node's result against it (the codec already renders DRIVER-RETURN-SCHEMA).
+      returnSchema: n.def.return as Record<string, unknown> | undefined,
       fillSentinel: c.fillSentinel ?? undefined,
     },
     sandbox: {

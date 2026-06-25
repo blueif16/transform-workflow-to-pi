@@ -58,6 +58,11 @@ export interface NodeStatusRecord {
   schemaChecked?: number;
   /** Why the schema gate skipped (no validator / unreadable schema), if it did. */
   schemaSkipped?: string;
+  /**
+   * The node's structured RETURN violated its declared `returnSchema` (a contract breach). Mirrors
+   * `schemaInvalid` for the return-handshake side: a present-but-NON-CONFORMING result blocks the node.
+   */
+  returnSchemaInvalid?: string[];
 }
 
 /** Run-level rollup at completion. */
