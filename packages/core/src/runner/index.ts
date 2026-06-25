@@ -1,8 +1,27 @@
 // @piflow/core/runner — the M1 execution loop + its injection seams. Barrel for the parent to wire
 // into src/index.ts (the parent owns the public-export edit; this file only collects the runner API).
 
-export { runWorkflow, defaultExecRunner, lastJsonBlock, selectedBridgedTool } from './runner.js';
-export type { RunOptions, RunResult, ExecRunner, ExecWatchdogOpts } from './runner.js';
+export { runWorkflow, defaultExecRunner, defaultCheckpointWait, lastJsonBlock, selectedBridgedTool } from './runner.js';
+export type { RunOptions, RunResult, ExecRunner, ExecWatchdogOpts, CheckpointWaiter } from './runner.js';
+// G5 — HUMAN CHECKPOINT (HITL): the marker/reply schemas, the question hash, and the reply validator (the
+// runner's authority). The Vite courier + the console write the reply file; observe surfaces the marker.
+export {
+  hashCheckpoint,
+  buildMarker,
+  validateReply,
+  writeMarker,
+  readMarker,
+  readReply,
+  readCheckpointJournal,
+  journalCheckpoint,
+  CHECKPOINT_CHANNEL,
+} from './checkpoint.js';
+export type {
+  CheckpointMarker,
+  CheckpointReply,
+  CheckpointJournalSlot,
+  ReplyVerdict,
+} from './checkpoint.js';
 // The env-AGNOSTIC run entry (D5): a plain resolved-config object → compile → run. The bridge stays
 // consumer-injected (workflowSpec | buildWorkflowSpec). `loadConfig` resolves the env into this config.
 export { runFromConfig, runFromTemplate } from './entry.js';

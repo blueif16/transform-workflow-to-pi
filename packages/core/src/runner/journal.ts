@@ -32,6 +32,13 @@ export interface JournalNode {
   /** ONLY a terminal-good status is journaled. */
   status: 'ok';
   producedAt: string;
+  /**
+   * (G5) For a HUMAN CHECKPOINT node only: the resolved REPLY value the runner journaled — the resume
+   * REPLAY key. On a content-hash resume a checkpoint whose envelope (question) hash is unchanged REPLAYS
+   * this value instead of re-asking; an edited question changes the envelope hash → re-prompt. Absent on
+   * a normal (non-checkpoint) node.
+   */
+  checkpointReply?: unknown;
 }
 
 /** The whole `${RUN}/.pi/journal.json` document. */
@@ -43,8 +50,9 @@ export interface Journal {
   nodes: Record<string, JournalNode>;
 }
 
-/** The journal schema version. Bumped when the envelope-hash inputs change (G1/G6 fold-in). */
-export const JOURNAL_VERSION = 1;
+/** The journal schema version. Bumped when the envelope-hash inputs change (G1/G6 fold-in) — bumped to 2
+ *  for G5: the envelope now folds a node's `checkpoint` question and `JournalNode` carries `checkpointReply`. */
+export const JOURNAL_VERSION = 2;
 
 // ── layout helpers ───────────────────────────────────────────────────────────────────────────────
 
@@ -101,6 +109,9 @@ export function envelopeHash(node: NodeSpec, resolved: EnvelopeResolve, model: s
     policy: node.io.policy ?? null,
     fillSentinel: node.io.fillSentinel ?? null,
     ops: node.ops ?? null,
+    // (G5) Fold the checkpoint QUESTION (kind/prompt/choices/default/headless) into the envelope so an
+    // edited question re-prompts on resume (the journaled reply no longer matches the new identity).
+    checkpoint: node.checkpoint ?? null,
   };
   return sha256(JSON.stringify(envelope));
 }

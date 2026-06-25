@@ -201,6 +201,10 @@ export {
   nodeMcpFile,
   nodeEventsFile,
   writeNodeIo,
+  // G5 — human-checkpoint marker/reply file paths (per-run data in the RUN dir).
+  checkpointsDir,
+  checkpointMarkerFile,
+  checkpointReplyFile,
 } from './runner/layout.js';
 
 // Docker-style run-name generation (`<bake-adjective>-<pie>`, e.g. "flaky-pecan"): the CLI mints a

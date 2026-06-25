@@ -29,6 +29,7 @@ import type {
   PiCommandOptions,
   ReturnMode,
   RunState,
+  CheckpointSpec,
 } from '../types.js';
 import { defaultSecretResolver } from '../types.js';
 import { DefaultToolRegistry } from '../tools/registry.js';
@@ -59,6 +60,7 @@ import {
 import {
   type Journal,
   type NodeDecision,
+  type JournalNode,
   envelopeHash,
   inputFilesOf,
   decideResume,
@@ -67,6 +69,18 @@ import {
   loadJournal,
   writeJournalEntry,
 } from './journal.js';
+import {
+  type CheckpointMarker,
+  type CheckpointReply,
+  type CheckpointJournalSlot,
+  buildMarker,
+  validateReply,
+  writeMarker,
+  readMarker,
+  readReply,
+  readCheckpointJournal,
+  journalCheckpoint,
+} from './checkpoint.js';
 
 /** How the runner spawns the agent command — the kill-seam-bearing exec primitive (injectable). */
 export interface ExecRunner {
@@ -215,6 +229,38 @@ export interface RunOptions {
    * TUI/GUI subscribes to (the file archive is always written regardless). Never breaks the run if it throws.
    */
   onEvent?: EventSink;
+  /**
+   * (G5) How a HUMAN CHECKPOINT node resolves when no `pi` is spawned. `'interactive'` (default for an
+   * ATTENDED run) PARKS the lane watching for a reply file up to the node's `timeoutMs`, then applies the
+   * checkpoint's `headless` policy. `'default'` (a truly DETACHED run) skips the wait and applies the
+   * headless policy IMMEDIATELY — so a background run never hangs on a checkpoint. The wait is bounded
+   * either way; the SAFETY invariant (a run never hangs unattended) holds for both.
+   */
+  checkpointReply?: 'interactive' | 'default';
+  /**
+   * (G5) The wait/poll seam for `waitForCheckpointReply` (test injection). The default polls the reply file
+   * on `watchRun`'s 700ms cadence with a small sleep between polls; a test injects a fast/zero-sleep poller
+   * so the suite stays deterministic without sleeping on real wall-clock. Receives the run dir + node id +
+   * a `deadline` (epoch ms, Infinity when unbounded) and a `read` to fetch the current reply; resolves with
+   * the first reply that PASSES `accept`, or `null` on deadline.
+   */
+  checkpointWait?: CheckpointWaiter;
+}
+
+/** The checkpoint wait seam — polls for a reply until `accept` passes or the deadline elapses (G5). */
+export interface CheckpointWaiter {
+  (args: {
+    run: string;
+    nodeId: string;
+    /** Epoch-ms deadline; `Infinity` ⇒ wait indefinitely (an attended, untimed checkpoint). */
+    deadline: number;
+    /** Read the current reply file (or null when absent/torn). */
+    read: () => Promise<CheckpointReply | null>;
+    /** True iff this reply is a VALID resolution for the marker (the runner's authority). */
+    accept: (reply: CheckpointReply) => boolean;
+    /** Abort promptly when the run is torn down (none today; reserved). */
+    signal?: AbortSignal;
+  }): Promise<CheckpointReply | null>;
 }
 
 /** The result of a run: the final status record + the host run dir it was written to. */
@@ -266,6 +312,30 @@ export const defaultExecRunner: ExecRunner = (sandbox, cmd, opts) =>
       .then((result) => settle(result))
       .catch((err) => settle({ stdout: '', stderr: String(err), code: 1 }));
   });
+
+// ── (G5) the default checkpoint waiter: poll the reply file on the watchRun cadence until valid/deadline ──
+
+/**
+ * The default checkpoint wait seam. Polls `read()` on the `watchRun` cadence (700ms) and resolves with the
+ * first reply that `accept`s; resolves `null` when the deadline elapses. This is the ONLY place that sleeps
+ * on real wall-clock — tests inject a fast/zero-sleep poller via `RunOptions.checkpointWait`, so the suite
+ * is deterministic. A torn/missing file simply makes `read()` return null and the wait persists.
+ */
+export const defaultCheckpointWait: CheckpointWaiter = async ({ deadline, read, accept, signal }) => {
+  const pollMs = 700;
+  for (;;) {
+    if (signal?.aborted) return null;
+    const reply = await read();
+    if (reply && accept(reply)) return reply;
+    if (Date.now() >= deadline) return null;
+    const remaining = deadline === Infinity ? pollMs : Math.min(pollMs, deadline - Date.now());
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, Math.max(0, remaining));
+      t.unref?.();
+      signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+  }
+};
 
 // ── forgiving return-parse (run.mjs lastJsonBlock 670–698) ────────────────────────────────────────
 
@@ -465,6 +535,10 @@ interface RunContext {
    * against — never re-derived divergently. A node that RAN to a good verdict writes its entry here.
    */
   journal: { meta: { runId: string; source: string }; envHash: Record<string, string> };
+  /** (G5) Whether a checkpoint PARKS for a reply (`'interactive'`) or takes the headless policy now (`'default'`). */
+  checkpointReply: 'interactive' | 'default';
+  /** (G5) The wait/poll seam (injectable in tests). */
+  checkpointWait: CheckpointWaiter;
 }
 
 /** Read a host-side input file as bytes (for staging a downstream node's reads). */
@@ -528,6 +602,134 @@ function toPosixRel(rel: string): string {
  * (last-wins). `ok`/`warn` never retries; `retries` 0/undefined ⇒ exactly one attempt (today's
  * behavior). Worst-case wall = (retries+1) × the node's timeout.
  */
+// ── (G5) the HUMAN CHECKPOINT lane — no `pi`, no slot held while parked ──────────────────────────────
+
+/**
+ * Run a checkpoint node: write a marker, PARK watching for a reply (no `pi`, no sandbox), validate it, and
+ * resolve `ok` carrying the chosen value — or, headlessly, take the declared `default` (journaled) so a
+ * background run never hangs. CRASH-SAFE: the pending wait is journaled into `.pi/state.json`
+ * `__checkpoints__`; if a journaled entry is already `resolved` (a prior run answered it), this REPLAYS
+ * that value and does NOT re-ask. The reply is the RUNNER's to validate — a malformed/stale reply is
+ * ignored and the wait persists. Called OUTSIDE the G2 limiter (see the stage fan-out), so a parked
+ * checkpoint never holds a concurrency slot.
+ */
+async function runCheckpoint(ctx: RunContext, node: NodeSpec, spec: CheckpointSpec): Promise<NodeStatusRecord> {
+  const rec = ctx.status.nodes[node.id];
+  const t0 = Date.now();
+
+  // CRASH-RESUME REPLAY: a prior run that already journaled a `resolved` reply for THIS question replays it
+  // (does NOT re-ask / re-journal). Match on the question hash so an edited question (new hash) re-prompts.
+  const journalSlot = (await readCheckpointJournal(ctx.outDir))[node.id];
+  const marker = buildMarker(node.id, node.label, spec, nowISO());
+  if (journalSlot && journalSlot.status === 'resolved' && journalSlot.hash === marker.hash) {
+    return finishCheckpoint(ctx, node, rec, t0, 'ok', journalSlot.reply, 'replayed prior reply');
+  }
+
+  // WRITE THE MARKER (status pending). Crash-safe: also journal the pending wait into `.pi/state.json`
+  // `__checkpoints__` (preserve `askedAt` across a crash so the wait is stable). Reuse a prior marker's
+  // `askedAt` when the question is unchanged so a re-entered wait keeps one identity.
+  if (journalSlot && journalSlot.status === 'pending' && journalSlot.hash === marker.hash) {
+    marker.askedAt = journalSlot.askedAt;
+  }
+  rec.status = 'awaiting-input';
+  rec.startedAt = marker.askedAt;
+  await writeMarker(ctx.outDir, marker);
+  await journalCheckpoint(ctx.outDir, node.id, { status: 'pending', hash: marker.hash, askedAt: marker.askedAt });
+  await writeStatus(ctx.outDir, ctx.status);
+
+  // DECIDE: a DETACHED run (`checkpointReply:'default'`) skips the wait; an ATTENDED run parks up to
+  // `timeoutMs` (Infinity ⇒ untimed). The wait/poll is the injectable seam (deterministic tests).
+  let reply: CheckpointReply | null = null;
+  if (ctx.checkpointReply === 'interactive') {
+    const deadline = spec.timeoutMs !== undefined ? Date.now() + spec.timeoutMs : Infinity;
+    reply = await ctx.checkpointWait({
+      run: ctx.outDir,
+      nodeId: node.id,
+      deadline,
+      read: () => readReply(ctx.outDir, node.id),
+      // THE RUNNER IS THE AUTHORITY: only a reply that validates against the marker the runner wrote ends
+      // the wait. A malformed/stale/bad-choice reply fails `accept` → the wait persists.
+      accept: (r) => validateReply(marker, r).ok,
+    });
+  }
+
+  // RESOLVED by a valid reply → journal the value, finish ok.
+  if (reply) {
+    const verdict = validateReply(marker, reply); // re-validate (authority) — accept() already passed
+    if (verdict.ok) {
+      return finishCheckpoint(ctx, node, rec, t0, 'ok', verdict.value, 'reply accepted');
+    }
+  }
+
+  // NO (valid) reply within the bound → the headless SAFETY policy.
+  const headless = marker.headless;
+  if (headless === 'abort') {
+    // Finish `error` so the run HALTS at the barrier (the loud-failure convention). Journal nothing.
+    rec.issues = ['checkpoint aborted: no reply and headless:abort'];
+    return finishCheckpoint(ctx, node, rec, t0, 'error', undefined, 'checkpoint aborted (headless:abort)');
+  }
+  // `headless:'default'` → take the declared default and JOURNAL it (mirrors the competitor; never hangs).
+  return finishCheckpoint(ctx, node, rec, t0, 'ok', spec.default, 'headless default taken');
+}
+
+/**
+ * Stamp a checkpoint node's terminal record, flip the marker + `__checkpoints__` journal to `resolved` (on
+ * `ok`), and write the §G4 journal entry carrying `checkpointReply` (so a future content-hash resume
+ * REPLAYS the value). On `error` (headless:abort) nothing is journaled — the next resume re-asks.
+ */
+async function finishCheckpoint(
+  ctx: RunContext,
+  node: NodeSpec,
+  rec: NodeStatusRecord,
+  t0: number,
+  status: 'ok' | 'error',
+  value: unknown,
+  summary: string,
+): Promise<NodeStatusRecord> {
+  rec.status = status;
+  rec.endedAt = nowISO();
+  rec.durationMs = Date.now() - t0;
+  rec.artifacts = [];
+  rec.summary = summary;
+
+  if (status === 'ok') {
+    const resolvedAt = nowISO();
+    const slot: CheckpointJournalSlot = {
+      status: 'resolved',
+      hash: ctx.journal.envHash[node.id] ?? '',
+      askedAt: rec.startedAt ?? resolvedAt,
+      reply: value,
+      resolvedAt,
+    };
+    // The crash-safety journal carries the QUESTION hash (re-asked-question guard); recompute it from the
+    // marker so it survives a value-only edit elsewhere. Use the marker's question hash, not the envelope.
+    const marker = await readMarker(ctx.outDir, node.id);
+    if (marker) {
+      slot.hash = marker.hash;
+      marker.status = 'resolved';
+      await writeMarker(ctx.outDir, marker);
+    }
+    await journalCheckpoint(ctx.outDir, node.id, slot);
+    rec.summary = `${summary}: ${JSON.stringify(value)}`;
+  }
+  await writeStatus(ctx.outDir, ctx.status);
+
+  // §G4 journal: a checkpoint node has no inputs/outputs to hash; record the envelope hash + the reply so a
+  // resume whose question is unchanged REPLAYS the value (a changed question flips the envelope hash → re-run).
+  if (status === 'ok') {
+    const entry: JournalNode = {
+      hash: ctx.journal.envHash[node.id] ?? envelopeHash(node, { piTools: [] }, ctx.model),
+      inputHashes: {},
+      outputHashes: {},
+      status: 'ok',
+      producedAt: nowISO(),
+      checkpointReply: value,
+    };
+    await writeJournalEntry(ctx.outDir, ctx.journal.meta, node.id, entry);
+  }
+  return rec;
+}
+
 async function runNodeWithRetries(ctx: RunContext, node: NodeSpec, scope: RunScope): Promise<NodeStatusRecord> {
   const maxAttempts = 1 + Math.max(0, node.io.retries ?? 0);
   let rec = await runNode(ctx, node, scope);
@@ -1105,6 +1307,11 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     // G4 journal meta (runId/source). `envHash` is filled by `seedFromJournal` at run-start, then read
     // by `finishNode` to record the SAME identity the resume decision consulted.
     journal: { meta: { runId: run, source: wf.meta.name }, envHash: {} },
+    // G5 — checkpoint resolution mode + the wait/poll seam (test-injectable). Default ATTENDED (park for
+    // a reply, bounded by the node's timeoutMs); a detached run passes `'default'` to take the headless
+    // policy immediately so it never hangs.
+    checkpointReply: opts.checkpointReply ?? 'interactive',
+    checkpointWait: opts.checkpointWait ?? defaultCheckpointWait,
     watchdog: {
       nodeTimeoutMs: opts.nodeTimeoutMs ?? 1_800_000,
       stallMs: opts.stallMs ?? 0,
@@ -1266,20 +1473,27 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
       // slot-acquire: the (maxNodesPerRun+1)-th node gets a synthetic `error` (drives the halt) and its
       // real `runNodeWithRetries`/`execRunner` NEVER runs.
       const results = await Promise.all(
-        s.nodeIds.map((id) =>
-          ctx.limiter(async () => {
-            // G4: a node the journal (or `--from`) decided to REUSE is SKIPPED — its seeded `reused`
-            // record (with stat-verified artifacts from the preflight) stands, it never spawns a `pi`,
-            // and it does NOT consume a concurrency slot or count against `maxNodesPerRun`. The
-            // safety override already flipped a reused-but-missing-artifact node back to `pending`.
-            if (ctx.status.nodes[id].status === 'reused') return ctx.status.nodes[id];
+        s.nodeIds.map((id) => {
+          // G4: a node the journal (or `--from`) decided to REUSE is SKIPPED — its seeded `reused`
+          // record (with stat-verified artifacts from the preflight) stands, it never spawns a `pi`,
+          // and it does NOT consume a concurrency slot or count against `maxNodesPerRun`. The
+          // safety override already flipped a reused-but-missing-artifact node back to `pending`.
+          if (ctx.status.nodes[id].status === 'reused') return Promise.resolve(ctx.status.nodes[id]);
+          // G5: a HUMAN CHECKPOINT spawns NO `pi` and PARKS waiting for a human — it must NOT hold a G2
+          // limiter slot while parked, or a stage full of pending checkpoints deadlocks the pool. So it
+          // BYPASSES the limiter entirely (like `reused`/`cappedRecord`, it never enters the gated lane)
+          // and does not count against `maxNodesPerRun` (it never spawns a process). A sibling node in an
+          // independent lane keeps its slot and runs concurrently.
+          const cp = wf.nodes[id].checkpoint;
+          if (cp) return runCheckpoint(ctx, wf.nodes[id], cp);
+          return ctx.limiter(async () => {
             if (ctx.maxNodesPerRun !== undefined && ctx.spawnedNodes.n >= ctx.maxNodesPerRun) {
               return cappedRecord(ctx, id);
             }
             ctx.spawnedNodes.n++;
             return runNodeWithRetries(ctx, wf.nodes[id], scope);
-          }),
-        ),
+          });
+        }),
       );
 
       // STAGE-BARRIER MERGE (D6 / LangGraph super-step): fold every lane's promoted update into RunState
