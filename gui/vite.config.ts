@@ -325,7 +325,70 @@ function piflowTree(): Plugin {
   };
 }
 
+/**
+ * (G5 — HITL) The reply COURIER — `POST /__piflow/checkpoint/<run>` writes a human's answer to a paused
+ * checkpoint into the run dir, the SAME file the runner watches (`.pi/checkpoints/<nodeId>.reply.json`).
+ * It is a DUMB courier: it does ZERO semantic validation (the RUNNER is the sole authority — it re-validates
+ * the echoed hash + kind/choices/shape before acting, and ignores a bad/stale reply). It only checks the run
+ * exists and `nodeId` is a safe slug (no `/`/`..` escape — the write stays inside `.pi/checkpoints/`). The
+ * run dir is resolved from the SAME live `~/.piflow` index the GETs use (no baked path — the data/SDK
+ * boundary). Returns 202 immediately; the runner picks the reply up on its next poll. Dev + preview only.
+ *
+ * Body: `{ nodeId: string, hash: string, value: unknown }`. Writes `{ nodeId, hash, value, by:"gui", at }`.
+ * The console/TUI resolve the SAME checkpoint by writing the SAME file directly — couriers are interchangeable.
+ */
+function piflowCheckpointReply(): Plugin {
+  const readBody = (req: IncomingMessage): Promise<string> =>
+    new Promise((resolve, reject) => {
+      let data = "";
+      let tooBig = false;
+      req.on("data", (c) => {
+        data += c;
+        if (data.length > 1_000_000) { tooBig = true; req.destroy(); } // 1 MB cap — a reply is tiny
+      });
+      req.on("end", () => (tooBig ? reject(new Error("body too large")) : resolve(data)));
+      req.on("error", reject);
+    });
+
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const m = req.url?.match(/^\/__piflow\/checkpoint\/([^/?]+)/);
+    if (!m) return next();
+    if (req.method !== "POST") return sendJson(res, 405, { error: "use POST to write a checkpoint reply" });
+    const run = decodeURIComponent(m[1]);
+
+    let body: { nodeId?: unknown; hash?: unknown; value?: unknown };
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      return sendJson(res, 400, { error: "body must be JSON { nodeId, hash, value }" });
+    }
+
+    const resolved = await resolveRunDir(run);
+    if (!resolved) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered?` });
+
+    // The slug-containment + write are the factored pure core (gui/scripts/lib/checkpoint-reply.mjs) so the
+    // contract is unit-testable without Vite. The courier does NO semantic validation — the RUNNER re-validates
+    // the echoed hash + kind/choices/shape and ignores a bad/stale reply. Resolve the lib by ABSOLUTE path the
+    // same way the GETs resolve the index lib (esbuild never bundles it into the config).
+    const lib = findUp("scripts/lib/checkpoint-reply.mjs");
+    if (!lib) return sendJson(res, 500, { error: "checkpoint-reply lib not found — is this the piflow gui?" });
+    try {
+      const { writeCheckpointReply } = await import(pathToFileURL(lib).href);
+      const out = await writeCheckpointReply(resolved.runDir, body, "gui");
+      return sendJson(res, out.status, out.body);
+    } catch (e) {
+      return sendJson(res, 500, { error: `failed to write reply (${String(e)})` });
+    }
+  };
+
+  return {
+    name: "piflow-checkpoint-reply",
+    configureServer(server) { server.middlewares.use(handler); },
+    configurePreviewServer(server) { server.middlewares.use(handler); },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowFile(), piflowTree()],
+  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowFile(), piflowTree(), piflowCheckpointReply()],
   server: { port: 5173, host: true },
 });
