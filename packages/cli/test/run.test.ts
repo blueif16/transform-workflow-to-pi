@@ -91,6 +91,16 @@ describe('parseRunArgs — the run subcommand flag surface', () => {
     const p = parseRunArgs([TEMPLATE_MIN, '--run', 'g1']);
     expect(p.sandbox).toBe('inmemory');
   });
+
+  it('parses --max-concurrent into a number (the G2 concurrency cap)', () => {
+    const p = parseRunArgs([TEMPLATE_MIN, '--run', 'g1', '--max-concurrent', '4']);
+    expect(p.maxConcurrent).toBe(4);
+  });
+
+  it('leaves maxConcurrent undefined when --max-concurrent is absent (runner applies its default)', () => {
+    const p = parseRunArgs([TEMPLATE_MIN, '--run', 'g1']);
+    expect(p.maxConcurrent).toBeUndefined();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -199,6 +209,7 @@ describe('piflow run — LIVE branch routes through core runFromTemplate, thread
         from: 's2',
         until: 's5',
         profile: 'companion',
+        maxConcurrent: 4,
       },
       deps,
     );
@@ -215,6 +226,7 @@ describe('piflow run — LIVE branch routes through core runFromTemplate, thread
     expect(optsSeen?.from).toBe('s2');
     expect(optsSeen?.until).toBe('s5');
     expect(optsSeen?.profile).toBe('companion');
+    expect(optsSeen?.maxConcurrent).toBe(4); // the G2 cap threads through to the runner
     // --sandbox local ⇒ a real LocalSandboxProvider instance is constructed and passed.
     expect(optsSeen?.provider).toBeInstanceOf(LocalSandboxProvider);
     expect((optsSeen?.provider as { kind?: string } | undefined)?.kind).toBe('local');

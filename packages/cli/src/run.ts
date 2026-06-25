@@ -100,6 +100,8 @@ export interface ParsedRunArgs {
   thinking?: string;
   /** Optional model pin → `pi --model <m>`. */
   model?: string;
+  /** Max node processes in-flight at once (the G2 concurrency cap) → runner `maxConcurrent`. Default 8, clamped [1,16]. */
+  maxConcurrent?: number;
 }
 
 /** Parse the flat `run` argv → `ParsedRunArgs`. First positional = the template dir. */
@@ -118,6 +120,7 @@ export function parseRunArgs(argv: string[]): ParsedRunArgs {
     else if (k === '--provider') out.provider = argv[++i];
     else if (k === '--thinking') out.thinking = argv[++i];
     else if (k === '--model') out.model = argv[++i];
+    else if (k === '--max-concurrent') out.maxConcurrent = Number(argv[++i]);
     else if (k === '--arg') {
       const kv = argv[++i] ?? '';
       const eq = kv.indexOf('='); // only the FIRST '=' splits k from v (values may contain '=').
@@ -255,6 +258,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     providerName: parsed.provider,
     thinking: parsed.thinking,
     model: parsed.model,
+    ...(parsed.maxConcurrent !== undefined ? { maxConcurrent: parsed.maxConcurrent } : {}),
     ...(provider ? { provider } : {}),
   });
 }
