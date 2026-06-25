@@ -43,6 +43,19 @@ export { renderRealizedPrompt } from './workflow/template/render.js';
 export { mergePreset, parseAgentPreset, loadAgentPreset, defaultAgentsDir } from './workflow/agent-preset.js';
 export type { AgentPreset, PresetMergeable } from './workflow/agent-preset.js';
 
+// (Phase 2) Fusion nodes: the pre-compile siblings+judge expansion + its built-in fusion PRESET AGENTS
+// (the judge/obligations roles). `expandFusion` runs before `compile`; the presets brand the generated
+// nodes via `agentType`. The verbatim Appendix-A prompt bodies + token fillers live in `fusion/prompts`.
+export { expandFusion, FusionConfigError } from './workflow/fusion/expand.js';
+export type { FusionDefaults, FusionExpandOpts } from './workflow/fusion/expand.js';
+export {
+  FUSION_PRESETS,
+  FUSION_JUDGE_MOA,
+  FUSION_JUDGE_BEST_OF_N,
+  FUSION_OBLIGATIONS,
+  judgePresetId,
+} from './workflow/fusion/presets.js';
+
 // RunState (D6): the per-thread channel object + its reducers + the only state I/O. `RunState`/`Reducer`
 // types come via `export * from './types.js'` above.
 export { applyReducer, mergeUpdate, loadState, persistState } from './workflow/state.js';
