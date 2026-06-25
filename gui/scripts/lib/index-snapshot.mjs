@@ -67,12 +67,14 @@ export function discoverNamespaces(root) {
   return out;
 }
 
-// run dirs (any dir with .pi/run.json) across .piflow/<wf>/runs, gui/public/runs, and out/<id>.
+// run dirs = ONLY the canonical run home `.piflow/<wf>/runs/<id>` (sdk-canonical-build-plan §D9: "a run's
+// canonical home is ALWAYS .piflow/<wf>/runs/<id> … no more shared out/game"). We deliberately do NOT scan
+// `out/<id>` (a product's BUILD-OUTPUT dir that merely happened to colocate a `.pi/` — scanning it
+// scavenges stray/legacy build dirs as if they were runs) nor `gui/public/runs` (committed run data must
+// never live in the GUI — the data-boundary rule). Real runs are distilled live by the run-view middleware.
 export function discoverRunDirs(root) {
   const wfRoot = path.join(root, '.piflow');
-  const guiRuns = path.join(root, 'gui', 'public', 'runs');
-  const outRoot = path.join(root, 'out');
-  const searchRoots = [wfRoot, guiRuns, outRoot];
+  const searchRoots = [wfRoot];
   const runDirs = [];
   const pushIfRun = (dir) => { if (fssync.existsSync(path.join(dir, '.pi', 'run.json'))) runDirs.push(dir); };
   const eachChildDir = (parent, fn) => {
@@ -80,8 +82,6 @@ export function discoverRunDirs(root) {
     for (const e of fssync.readdirSync(parent, { withFileTypes: true })) if (e.isDirectory()) fn(path.join(parent, e.name));
   };
   eachChildDir(wfRoot, (wfDir) => eachChildDir(path.join(wfDir, 'runs'), pushIfRun));
-  eachChildDir(guiRuns, pushIfRun);
-  eachChildDir(outRoot, pushIfRun);
   return { runDirs, searchRoots };
 }
 

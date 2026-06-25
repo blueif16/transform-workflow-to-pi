@@ -34,6 +34,7 @@ import {
   type SandboxProvider,
   type RunResult,
 } from '@piflow/core';
+import path from 'node:path';
 
 /** The injectable seam — defaults are the real core calls; a test passes spies + an in-memory spec. */
 export interface RunDeps {
@@ -178,10 +179,14 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
   if (!templateDir) throw new Error('piflow run: a template directory is required (piflow run <templateDir>).');
 
   const workspace = parsed.workspace ?? process.cwd();
-  // outDir defaults to out/<run> (mirrors runWorkflow's default); a dry-run still needs a concrete dir to
-  // materialize ${RUN}/.pi into.
+  // The run's CANONICAL HOME is `.piflow/<wf>/runs/<id>` (sdk-canonical-build-plan §D9) — the single place
+  // discovery + the global index read runs from. Derive it from the template's own `.piflow/<wf>/template/`
+  // layout so a bare `piflow run <templateDir>` lands the `.pi/` thread where the GUI/TUI will find it. An
+  // explicit --out wins; a template outside that layout falls back to `out/<id>`.
   const runId = parsed.run ?? 'run';
-  const outDir = parsed.outDir ?? `out/${runId}`;
+  const tdir = path.resolve(templateDir);
+  const canonicalHome = path.basename(tdir) === 'template' ? path.join(path.dirname(tdir), 'runs', runId) : null;
+  const outDir = parsed.outDir ?? canonicalHome ?? `out/${runId}`;
 
   // ── DRY-RUN: build + materialize + print, but invoke NO model. ──
   if (parsed.dryRun) {
