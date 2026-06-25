@@ -132,10 +132,14 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
       // runner now enforces a `required` node's result against it (the codec already renders DRIVER-RETURN-SCHEMA).
       returnSchema: n.def.return as Record<string, unknown> | undefined,
       fillSentinel: c.fillSentinel ?? undefined,
+      // per-node retry budget → runner re-runs a fresh attempt on error/blocked (else one attempt).
+      ...(n.def.retries ? { retries: n.def.retries } : {}),
     },
     sandbox: {
       read: c.readScope.slice(),
       write: c.owns.slice(),
+      // per-node hard wall-clock cap (ms) → runner reads node.sandbox.timeoutMs (else the run-level default).
+      ...(n.def.timeoutMs ? { timeoutMs: n.def.timeoutMs } : {}),
     },
   };
   // Additive: only attach `ops` when the node authored a hooks block (a node with none stays op-free).

@@ -20,6 +20,10 @@ export interface TemplateNode {
   tools?: { allow?: string[]; deny?: string[] };
   mcp?: { servers?: Record<string, unknown>; ref?: string };
   inject?: string[];
+  /** Per-node hard wall-clock cap (ms) → runtime `sandbox.timeoutMs`. Omitted ⇒ the run-level default. */
+  timeoutMs?: number;
+  /** Per-node retry budget — extra attempts after the first on error/blocked → runtime `io.retries`. Omitted ⇒ one attempt. */
+  retries?: number;
   contract: {
     artifacts: string[];
     owns: string[];

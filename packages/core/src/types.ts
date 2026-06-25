@@ -259,6 +259,12 @@ export interface NodeIO {
    * incomplete — the engine adds an auto `regex-absent` completeness check per artifact. Undefined ⇒ off.
    */
   fillSentinel?: string;
+  /**
+   * Per-node RETRY budget — ADDITIONAL attempts after the first if the node ends `error`/`blocked`
+   * (a transient model/timeout failure). 0/undefined ⇒ one attempt (today's behavior). Each retry is a
+   * FRESH run (re-seed + re-exec); the last attempt's record wins. Worst-case wall = (retries+1) × timeout.
+   */
+  retries?: number;
 }
 
 // 3 ── HOOK (deterministic; never an LLM) ──────────────────────────────────────

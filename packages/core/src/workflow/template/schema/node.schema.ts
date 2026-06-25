@@ -61,6 +61,21 @@ export const nodeSchema = {
         ref: { type: 'string', minLength: 1 },
       },
     },
+    timeoutMs: {
+      // PER-NODE hard wall-clock cap (ms) → `node.sandbox.timeoutMs` (runner.ts). Omitted ⇒ the run-level
+      // default (30 min). A heavy producer (e.g. a full-blueprint harden) sets a larger cap; a light node
+      // can set a tighter one. This is the per-node override of the otherwise-uniform watchdog.
+      type: 'integer',
+      minimum: 1000,
+      description: 'Per-node hard wall-clock cap (ms). Omitted ⇒ the run-level default (30 min).',
+    },
+    retries: {
+      // PER-NODE retry budget — extra attempts after the first on an error/blocked verdict (a transient
+      // model/timeout failure). Each retry is a fresh run. 0/omitted ⇒ one attempt (today's behavior).
+      type: 'integer',
+      minimum: 0,
+      description: 'Per-node retry budget — extra attempts after the first on error/blocked. 0/omitted ⇒ one attempt.',
+    },
     inject: {
       // KIND 1 — FORCED reads (§6a): small · always-needed · stable files auto-injected into the prompt.
       type: 'array',
