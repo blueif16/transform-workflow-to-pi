@@ -7,3 +7,12 @@ export { readRunModel, readRunJson, deriveStatus } from './read.js';
 export { watchRun } from './watch.js';
 export type { WatchOpts } from './watch.js';
 export type { RunModel, RunUpdate, NodeView, StageView, EdgeView } from './types.js';
+
+// Rich per-node aggregation — the shared distiller + run-view builder + pi-native model registry. The
+// GUI middleware, the TUI, and the CLI all build the SAME enriched view from these (no view-local copy).
+export { createNodeAccumulator } from './distill.js';
+export type { RichNode, RichTokens, NodeAccumulator } from './distill.js';
+export { buildRunView } from './runView.js';
+export type { RunView, RunViewNode, RunViewStage, RunViewEdge, RunTokens, ScopeBucket, ReadRef, WriteRef, ArtifactRef, NodeAudit } from './runView.js';
+export { loadModelCatalog, contextWindowFor, DEFAULT_CONTEXT_WINDOW } from './models.js';
+export type { ModelCaps, ModelCatalog } from './models.js';

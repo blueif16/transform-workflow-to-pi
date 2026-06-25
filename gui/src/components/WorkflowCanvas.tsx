@@ -46,11 +46,13 @@ import { WorkflowNode, type FlowNode } from "./WorkflowNode";
 import { NodeExpandOverlay } from "./NodeExpandOverlay";
 import { DirectoryPanel, type DirEntry } from "./DirectoryPanel";
 import { MenuBar } from "./MenuBar";
+import { ModeBar } from "./ModeBar";
 import { Companion } from "./Companion";
 import { ExpandContext } from "./ExpandContext";
-import { loadRunView, toFlowGraph, buildDirectory } from "../data/runView";
-import { loadIndex, findThread, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
-import { useRunStream, liveFlowGraph, RunStreamContext } from "../data/runStream";
+import { ViewModeContext, type ViewMode } from "./ViewModeContext";
+import { loadRunView, loadRunTree, toFlowGraph, buildDirectory } from "../data/runView";
+import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
+import { useRunStream, RunStreamContext } from "../data/runStream";
 
 /* defined OUTSIDE the component — prevents node re-mounts on every render */
 const nodeTypes = { flowNode: WorkflowNode };
@@ -59,14 +61,16 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [expandedId, setExpandedId] = useState<string | null>(initialExpandedId ?? null);
+  const [mode, setMode] = useState<ViewMode | null>(null);
+  const [companionOpen, setCompanionOpen] = useState(false); // bottom-right pi chat; launched by the "P" key
+
   const [ix, setIx] = useState<GlobalIndex | null>(null);
   const [activeRun, setActiveRun] = useState<string>("");
-  const [viewable, setViewable] = useState<boolean>(true);
   const [dir, setDir] = useState<{ tree: DirEntry[]; fileToNode: Record<string, string> }>({ tree: [], fileToNode: {} });
   const [loadError, setLoadError] = useState<string | null>(null);
   const { fitView } = useReactFlow();
-  // ONE run-telemetry subscription for the active run — drives the LIVE graph (below) and is provided to
-  // the Companion via RunStreamContext so it doesn't open a second EventSource.
+  // ONE run-telemetry subscription for the active run — provided to the Companion via RunStreamContext so
+  // it doesn't open a second EventSource. The CANVAS itself renders from the distilled run-view (below).
   const live = useRunStream(activeRun);
 
   // LIVE-poll the global index (every 4s) so runs that start / progress after launch appear without a
@@ -89,55 +93,53 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
     return () => { alive = false; clearInterval(id); };
   }, []);
 
-  // Derive the focused run + its viewability from the (live) index: open on the REAL current run
-  // (running > newest — no demo default), and keep viewability fresh as the active run's state changes.
+  // Pick the focused run from the (live) index on first load: the REAL current run (running > newest —
+  // no demo default). Once chosen, the user drives it via the switcher.
   useEffect(() => {
-    if (!ix) return;
-    if (!activeRun) {
-      const run = pickCurrentRun(ix);
-      if (run) { setActiveRun(run); setViewable(findThread(ix, run)?.viewable ?? false); }
-    } else {
-      setViewable(findThread(ix, activeRun)?.viewable ?? false);
-    }
+    if (!ix || activeRun) return;
+    const run = pickCurrentRun(ix);
+    if (run) setActiveRun(run);
   }, [ix, activeRun]);
 
-  // Build the graph from the active run's real run-view — no mock seed. The canvas renders a transcoded
-  // run-view.json (viewable runs only); a LIVE/foreign run has none yet, so we clear the graph and let
-  // the companion stream it. Re-runs when the switcher picks a different run.
+  // ONE graph path for EVERY run: distill the run's real `.pi/` via the run-view endpoint (live,
+  // historical, or foreign alike). While the run is still going, re-poll so status + telemetry stay
+  // fresh; a finished run loads once. Re-runs when the switcher picks a different run.
   useEffect(() => {
-    if (!activeRun || !viewable) { setNodes([]); setEdges([]); setDir({ tree: [], fileToNode: {} }); return; }
+    if (!activeRun) { setNodes([]); setEdges([]); setDir({ tree: [], fileToNode: {} }); return; }
     let alive = true;
-    setLoadError(null);
-    loadRunView(activeRun)
-      .then((view) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
+      try {
+        const view = await loadRunView(activeRun);
         if (!alive) return;
+        setLoadError(null);
         const { nodes: n, edges: e } = toFlowGraph(view);
         setNodes(n);
         setEdges(e);
-        setDir(buildDirectory(view));
-      })
-      .catch((err) => { if (alive) setLoadError(String(err?.message ?? err)); });
-    return () => { alive = false; };
-  }, [activeRun, viewable, setNodes, setEdges]);
-
-  // A LIVE / foreign run has no transcoded run-view.json — render it straight from the stream model, and
-  // re-render as node-status deltas arrive. (Viewable runs are handled by the run-view effect above.)
-  useEffect(() => {
-    if (viewable || !activeRun) return;
-    if (!live.model) { setNodes([]); setEdges([]); setDir({ tree: [], fileToNode: {} }); return; }
-    // pass richByNode so a running node renders its LIVE-folded tokens/tools (the HUD's rv); re-runs
-    // when richByNode updates (the throttled fold) so the numbers climb as the run streams.
-    const { nodes: n, edges: e } = liveFlowGraph(live.model, live.richByNode);
-    setNodes(n);
-    setEdges(e);
-  }, [viewable, activeRun, live.model, live.richByNode, setNodes, setEdges]);
+        // The navigator shows the run's FULL on-disk tree (rooted at {{RUN}}); `fileToNode` still comes
+        // from the run-view so clicking a produced file opens its node. Fall back to the produced-files
+        // tree if the fs endpoint is unavailable.
+        const { tree: producedTree, fileToNode } = buildDirectory(view);
+        let tree = producedTree;
+        try { const fsTree = await loadRunTree(activeRun); if (alive && fsTree.length) tree = fsTree; } catch { /* keep producedTree */ }
+        if (!alive) return;
+        setDir({ tree, fileToNode });
+        if (!view.done) timer = setTimeout(load, 3000); // poll a live run for fresh status + telemetry
+      } catch (err) {
+        if (!alive) return;
+        setLoadError(String((err as Error)?.message ?? err));
+        timer = setTimeout(load, 3000); // a just-started run may not be distillable yet — retry
+      }
+    };
+    load();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, [activeRun, setNodes, setEdges]);
 
   // switch the viewed run (from the menu-bar switcher): load it + close any open node
   const selectRun = useCallback((run: string) => {
     setActiveRun(run);
-    setViewable(ix ? findThread(ix, run)?.viewable ?? false : false);
     setExpandedId(null);
-  }, [ix]);
+  }, []);
 
   // refit the viewport once the real nodes land
   useEffect(() => {
@@ -152,10 +154,16 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
     [expandedId],
   );
 
+  const viewModeApi = useMemo(
+    () => ({ mode, setMode, toggle: (m: ViewMode) => setMode((cur) => (cur === m ? null : m)) }),
+    [mode],
+  );
+
   const expandedData = nodes.find((n) => n.id === expandedId)?.data ?? null;
 
   return (
     <ExpandContext.Provider value={expandApi}>
+      <ViewModeContext.Provider value={viewModeApi}>
       <RunStreamContext.Provider value={live}>
       <LayoutGroup>
         <div style={{ position: "relative", width: "100%", height: "100%", background: "var(--ds-bg-canvas)" }}>
@@ -170,10 +178,10 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
                 boxShadow: "var(--ds-shadow-md)",
               }}
             >
-              Couldn’t load run data — {loadError}. Run <code>npm run data</code> in <code>gui/</code>.
+              Couldn’t load run data — {loadError}. Ensure <code>@piflow/core</code> is built (<code>npm run build</code> at the repo root).
             </div>
           )}
-          {activeRun && !viewable && !loadError && !live.model && (
+          {activeRun && !loadError && nodes.length === 0 && (
             <div
               style={{
                 position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", zIndex: 150,
@@ -182,9 +190,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
                 fontFamily: "var(--ds-font-sans)", fontSize: 13, color: "var(--ds-text-secondary)", lineHeight: 1.5,
               }}
             >
-              {live.status === "error"
-                ? <>Couldn’t reach the live stream for <strong style={{ fontFamily: "var(--ds-font-mono)" }}>{activeRun}</strong>.</>
-                : <>Connecting to <strong style={{ fontFamily: "var(--ds-font-mono)" }}>{activeRun}</strong> — live graph loading…</>}
+              Loading <strong style={{ fontFamily: "var(--ds-font-mono)" }}>{activeRun}</strong> — distilling its run telemetry…
             </div>
           )}
           <ReactFlow
@@ -207,7 +213,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
             <Panel position="top-left">
               <DirectoryPanel
                 tree={dir.tree}
-                title="Run output"
+                title="Run files"
                 onOpenFile={(entry) => {
                   // entry.id is `f:<displayPath>` — open the node that produced this file
                   const producer = dir.fileToNode[entry.id.slice(2)];
@@ -217,12 +223,14 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
             </Panel>
           </ReactFlow>
 
-          <NodeExpandOverlay id={expandedId} data={expandedData} onClose={() => setExpandedId(null)} />
+          <NodeExpandOverlay id={expandedId} data={expandedData} run={activeRun} onClose={() => setExpandedId(null)} />
           <MenuBar activeRun={activeRun} onSelectRun={selectRun} ix={ix} />
-          <Companion activeRun={activeRun} />
+          <ModeBar chatOpen={companionOpen} onToggleChat={() => setCompanionOpen((o) => !o)} />
+          <Companion activeRun={activeRun} open={companionOpen} onOpenChange={setCompanionOpen} />
         </div>
       </LayoutGroup>
       </RunStreamContext.Provider>
+      </ViewModeContext.Provider>
     </ExpandContext.Provider>
   );
 }

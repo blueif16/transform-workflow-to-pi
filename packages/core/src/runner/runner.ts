@@ -85,6 +85,14 @@ export interface ExecWatchdogOpts {
 export interface RunOptions {
   /** Run id (status `run` field + default outDir suffix). */
   run?: string;
+  /**
+   * The run's memorable IDENTITY recorded into `run.json`'s `name` — the Docker-style `<adjective>-<pie>`
+   * the CLI mints when `--run` is omitted, or the explicit `--run` value. Defaults to `run` when unset
+   * (so a library consumer that only passes `run` still gets a `name`).
+   */
+  name?: string;
+  /** The originating prompt id (if any) recorded into `run.json`'s `promptId` — run metadata, not the id. */
+  promptId?: string;
   /** Host-side run dir — the filesystem-as-contract namespace across sandboxes. Default `out/<run>`. */
   outDir?: string;
   /** Base checkout root for a run-scoped provider (worktree-path source / prompt-rewrite anchor). Default cwd. */
@@ -864,7 +872,13 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     },
     status: {
       run,
+      // The memorable run identity (Docker-style `<adjective>-<pie>`) the CLI minted, or `run` itself when
+      // a consumer passed only an id — recorded so a viewer/index keys on a stable, human-friendly name.
+      name: opts.name ?? run,
+      // The originating prompt id, when one was supplied — run METADATA, traceable but NOT the run id.
+      ...(opts.promptId ? { promptId: opts.promptId } : {}),
       source: wf.meta.name,
+      profile: opts.profile ?? null,
       provider: opts.providerName ?? 'cp',
       model: opts.model ?? null,
       startedAt: nowISO(),
@@ -894,6 +908,15 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
   for (const s of skipped) seed(s, 'reused');
   for (const s of selected) seed(s, 'pending');
   await writeStatus(outDir, ctx.status);
+
+  // Persist the RESOLVED DAG (the profile already applied — elided nodes dropped, deps rewired) into the
+  // self-describing run dir. `.pi/run.json` records WHAT ran; this records the SHAPE it ran as — the deck
+  // of nodes, their topological stages, and their DECLARED data-flow edges. Every viewer renders the run's
+  // real graph from THIS, never by reconstructing edges from runtime io/events traces.
+  await fs.writeFile(
+    path.join(outDir, '.pi', 'workflow.json'),
+    JSON.stringify({ meta: wf.meta, profile: opts.profile ?? null, stages: wf.stages, edges: wf.edges }, null, 2) + '\n',
+  );
 
   // RESUME PREFLIGHT (run.mjs 1282–1305): the skipped upstream nodes were NOT re-run, so their
   // declared artifacts MUST already exist on the host or the resumed tail runs on absent inputs. Stat

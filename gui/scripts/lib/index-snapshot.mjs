@@ -67,12 +67,14 @@ export function discoverNamespaces(root) {
   return out;
 }
 
-// run dirs (any dir with .pi/run.json) across .piflow/<wf>/runs, gui/public/runs, and out/<id>.
+// run dirs = ONLY the canonical run home `.piflow/<wf>/runs/<id>` (sdk-canonical-build-plan §D9: "a run's
+// canonical home is ALWAYS .piflow/<wf>/runs/<id> … no more shared out/game"). We deliberately do NOT scan
+// `out/<id>` (a product's BUILD-OUTPUT dir that merely happened to colocate a `.pi/` — scanning it
+// scavenges stray/legacy build dirs as if they were runs) nor `gui/public/runs` (committed run data must
+// never live in the GUI — the data-boundary rule). Real runs are distilled live by the run-view middleware.
 export function discoverRunDirs(root) {
   const wfRoot = path.join(root, '.piflow');
-  const guiRuns = path.join(root, 'gui', 'public', 'runs');
-  const outRoot = path.join(root, 'out');
-  const searchRoots = [wfRoot, guiRuns, outRoot];
+  const searchRoots = [wfRoot];
   const runDirs = [];
   const pushIfRun = (dir) => { if (fssync.existsSync(path.join(dir, '.pi', 'run.json'))) runDirs.push(dir); };
   const eachChildDir = (parent, fn) => {
@@ -80,8 +82,6 @@ export function discoverRunDirs(root) {
     for (const e of fssync.readdirSync(parent, { withFileTypes: true })) if (e.isDirectory()) fn(path.join(parent, e.name));
   };
   eachChildDir(wfRoot, (wfDir) => eachChildDir(path.join(wfDir, 'runs'), pushIfRun));
-  eachChildDir(guiRuns, pushIfRun);
-  eachChildDir(outRoot, pushIfRun);
   return { runDirs, searchRoots };
 }
 
@@ -165,19 +165,30 @@ async function buildThread(runDir) {
  * few file stats, so recomputing it per request (live mode) is cheap for a normal fleet.
  */
 export async function buildSnapshot(registry) {
+  // GLOBAL namespace registry: a run associates to its workflow by run.json.source, and that workflow's
+  // template can live in a DIFFERENT registered product than the run — e.g. game-omni runs sit under
+  // /…/game-omni/out while the game-omni template lives in the piflow repo's .piflow/. Resolve source
+  // against ALL products' templates (not just the run's own product), so such runs file under their REAL
+  // namespace WITH its templatePath/meta instead of falling to 'unfiled'.
+  const globalNs = new Map(); // namespace id → { id, name, templatePath, meta }
+  for (const p of registry.products) for (const ns of discoverNamespaces(p.root)) if (!globalNs.has(ns.id)) globalNs.set(ns.id, ns);
+  const globalNsIds = new Set(globalNs.keys());
+
   const products = [];
   for (const product of registry.products) {
     const root = product.root;
     const namespaces = discoverNamespaces(root);
     const { runDirs } = discoverRunDirs(root);
     const nsById = new Map(namespaces.map((ns) => [ns.id, { ...ns, threads: [] }]));
-    const namespaceIds = new Set(namespaces.map((ns) => ns.id));
 
     for (const runDir of runDirs) {
       const thread = await buildThread(runDir);
       if (!thread) continue;
-      const nsId = namespaceIdForSource(readRunSource(runDir), namespaceIds);
-      if (!nsById.has(nsId)) nsById.set(nsId, { id: nsId, name: nsId, templatePath: null, meta: null, threads: [] });
+      const nsId = namespaceIdForSource(readRunSource(runDir), globalNsIds);
+      if (!nsById.has(nsId)) {
+        const g = globalNs.get(nsId);
+        nsById.set(nsId, g ? { ...g, threads: [] } : { id: nsId, name: nsId, templatePath: null, meta: null, threads: [] });
+      }
       nsById.get(nsId).threads.push(thread);
     }
 

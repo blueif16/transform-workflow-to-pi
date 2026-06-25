@@ -1,8 +1,8 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, stat, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -34,6 +34,23 @@ const sendJson = (res: ServerResponse, code: number, body: unknown) => {
   res.setHeader("Content-Type", "application/json");
   res.end(typeof body === "string" ? body : JSON.stringify(body));
 };
+
+/** Resolve a run id → its run dir + the owning product's workspace root, from the LIVE index (so a run
+ *  added since launch resolves). Shared by the stream/run-view/file endpoints' lookups. */
+async function resolveRunDir(run: string): Promise<{ runDir: string; workspaceRoot: string | null } | null> {
+  const lib = findUp("scripts/lib/index-snapshot.mjs");
+  if (!lib) return null;
+  try {
+    const { loadRegistry, buildSnapshot } = await import(pathToFileURL(lib).href);
+    const ix = await buildSnapshot(loadRegistry());
+    for (const p of ix.products ?? [])
+      for (const ns of p.namespaces ?? []) {
+        const hit = (ns.threads ?? []).find((t: { run?: string; runDir?: string }) => t.run === run && t.runDir);
+        if (hit) return { runDir: hit.runDir, workspaceRoot: p.root ?? null };
+      }
+  } catch { /* fall through */ }
+  return null;
+}
 
 /**
  * Serve the GLOBAL piflow index/products to the static GUI — WITHOUT copying collected data into the repo
@@ -137,7 +154,178 @@ function piflowRunStream(): Plugin {
   };
 }
 
+/**
+ * On-demand RUN-VIEW — `GET /__piflow/run-view/<run>` distills a run's REAL `.pi/` tree (run.json +
+ * per-node events.jsonl + io.json) into the enriched run-view the canvas/HUD render, via the SHARED
+ * `@piflow/core/observe` `buildRunView` (NOT a GUI-local copy — the data layer lives in the package, so
+ * GUI + TUI + CLI agree). This is the ONE path for EVERY run — live, historical, or foreign — replacing
+ * the old transcode-to-gui/public/run-view.json step (no run data is copied into the repo). The run dir,
+ * its sibling runs (the prior-run average), and the workspace root are resolved from the SAME live index.
+ */
+function piflowRunView(): Plugin {
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const m = req.url?.match(/^\/__piflow\/run-view\/([^/?]+)/);
+    if (!m) return next();
+    const run = decodeURIComponent(m[1]);
+
+    let runDir: string | null = null;
+    let workspaceRoot: string | null = null;
+    const historyDirs: string[] = [];
+    const lib = findUp("scripts/lib/index-snapshot.mjs");
+    if (lib) {
+      try {
+        const { loadRegistry, buildSnapshot } = await import(pathToFileURL(lib).href);
+        const ix = await buildSnapshot(loadRegistry());
+        for (const p of ix.products ?? [])
+          for (const ns of p.namespaces ?? []) {
+            const hit = (ns.threads ?? []).find((t: { run?: string; runDir?: string }) => t.run === run && t.runDir);
+            if (!hit) continue;
+            runDir = hit.runDir;
+            workspaceRoot = p.root ?? null;
+            // sibling runs of the SAME workflow are the prior-run baseline (expectedMs)
+            for (const t of ns.threads ?? []) if (t.runDir) historyDirs.push(t.runDir);
+          }
+      } catch { /* fall through to 404 */ }
+    }
+    if (!runDir) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered? (piflow gui / npm run data:index)` });
+
+    const obs = findUp("packages/core/dist/observe/index.js");
+    if (!obs) return sendJson(res, 500, { error: "@piflow/core observe dist not found — run: npm run build (at repo root)" });
+    try {
+      const { buildRunView } = await import(pathToFileURL(obs).href);
+      const { view } = buildRunView(runDir, { historyDirs, workspaceRoot });
+      sendJson(res, 200, view);
+    } catch (e) {
+      sendJson(res, 500, { error: `run-view build failed for "${run}" (${String(e)})` });
+    }
+  };
+  return {
+    name: "piflow-run-view",
+    configureServer(server) { server.middlewares.use(handler); },
+    configurePreviewServer(server) { server.middlewares.use(handler); },
+  };
+}
+
+/**
+ * On-demand FILE READ-BACK — `GET /__piflow/file/<run>?path=<rel|abs>` serves a file's REAL bytes from
+ * disk so the HUD renders ANY file it has a path for (input read, output artifact, or write) — markdown,
+ * json, code, or image — not just the 8 KB telemetry snapshot. The run-view records paths only; this is
+ * the missing filesystem bridge. Resolution: the path is taken under the run dir (the run's own copy)
+ * then the workspace root, and the REALPATH must stay inside one of them (no `..`/symlink escape). Images
+ * are served with an image MIME for `<img>`; everything else as UTF-8 text for the reader. Dev + preview.
+ */
+function piflowFile(): Plugin {
+  // Extensions served as binary images (rendered via <img>); everything else is served as text.
+  const IMAGE_MIME: Record<string, string> = {
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+    webp: "image/webp", svg: "image/svg+xml", avif: "image/avif", bmp: "image/bmp", ico: "image/x-icon",
+  };
+  const TEXT_MIME: Record<string, string> = {
+    json: "application/json; charset=utf-8", md: "text/markdown; charset=utf-8", markdown: "text/markdown; charset=utf-8",
+  };
+  const MAX_FILE_BYTES = 12 * 1024 * 1024;
+
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const m = req.url?.match(/^\/__piflow\/file\/([^/?]+)/);
+    if (!m) return next();
+    const run = decodeURIComponent(m[1]);
+    const reqPath = new URL(req.url!, "http://localhost").searchParams.get("path");
+    if (!reqPath) return sendJson(res, 400, { error: "missing ?path" });
+
+    const resolved = await resolveRunDir(run);
+    if (!resolved) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered?` });
+    const { runDir, workspaceRoot } = resolved;
+
+    // resolve under the run dir first, then the workspace root; the realpath must stay inside one of them.
+    const bases = [runDir, ...(workspaceRoot ? [workspaceRoot] : [])];
+    const realBases: string[] = [];
+    for (const b of bases) { try { realBases.push(await realpath(b)); } catch { /* skip */ } }
+    const candidates = isAbsolute(reqPath) ? [reqPath] : bases.map((b) => join(b, reqPath));
+    let real: string | null = null;
+    for (const c of candidates) {
+      let rp: string;
+      try { rp = await realpath(c); } catch { continue; }
+      if (realBases.some((rb) => rp === rb || rp.startsWith(rb + sep))) { real = rp; break; }
+    }
+    if (!real) return sendJson(res, 404, { error: `not found or outside workspace: ${reqPath}` });
+
+    let st;
+    try { st = await stat(real); } catch { return sendJson(res, 404, { error: "stat failed" }); }
+    if (!st.isFile()) return sendJson(res, 400, { error: "not a file" });
+    if (st.size > MAX_FILE_BYTES) return sendJson(res, 413, { error: `file too large (${st.size} bytes)` });
+
+    const ext = (real.split(/[./]/).pop() || "").toLowerCase();
+    const mime = IMAGE_MIME[ext] ?? TEXT_MIME[ext] ?? "text/plain; charset=utf-8";
+    try {
+      const buf = await readFile(real);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", mime);
+      res.setHeader("Content-Length", String(buf.length));
+      res.setHeader("Cache-Control", "no-cache");
+      res.end(buf);
+    } catch (e) {
+      sendJson(res, 500, { error: `read failed (${String(e)})` });
+    }
+  };
+  return {
+    name: "piflow-file",
+    configureServer(server) { server.middlewares.use(handler); },
+    configurePreviewServer(server) { server.middlewares.use(handler); },
+  };
+}
+
+/**
+ * On-demand RUN FILE TREE — `GET /__piflow/tree/<run>` walks the run's `{{RUN}}` folder (= runDir) and
+ * returns the FULL on-disk file tree as DirEntry[] (`{id,name,kind,typeLabel?,children?}`), rooted at the
+ * run dir. Unlike the run-view's produced-files list, this is the real filesystem — every file the run
+ * holds, browsable in the top-left navigator. Internal/noise dirs (`.pi` telemetry, `node_modules`, `.git`)
+ * are skipped. File ids are `f:<run-relative path>` (folders `d:<…>`) so a leaf's id maps 1:1 onto the
+ * run-relative displayPath the run-view emits (→ click opens the producing node when there is one).
+ */
+function piflowTree(): Plugin {
+  const SKIP = new Set([".pi", "node_modules", ".git", ".DS_Store"]);
+  const MAX_ENTRIES = 5000;
+  const ext = (name: string) => { const i = name.lastIndexOf("."); return i > 0 ? name.slice(i + 1).toLowerCase() : undefined; };
+
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const m = req.url?.match(/^\/__piflow\/tree\/([^/?]+)/);
+    if (!m) return next();
+    const run = decodeURIComponent(m[1]);
+    const resolved = await resolveRunDir(run);
+    if (!resolved) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered?` });
+
+    let count = 0;
+    type Entry = { id: string; name: string; kind: "folder" | "file"; typeLabel?: string; children?: Entry[] };
+    const walk = async (absDir: string, rel: string, depth: number): Promise<Entry[]> => {
+      if (depth > 12 || count >= MAX_ENTRIES) return [];
+      let ents;
+      try { ents = await readdir(absDir, { withFileTypes: true }); } catch { return []; }
+      const dirs: Entry[] = [], files: Entry[] = [];
+      for (const e of ents.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (SKIP.has(e.name) || count >= MAX_ENTRIES) continue;
+        count += 1;
+        const childRel = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) dirs.push({ id: `d:${childRel}`, name: e.name, kind: "folder", children: await walk(join(absDir, e.name), childRel, depth + 1) });
+        else if (e.isFile()) files.push({ id: `f:${childRel}`, name: e.name, kind: "file", typeLabel: ext(e.name) });
+      }
+      return [...dirs, ...files]; // folders first, each already alpha-sorted
+    };
+
+    try {
+      const tree = await walk(resolved.runDir, "", 0);
+      sendJson(res, 200, { tree, truncated: count >= MAX_ENTRIES });
+    } catch (e) {
+      sendJson(res, 500, { error: `tree build failed for "${run}" (${String(e)})` });
+    }
+  };
+  return {
+    name: "piflow-tree",
+    configureServer(server) { server.middlewares.use(handler); },
+    configurePreviewServer(server) { server.middlewares.use(handler); },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), piflowGlobalIndex(), piflowRunStream()],
+  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowFile(), piflowTree()],
   server: { port: 5173, host: true },
 });

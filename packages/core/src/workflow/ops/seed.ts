@@ -47,7 +47,16 @@ export function resolveSeedTokens(spec: string, ctx: ResolveCtx): string {
   for (let pass = 0; pass < 8 && oneToken.test(out); pass++) {
     out = out.replace(new RegExp(oneToken, 'g'), (whole, file: string, field: string) => {
       try {
-        const v = drillPath(JSON.parse(readFileSync(file, 'utf8')), field.trim());
+        // Re-root a RELATIVE inner {file:field} path against the WORKSPACE, not
+        // process.cwd(). The outer {{…}} tokens already resolved to absolute paths,
+        // but a bare readFileSync(relative) resolves against the LAUNCH dir — so a run
+        // started outside the workspace (e.g. `piflow run` from the piflow repo root,
+        // where cwd ≠ {{WORKSPACE}}) ENOENTs and the nested-token seed silently skips
+        // (the "engine base ABSENT" → Claude-mode fallback). Mirrors the legacy
+        // runner's path.resolve(runCwd, file); makes the drill relocation-invariant
+        // exactly like the {{…}} roots already are.
+        const abs = path.isAbsolute(file) ? file : path.resolve(ctx.workspace, file);
+        const v = drillPath(JSON.parse(readFileSync(abs, 'utf8')), field.trim());
         return v == null ? whole : String(v);
       } catch {
         return whole;
@@ -116,7 +125,12 @@ export async function stageSeed(seed: Seed, ctx: ResolveCtx, runDir: string): Pr
 
   if (srcIsDir) {
     await fs.mkdir(toAbs, { recursive: true });
-    await fs.cp(fromAbs, toAbs, { recursive: true, force: true });
+    // verbatimSymlinks: a seeded tree routinely contains node_modules with hundreds
+    // of .bin/* symlinks (and pnpm-style self-referential links). DEREFERENCING them
+    // (fs.cp's default) makes the copy slow AND throws EINVAL "cannot copy … to a
+    // subdirectory of self" when a link resolves back into the tree. Copy links AS
+    // links — correct for node_modules and relocation-invariant.
+    await fs.cp(fromAbs, toAbs, { recursive: true, force: true, verbatimSymlinks: true });
   } else {
     await fs.mkdir(path.dirname(toAbs), { recursive: true });
     await fs.copyFile(fromAbs, toAbs);

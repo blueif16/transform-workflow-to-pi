@@ -1,7 +1,7 @@
-// runView.ts — the GUI's real-data contract. Mirrors the shape build-run-view.mjs emits, loads it,
-// and maps it onto the React Flow graph + the existing FlowNodeData. Every field here is backed by a
-// real value in run-view.json (transcoded from a real run); there is no mock fallback, so a node that
-// lacks data simply renders empty — "no mock data" enforced by the type, not by discipline alone.
+// runView.ts — the GUI's real-data contract. Mirrors the shape `@piflow/core/observe` `buildRunView`
+// emits, fetches it from the `/__piflow/run-view/<run>` endpoint (which distills the run's real `.pi/`
+// on demand), and maps it onto the React Flow graph + FlowNodeData. Every field is backed by a real
+// value; there is no mock fallback, so a node that lacks data simply renders empty.
 import type { FlowNode, FlowNodeData, NodeStatus } from "../components/WorkflowNode";
 import type { DirEntry } from "../components/DirectoryPanel";
 import type { Edge } from "@xyflow/react";
@@ -30,6 +30,8 @@ export interface RunViewNode {
   model?: string | null;
   provider?: string | null;
   api?: string | null;
+  /** pi-native context window for this node's model (tokens) — the context-bar denominator. */
+  contextWindow?: number | null;
   toolCalls: number;
   toolBreakdown: Record<string, number>;
   timeline: TimelineSpan[];
@@ -39,6 +41,14 @@ export interface RunViewNode {
   artifacts: ArtifactRef[];
   bash: BashCall[];
   tokens?: RunTokens;
+  /** provider rate-limit/overload retries (count of `auto_retry_start`) — mirrors core. */
+  retries: number;
+  /** the assistant's final `message.stopReason` (null if none seen). */
+  stopReason: string | null;
+  /** the output was cut off by the token cap (stopReason `'max_tokens'`/`'length'`). */
+  truncated: boolean;
+  /** total `thinking_delta` characters for this node. */
+  thinkingChars: number;
   summary?: string;
   issues?: string[];
   stageIndex?: number;
@@ -66,12 +76,36 @@ export interface RunView {
   nodes: RunViewNode[];
 }
 
-/** Fetch the distilled run-view for a run id (served from gui/public/runs/<run>/run-view.json). */
+/** Fetch the distilled run-view for a run id. ONE path: the dev middleware (`/__piflow/run-view/<run>`)
+ *  distills the run's REAL `.pi/` on demand via the shared `@piflow/core/observe` builder — works for
+ *  live, historical, and foreign runs alike (no transcode, no per-run static file). */
 export async function loadRunView(run: string): Promise<RunView> {
-  const res = await fetch(`${import.meta.env.BASE_URL}runs/${run}/run-view.json`);
+  const res = await fetch(`/__piflow/run-view/${encodeURIComponent(run)}`);
   if (!res.ok) throw new Error(`Failed to load run-view for "${run}": ${res.status} ${res.statusText}`);
   return (await res.json()) as RunView;
 }
+
+/** Fetch the run's FULL on-disk file tree rooted at its `{{RUN}}` folder (the dev middleware
+ *  `/__piflow/tree/<run>` walks runDir). This is the real filesystem — every file the run holds — not just
+ *  the produced-files set `buildDirectory` derives from the run-view. File leaf ids are `f:<run-relative>`,
+ *  which equals a produced file's run-relative displayPath, so the `fileToNode` map still maps clicks. */
+export async function loadRunTree(run: string): Promise<DirEntry[]> {
+  const res = await fetch(`/__piflow/tree/${encodeURIComponent(run)}`);
+  if (!res.ok) throw new Error(`Failed to load file tree for "${run}": ${res.status} ${res.statusText}`);
+  const { tree } = (await res.json()) as { tree: DirEntry[] };
+  return tree ?? [];
+}
+
+/** URL for the file read-back endpoint (`vite.config.ts` `piflowFile`) — serves a file's REAL bytes from
+ *  disk (text or image), resolved under the run's workspace. The HUD uses this to render ANY file it has a
+ *  path for — input read, output artifact, or write — not just the telemetry preview snapshot. */
+export function fileUrl(run: string, path: string): string {
+  return `/__piflow/file/${encodeURIComponent(run)}?path=${encodeURIComponent(path)}`;
+}
+
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]);
+/** True when a path should render as an <img> (served binary) rather than fetched as text. */
+export const isImagePath = (p: string) => IMAGE_EXTS.has((p.split(".").pop() || "").toLowerCase());
 
 /** Map the engine's node status ladder onto the design-system's visual NodeStatus. */
 export function toNodeStatus(s: string): NodeStatus {
@@ -104,6 +138,27 @@ export function formatBytes(b?: number): string {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Compact token count: 1234 → "1.2k", 139653 → "140k", 1_200_000 → "1.2M". */
+export function formatTokens(n?: number | null): string {
+  if (n == null) return "—";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** Fallback window when a node's model isn't in pi's native registry (rv.contextWindow is null). The
+ *  real value now comes per-node from `@piflow/core/observe` (pi's ~/.pi/agent/models.json) — no table here. */
+export const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+export type ContextTone = "ok" | "warn" | "high";
+/** Context-pressure zones (per telemetry research 2026): <40% ok · 40–70% warn · ≥70% high — quality
+ *  degrades as the window fills, so we flag the 70%+ band before it becomes critical. */
+export function contextTone(frac: number): ContextTone {
+  if (frac >= 0.7) return "high";
+  if (frac >= 0.4) return "warn";
+  return "ok";
 }
 
 const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
