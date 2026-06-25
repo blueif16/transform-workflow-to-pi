@@ -14,7 +14,19 @@ import { compile } from '../dag.js';
 import { applyProfileByName } from '../workflow/profile.js';
 import { loadTemplate } from '../workflow/template/loader.js';
 import { instantiateRun } from '../workflow/template/instantiate.js';
+import { expandFusion, type FusionExpandOpts } from '../workflow/fusion/expand.js';
+import { loadFusionConfig } from './fusion-config.js';
+import { loadModelTiers } from './model-routing.js';
 import { runWorkflow, type RunOptions, type RunResult } from './runner.js';
+
+/**
+ * (Phase 2) The fusion-expansion inputs, resolved from the read-only global config once per run: the
+ * `~/.piflow/fusion.json` param defaults + the `~/.piflow/model-tiers.json` map (used ONLY to classify a
+ * panel/judge ref as a tier vs a model — resolution stays in model-routing). Absence is graceful.
+ */
+function fusionExpandOpts(): FusionExpandOpts {
+  return { defaults: loadFusionConfig().defaults, tiers: loadModelTiers() };
+}
 
 /**
  * The resolved-config object `runFromConfig` consumes: a WorkflowSpec SOURCE (consumer-injected — either a
@@ -53,6 +65,10 @@ export async function runFromConfig(config: ResolvedRunConfig): Promise<RunResul
   // Apply the active run PROFILE (elide nodes by the declared predicate, rewire deps) BEFORE compile.
   // No profile + no defaultProfile ⇒ the spec is returned verbatim (the full DAG).
   spec = applyProfileByName(spec, (runOpts as RunOptions).profile);
+  // (Phase 2) Expand fusion-activated nodes into siblings + a judge AFTER profile elision (never expand a
+  // dropped node) and BEFORE compile (the compiler draws siblings→judge from the generated reads/produces).
+  // No fusion node ⇒ the spec is returned unchanged.
+  spec = expandFusion(spec, fusionExpandOpts());
   const workflow = compile(spec);
   return runWorkflow(workflow, runOpts as RunOptions);
 }
@@ -88,7 +104,9 @@ export async function runFromTemplate(templateDir: string, opts: RunFromTemplate
   // materialized regardless of profile — an elided node's folder is harmless (it is just never executed).
   await instantiateRun(templateDir, runDir, { workspace });
   // (2.5) apply the active run PROFILE (elide nodes by the declared predicate, rewire deps) BEFORE compile.
-  const spec = applyProfileByName(loaded, (runOpts as RunOptions).profile);
+  let spec = applyProfileByName(loaded, (runOpts as RunOptions).profile);
+  // (2.6) (Phase 2) expand fusion-activated nodes into siblings + judge — AFTER profile elision, BEFORE compile.
+  spec = expandFusion(spec, fusionExpandOpts());
   // (3) build the DAG + (4) run it, collecting into the SAME run root.
   const workflow = compile(spec);
   return runWorkflow(workflow, { ...(runOpts as RunOptions), outDir: path.resolve(runDir), workspace });

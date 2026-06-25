@@ -25,6 +25,8 @@ import {
   resolveNodeModel,
   loadModelTiers,
   loadModelsIndex,
+  expandFusion,
+  loadFusionConfig,
   nodePromptFile,
   generateRunName,
   type Workflow,
@@ -258,7 +260,10 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     const loaded = await loadTemplate(templateDir);
     // Apply the active profile (elide nodes by the declared predicate) so the dry-run plan reflects the
     // SAME reduced DAG the live run would execute — an unknown name errors loudly here too.
-    const spec = applyProfileByName(loaded, parsed.profile);
+    let spec = applyProfileByName(loaded, parsed.profile);
+    // (Phase 2) Expand fusion nodes (siblings + judge) — AFTER profile, BEFORE compile — so the dry-run
+    // preview shows the SAME expanded DAG the live run (core's runFromTemplate) executes. Never lie.
+    spec = expandFusion(spec, { defaults: loadFusionConfig().defaults, tiers: loadModelTiers() });
     const wf = compile(spec);
     await instantiateRun(templateDir, outDir, { workspace });
     // reference the actual realized prompt path the run materialized (engine-owned layout helper).

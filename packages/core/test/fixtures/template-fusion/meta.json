@@ -1,0 +1,6 @@
+{
+  "id": "template-fusion",
+  "name": "template-fusion",
+  "description": "Fusion example fixture — one moa-fusion node (a panel of 2 + a judge) feeding a downstream consumer.",
+  "phases": ["draft", "publish"]
+}

@@ -37,21 +37,23 @@ node with no panel is a loud `FusionConfigError`).
 A `moa` node `draft` with `panel: ["fast","deep"]` (and a downstream `publish` that reads `draft`'s output):
 
 ```
-            ┌── draft__p1  (model: fast)  → fusion/draft/p1.json ──┐
-draft.deps ─┤                                                      ├─→ draft (JUDGE) → spec/answer.md → publish
-            └── draft__p2  (model: deep)  → fusion/draft/p2.json ──┘
+            ┌── draft__p1  (model: fast)  → fusion-draft-p1/partial.json ──┐
+draft.deps ─┤                                                              ├─→ draft (JUDGE) → spec/answer.md → publish
+            └── draft__p2  (model: deep)  → fusion-draft-p2/partial.json ──┘
 ```
 
 - **Siblings** `draft__p1 … draft__pN` clone `draft`'s original prompt + read-scope + deps; each owns and
-  produces a distinct partial under `fusion/<id>/`. Write-disjoint ⇒ they run as **one parallel stage**.
+  produces a distinct partial in its **own top-level dir** `fusion-<id>-p<i>/partial.json` (disjoint dirs so
+  the parallel-stage output collection never collides). Write-disjoint ⇒ they run as **one parallel stage**.
 - **The judge IS `draft`** (same id): its prompt is replaced by the mode's judge prompt, it reads the
   partials, and it keeps `draft`'s **original `produces`/artifacts/integrity-contract** — so `publish` (and
   every other downstream edge, data-flow *or* `deps`) is preserved untouched.
 - The expansion runs **before `compile`**; the existing compiler draws the picture from `produces ⋈ reads`.
   No new DAG concepts — a fusion node is just sugar for a sub-graph.
 
-With `obligations: true`, a `draft__obl` pre-node derives a coverage checklist (`fusion/<id>/obligations.json`)
-that the judge consumes, so the final answer is audited against every requirement the task named.
+With `obligations: true`, a `draft__obl` pre-node derives a coverage checklist
+(`fusion-<id>-obl/obligations.json`) that the judge consumes, so the final answer is audited against every
+requirement the task named.
 
 ## They're preset agents
 
@@ -83,7 +85,8 @@ Precedence (spec §2): `node.fusion.<param>` › `~/.piflow/fusion.json` › bui
 
 ## Status
 
-Implemented: the `fusion` template block (schema + loader), `expandFusion` (both modes, obligations,
-tier-classification), the preset agents, and the `~/.piflow/fusion.json` reader. **Pending** (`T2.4`): wiring
-`expandFusion` into the run path so `piflow run … --dry-run` renders the expanded DAG and a live run executes
-it. Until then, the expansion is exercised by `packages/core/test/fusion-expand.test.ts`.
+Implemented end-to-end: the `fusion` template block (schema + loader), `expandFusion` (both modes,
+obligations, tier-classification), the preset agents, the `~/.piflow/fusion.json` reader, and the **run-path
+wiring** — a live run (`runFromConfig`/`runFromTemplate`) and `piflow run … --dry-run` both honor fusion
+(expand AFTER profile, BEFORE compile). Exercised by `fusion-expand` / `fusion-config` / `entry` tests.
+Optional, deferred: per-participant objective-failure fallback (`T2.5`).

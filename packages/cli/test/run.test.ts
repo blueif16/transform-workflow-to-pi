@@ -174,6 +174,29 @@ describe('piflow run --dry-run — realized commands, no model', () => {
     expect(out).toContain('w0-classify');
     expect(out).toMatch(/\bpi\b/);
   });
+
+  // (Phase 2 · T2.4/T2.6) the dry-run must show the EXPANDED fusion DAG — the SAME sub-graph the live run
+  // executes. A preview that printed the un-expanded `draft` node would be a lying preview.
+  it('run --dry-run renders the EXPANDED fusion DAG (panel siblings + judge) with per-node models', async () => {
+    const fusionSrc = path.resolve(HERE, '../../core/test/fixtures/template-fusion');
+    const tplFusion = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-cli-fusion-'));
+    await fs.cp(fusionSrc, tplFusion, { recursive: true });
+    const ws = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-fusion-ws-'));
+    const out = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-fusion-out-'));
+    const lines: string[] = [];
+    await runTemplate(
+      { templateDir: tplFusion, dryRun: true, run: 'fzdry', args: {}, workspace: ws, outDir: out, model: 'run-default' },
+      { runFromConfig: async () => ({ status: {} as never, outDir: out }), print: (s) => lines.push(s) },
+    );
+    const printed = lines.join('\n');
+    // the panel siblings + the judge (original id) + the untouched successor all appear in the plan.
+    for (const id of ['draft-p1', 'draft-p2', 'draft', 'publish']) expect(printed).toContain(`[${id}]`);
+    // each sibling carries its panel model; the un-expanded `draft` (a single node) must NOT be the whole plan.
+    expect(printed).toMatch(/\[draft-p1\][^\n]*--model fast/);
+    expect(printed).toMatch(/\[draft-p2\][^\n]*--model deep/);
+    expect(printed).toContain('4 nodes');
+    for (const d of [tplFusion, ws, out]) await fs.rm(d, { recursive: true, force: true });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

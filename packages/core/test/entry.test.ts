@@ -85,6 +85,56 @@ describe('runFromConfig — the env-AGNOSTIC run entry (U8, D5)', () => {
   });
 });
 
+// ── Phase 2 (T2.4): the run path honors fusion — a `fusion` node runs as its EXPANDED DAG ──────────────
+describe('runFromConfig — fusion expansion is wired into the run path', () => {
+  /** A moa fusion node `synth` (panel of 2) + a downstream `publish` that reads its artifact. */
+  function fusionSpec(): WorkflowSpec {
+    return {
+      meta: { name: 'fz', description: 'd' },
+      nodes: [
+        {
+          label: 'synth',
+          prompt: 'TASK',
+          tools: {},
+          model: 'base',
+          io: { reads: [], produces: ['out/answer.md'], artifacts: [{ path: 'out/answer.md' }] },
+          sandbox: { read: [], write: ['out/**'] },
+          fusion: { mode: 'moa', panel: ['model-a', 'model-b'] },
+        },
+        n('publish', ['out/answer.md'], ['out/final.md']),
+      ],
+    };
+  }
+
+  it('runs the siblings + judge end-to-end; the judge keeps the original id + artifact so publish still runs', async () => {
+    const outDir = await tmpOut();
+    const result = await runFromConfig({
+      workflowSpec: fusionSpec(),
+      run: 'fz',
+      outDir,
+      buildCommand: stubBuilder(),
+    });
+    expect(result.status.ok).toBe(true);
+    // the node became a 4-node sub-graph: two siblings + the judge (original id) + the untouched successor.
+    expect(Object.keys(result.status.nodes).sort()).toEqual(['publish', 'synth', 'synth-p1', 'synth-p2']);
+    for (const id of ['synth-p1', 'synth-p2', 'synth', 'publish']) {
+      expect(result.status.nodes[id].status).toBe('ok');
+    }
+    // the judge (id 'synth') produced the ORIGINAL artifact → the downstream edge to publish survived.
+    expect(await fs.readFile(path.join(outDir, 'out/answer.md'), 'utf8')).toBe('synth');
+    expect(await fs.readFile(path.join(outDir, 'out/final.md'), 'utf8')).toBe('publish');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('leaves a NON-fusion spec byte-identical (additive — only fusion nodes expand)', async () => {
+    const outDir = await tmpOut();
+    const result = await runFromConfig({ workflowSpec: spec(), run: 'nf', outDir, buildCommand: stubBuilder() });
+    expect(result.status.ok).toBe(true);
+    expect(Object.keys(result.status.nodes)).toEqual(['solo']); // no expansion
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
 // ── S5: runFromTemplate — the TEMPLATE-run join (loadTemplate → instantiateRun → compile → runWorkflow) ──
 
 describe('runFromTemplate — the template-run join (U8, §10)', () => {
