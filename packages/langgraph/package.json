@@ -1,0 +1,34 @@
+{
+  "name": "@piflow/langgraph",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi Flow ↔ LangGraph.js connector — ACTIVATE a pi workflow run and GROUND @piflow/core's shared run-status stream (watchRun/RunUpdate — the same one the CLI + TUI render) into a LangGraph graph (streamMode:'custom' via config.writer). Generic: ZERO product/domain vocabulary; the connector only transports run status.",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@piflow/core": "*"
+  },
+  "peerDependencies": {
+    "@langchain/langgraph": ">=0.4 <1",
+    "@langchain/core": ">=0.3 <1"
+  },
+  "devDependencies": {
+    "@langchain/langgraph": "^0.4.9",
+    "@langchain/core": "^0.3.66"
+  }
+}
