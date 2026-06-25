@@ -120,6 +120,53 @@ describe('template-format schemas — MALFORMED node.json FAILS (the load-bearin
   });
 });
 
+describe('fusion block (Phase 2) — accepts a valid activation, rejects malformed', () => {
+  // The fusion block opts a node into the siblings+judge DAG expansion (spec §4). It is the G5
+  // `checkpoint` block's twin: a nested object, `additionalProperties:false`, a required enum
+  // discriminator (`mode`). The ACCEPT case is the load-bearing RED — until the schema allows the
+  // `fusion` key the top-level `additionalProperties:false` rejects it; the malformed cases only become
+  // discriminating once a WELL-FORMED fusion validates (else "bad fusion rejected" is vacuously green).
+  let base: Record<string, unknown>;
+  beforeAll(async () => {
+    base = (await readJson(nodePath('w0-classify'))) as Record<string, unknown>;
+    expect(validate(nodeSchema as object, base).ok).toBe(true);
+  });
+  const withFusion = (fusion: unknown): ReturnType<SchemaValidator> => {
+    const n = clone(base);
+    n.fusion = fusion;
+    return validate(nodeSchema as object, n);
+  };
+
+  it('a moa fusion block (mode + panel) validates', () => {
+    const r = withFusion({ mode: 'moa', panel: ['fast', 'deep'], judge: 'deep' });
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
+
+  it('a best-of-n fusion block (mode + n + flags) validates', () => {
+    const r = withFusion({ mode: 'best-of-n', n: 3, obligations: true, verify: false });
+    expect(r.ok).toBe(true);
+  });
+
+  it('a fusion block MISSING `mode` is rejected', () => {
+    const r = withFusion({ panel: ['fast', 'deep'] });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/mode|required/);
+  });
+
+  it('a fusion `mode` outside moa|best-of-n is rejected', () => {
+    const r = withFusion({ mode: 'ensemble' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/mode|enum/i);
+  });
+
+  it('an unknown key INSIDE fusion (a typo like `pannel`) is rejected', () => {
+    const r = withFusion({ mode: 'moa', pannel: ['fast'] });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/additional|pannel/i);
+  });
+});
+
 describe('template referential integrity — a dangling `dep` is caught (loader-level, NOT the schema)', () => {
   // §8: "every dep resolves to a discovered node" is a CROSS-NODE check the compile step owns — JSON
   // Schema can't see the node SET. We assert the property over the fixture so the oracle a loader binds

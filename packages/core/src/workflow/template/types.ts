@@ -59,6 +59,15 @@ export interface TemplateNode {
     headless?: 'default' | 'abort';
     timeoutMs?: number;
   };
+  /** (Phase 2) Fusion activation → intent `fusion`, consumed by `expandFusion` before compile (spec §4). */
+  fusion?: {
+    mode: 'moa' | 'best-of-n';
+    n?: number;
+    panel?: string[];
+    judge?: string;
+    obligations?: boolean;
+    verify?: boolean;
+  };
 }
 
 /** The authored `meta.json` (template-format.md §5). */

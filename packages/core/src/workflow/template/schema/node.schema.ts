@@ -192,6 +192,24 @@ export const nodeSchema = {
         timeoutMs: { type: 'integer', minimum: 0, description: 'Bound on the interactive wait (ms). Omit ⇒ wait while a courier could reply.' },
       },
     },
+    fusion: {
+      // (Phase 2) Opt this node into the FUSION DAG expansion (spec §4): `expandFusion` turns the node into
+      // a JUDGE and spawns N sibling producers upstream, which the existing compiler draws as
+      // `deps → (siblings ‖) → judge → successors`. `mode` is the required discriminator; the rest resolve
+      // node.fusion.<param> > ~/.piflow/fusion.json > built-in. Twin of the `checkpoint` block above.
+      type: 'object',
+      additionalProperties: false,
+      required: ['mode'],
+      description: 'Activate fusion on this node (siblings + judge expansion, spec §4). `mode` required.',
+      properties: {
+        mode: { enum: ['moa', 'best-of-n'], description: 'moa (panel of models → synthesize) | best-of-n (one model sampled N times → select).' },
+        n: { type: 'integer', minimum: 1, description: 'best-of-n sample count (siblings). Omitted ⇒ default 3.' },
+        panel: { type: 'array', items: { type: 'string', minLength: 1 }, uniqueItems: true, description: 'moa: one sibling per entry (model id or tier alias). Overrides n.' },
+        judge: { type: 'string', minLength: 1, description: "Judge model/tier. Omitted ⇒ the node's own resolved model." },
+        obligations: { type: 'boolean', description: 'Derive a coverage checklist pre-node the panel + judge consume. Default false.' },
+        verify: { type: 'boolean', description: 'Judge verify→revise loop (quality). false ⇒ fast. Default true.' },
+      },
+    },
   },
   $defs: {
     check: {

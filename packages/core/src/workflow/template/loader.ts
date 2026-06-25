@@ -151,6 +151,9 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
   // (G5) Carry a HUMAN CHECKPOINT block verbatim onto the spec (the runtime CheckpointSpec) when authored —
   // additive, the same way `ops` is carried. A node with no checkpoint behaves exactly as before.
   if (n.def.checkpoint) intent.checkpoint = n.def.checkpoint;
+  // (Phase 2) Carry a FUSION activation block verbatim onto the intent when authored — `expandFusion`
+  // consumes it before compile (the activated node becomes a judge + N siblings). Additive: no block ⇒ no change.
+  if (n.def.fusion) intent.fusion = n.def.fusion;
   return intent;
 }
 

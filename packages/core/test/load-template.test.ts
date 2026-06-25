@@ -135,6 +135,21 @@ describe('loadTemplate — HAPPY PATH (the unmodified fixture LOADS)', () => {
     expect(wf.nodes['w2a-levels'].tier).toBeUndefined();
   });
 
+  // Phase 2 — the loader must CARRY the authored `fusion` block onto the loaded WorkflowSpec INTENT. Unlike
+  // the routing fields, fusion is consumed by `expandFusion` BEFORE compile and never reaches the dense
+  // NodeSpec, so the assertion is on `spec.nodes` (the intent), not `wf.nodes`. Mirrors the checkpoint carry.
+  it('carries the authored `fusion` block onto the loaded intent (Phase 2)', async () => {
+    dir = await cloneFixture();
+    const n = await readJson(nodeJson(dir, 'w0-classify'));
+    n.fusion = { mode: 'moa', panel: ['fast', 'deep'], judge: 'deep', obligations: true };
+    await writeJson(nodeJson(dir, 'w0-classify'), n);
+    const spec = await loadTemplate(dir);
+    const w0 = spec.nodes.find((nd) => nd.label === 'w0-classify')!;
+    expect(w0.fusion).toEqual({ mode: 'moa', panel: ['fast', 'deep'], judge: 'deep', obligations: true });
+    // additive: a node that declares no fusion stays fusion-free on the intent.
+    expect(spec.nodes.find((nd) => nd.label === 'w2a-levels')!.fusion).toBeUndefined();
+  });
+
   it('a NodeIntent with NO ops compiles to a NodeSpec with ops undefined (additive — absence stays absent)', () => {
     // The additivity guarantee: an authored node that declares no ops is byte-for-byte op-free downstream.
     const wf = compile({

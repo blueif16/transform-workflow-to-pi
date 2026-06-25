@@ -552,6 +552,28 @@ export interface ToolRegistry {
 // ── L1∩L2 BOUNDARY: the flat node bag the design agent fills ──────────────────
 
 /**
+ * (Phase 2) A node's FUSION activation (template `node.json` `fusion`, spec §4). This lives ONLY on the
+ * authoring/intent layer: `expandFusion(spec)` consumes it BEFORE `compile`, rewriting the activated node
+ * into a JUDGE and spawning N sibling producers — so by the time a node is materialized into a dense
+ * `NodeSpec`, no `fusion` remains (which is why `NodeSpec` carries no `fusion` field). Each param resolves
+ * `node.fusion.<param>` > `~/.piflow/fusion.json` > a built-in default.
+ */
+export interface FusionSpec {
+  /** moa = mixture-of-agents (a panel of models → SYNTHESIZE one answer); best-of-n = one model sampled N times → SELECT. */
+  mode: 'moa' | 'best-of-n';
+  /** best-of-n: how many sibling samples. Omitted ⇒ default 3. (moa derives its count from `panel`.) */
+  n?: number;
+  /** moa: one sibling per entry — a model id or tier alias. Present ⇒ overrides `n`. */
+  panel?: string[];
+  /** The judge's model/tier. Omitted ⇒ the activated node's own resolved model. */
+  judge?: string;
+  /** Derive a coverage checklist in a pre-node the panel + judge consume (ported from pi-fusion). Default false. */
+  obligations?: boolean;
+  /** The judge runs a verify→revise loop (quality). false ⇒ a single pass (fast). Default true. */
+  verify?: boolean;
+}
+
+/**
  * The AUTHORED subset of a node — what the COMPOSE agent fills. Mechanics (id, edges, stage/lane,
  * sandbox profile, provider/workspace defaults) are SDK-filled by `compile`. `phase` is generic node
  * metadata (a display label, §5) carried through so a PROFILE predicate can select nodes by it — it
@@ -566,6 +588,8 @@ export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentTyp
   ops?: NodeSpec['ops'];
   /** (G5) A human checkpoint on this node — carried verbatim onto the dense NodeSpec. */
   checkpoint?: NodeSpec['checkpoint'];
+  /** (Phase 2) Fusion activation — consumed by `expandFusion` BEFORE compile; never reaches the dense NodeSpec. */
+  fusion?: FusionSpec;
 };
 
 /**
