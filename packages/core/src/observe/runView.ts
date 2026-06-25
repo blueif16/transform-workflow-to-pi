@@ -16,6 +16,7 @@ import fssync from 'node:fs';
 import path from 'node:path';
 import { createNodeAccumulator } from './distill.js';
 import { loadModelCatalog, contextWindowFor, type ModelCatalog } from './models.js';
+import { checkpointViewFrom, type CheckpointMarker, type CheckpointJournalSlot } from '../runner/checkpoint.js';
 
 export type ScopeKind = 'run' | 'skill' | 'template' | 'package' | 'repo';
 export interface ScopeBucket { kind: ScopeKind; label: string; count: number; paths: string[] }
@@ -62,6 +63,22 @@ export interface RunViewNode {
   issues?: string[];
   stageIndex?: number;
   lane?: number;
+  /**
+   * (G5) The human-checkpoint payload — the marker (question) cross-checked against the `__checkpoints__`
+   * journal (resolution). Present iff a checkpoint marker exists for this node. When `status` is `pending`
+   * the node's `status` reads `awaiting-input` so existing status-driven UI lights up; the GUI's
+   * notification points at this node and the reply flows back via the courier endpoint.
+   */
+  checkpoint?: {
+    status: 'pending' | 'resolved';
+    kind: 'confirm' | 'input' | 'select';
+    prompt: string;
+    choices?: string[];
+    default?: unknown;
+    reply?: unknown;
+    askedAt?: string;
+    hash: string;
+  };
 }
 export interface RunViewStage { index: number; phase: string; parallel: boolean; nodeIds: string[] }
 export interface RunViewEdge { from: string; to: string; path: string }
@@ -190,6 +207,23 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
   const underRun = (abs: string) => abs === runResolved || abs.startsWith(runResolved + path.sep);
   const catalog = opts.catalog ?? loadModelCatalog();
 
+  // (G5) Read the `__checkpoints__` resolution journal ONCE off `.pi/state.json` (sync). Each node's
+  // marker (`.pi/checkpoints/<id>.json`) is cross-checked against it so a resolved checkpoint shows
+  // `resolved` + `reply`, a pending one drives `awaiting-input`.
+  let ckJournal: Record<string, CheckpointJournalSlot> = {};
+  try {
+    const st = JSON.parse(fssync.readFileSync(path.join(runDir, '.pi', 'state.json'), 'utf8')) as Record<string, unknown>;
+    const ch = st.__checkpoints__;
+    if (ch && typeof ch === 'object') ckJournal = ch as Record<string, CheckpointJournalSlot>;
+  } catch { /* no state.json yet */ }
+  const readMarkerSync = (id: string): CheckpointMarker | null => {
+    try {
+      return JSON.parse(fssync.readFileSync(path.join(runDir, '.pi', 'checkpoints', `${id}.json`), 'utf8')) as CheckpointMarker;
+    } catch {
+      return null;
+    }
+  };
+
   const nodes: RunViewNode[] = [];
   const audit: NodeAudit[] = [];
   // Declared I/O ledger per node (io.json reads[]/writes[]) — the data-flow edge source. Unlike the
@@ -231,8 +265,13 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
     const writes: WriteRef[] = rich.writes.map((w) => { const abs = toAbs(w.path); return { path: abs, displayPath: displayPath(abs), verified: w.verified, bytes: w.bytes }; });
     const artifacts: ArtifactRef[] = (rec.artifacts || []).map((a) => { const abs = toAbs(a.path); return { path: abs, displayPath: displayPath(abs), exists: !!a.exists, bytes: a.bytes ?? 0 }; });
 
+    // (G5) Build the checkpoint view from the marker + the `__checkpoints__` journal. A pending marker
+    // makes the node's shown `status` read `awaiting-input` (verified-not-trusted: the marker is on disk).
+    const checkpoint = checkpointViewFrom(readMarkerSync(id), ckJournal[id]) ?? undefined;
+    const status = checkpoint && checkpoint.status === 'pending' ? 'awaiting-input' : rec.status;
+
     nodes.push({
-      id, label: rec.label || id, phase, status: rec.status,
+      id, label: rec.label || id, phase, status,
       startedAt: rec.startedAt, endedAt: rec.endedAt, durationMs: rec.durationMs,
       expectedMs: expected[id] ?? rec.durationMs ?? null, priorSamples: samples[id] ?? 0,
       model: rich.model, provider: rich.provider, api: rich.api,
@@ -241,6 +280,7 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
       reads, scopes, writes, artifacts, bash: rich.bash, tokens: { ...rich.tokens },
       retries: rich.retries, stopReason: rich.stopReason, truncated: rich.truncated, thinkingChars: rich.thinkingChars,
       summary: rec.summary, issues: rec.issues || [],
+      ...(checkpoint ? { checkpoint } : {}),
     });
   }
 

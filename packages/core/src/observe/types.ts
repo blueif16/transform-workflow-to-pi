@@ -11,6 +11,26 @@
 import type { NodeStatus, RunStatus } from '../runner/status.js';
 
 /**
+ * (G5) The HUMAN CHECKPOINT payload a view renders — the marker (the question) cross-checked against the
+ * `.pi/state.json` `__checkpoints__` journal (the resolution). Present on a node iff a checkpoint marker
+ * exists on disk for it. The GUI's notification points at the awaiting node via this; once resolved it
+ * carries the `reply`. The shape is the SUPERSET both `NodeView` and `RunViewNode` carry (kept in sync so
+ * the live SSE snapshot and the on-demand run-view agree).
+ */
+export interface CheckpointView {
+  status: 'pending' | 'resolved';
+  kind: 'confirm' | 'input' | 'select';
+  prompt: string;
+  choices?: string[];
+  default?: unknown;
+  /** Present once resolved (from the `__checkpoints__` journal). */
+  reply?: unknown;
+  askedAt?: string;
+  /** The question hash — a courier echoes it so the runner rejects a reply for a re-asked question. */
+  hash: string;
+}
+
+/**
  * One node as a view consumes it — the union of the cli `NodeView` (verified/total artifacts + the
  * `status` RE-DERIVED from on-disk reality, the verified-not-trusted rule) and the tui node row
  * (phase + stage placement + duration). `reported` keeps the raw record field for transparency / the
@@ -35,6 +55,12 @@ export interface NodeView {
   stageIndex: number;
   /** The node's column within its stage (siblings in a parallel lane share a stage, differ by lane). */
   lane: number;
+  /**
+   * (G5) The human-checkpoint payload, present iff a checkpoint marker exists for this node on disk. When
+   * its `status` is `pending` the node's derived `status` reads `awaiting-input` (verified-not-trusted: the
+   * marker is on disk). The GUI's notification points here; the reply flows back via the courier endpoint.
+   */
+  checkpoint?: CheckpointView;
 }
 
 /** A reconstructed stage (a parallel barrier groups its concurrent nodes into one `parallel` stage). */

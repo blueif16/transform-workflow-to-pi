@@ -16,8 +16,9 @@ import path from 'node:path';
 import { runJsonFile, nodeIoFile } from '../runner/layout.js';
 import { artifactState } from '../runner/status.js';
 import type { NodeStatus, NodeStatusRecord, RunStatus } from '../runner/status.js';
+import { readMarker, readCheckpointJournal, checkpointViewFrom } from '../runner/checkpoint.js';
 import type { NodeIo } from '../types.js';
-import type { EdgeView, NodeView, RunModel, StageView } from './types.js';
+import type { CheckpointView, EdgeView, NodeView, RunModel, StageView } from './types.js';
 
 /** Read `.pi/run.json` → a RunStatus, or null when absent/unparseable. */
 export async function readRunJson(runDir: string): Promise<RunStatus | null> {
@@ -51,8 +52,13 @@ function declaredArtifacts(rec: NodeStatusRecord, io: NodeIo | null): string[] {
  * RE-DERIVE a node's shown status from on-disk reality (the verified-not-trusted rule). A killed/error
  * verdict is terminal; pre-terminal states pass through; any verdict that CLAIMS completion downgrades
  * to `blocked` when a declared artifact is missing.
+ *
+ * (G5) A node with a PENDING checkpoint marker on disk reads `awaiting-input` — verified-not-trusted in
+ * spirit: the run-view shows it because the marker EXISTS on disk, not because a record claims it. A
+ * resolved/absent marker doesn't change the derivation.
  */
-export function deriveStatus(reported: NodeStatus, missing: string[]): NodeStatus {
+export function deriveStatus(reported: NodeStatus, missing: string[], checkpoint?: CheckpointView | null): NodeStatus {
+  if (checkpoint && checkpoint.status === 'pending') return 'awaiting-input';
   if (reported === 'error') return 'error';
   if (reported === 'pending' || reported === 'running' || reported === 'reused' || reported === 'dry') {
     return reported;
@@ -107,6 +113,10 @@ export async function readRunModel(runDir: string): Promise<RunModel> {
 
   const { stages, placement } = buildStages(status);
 
+  // (G5) The `__checkpoints__` resolution journal (read ONCE off `.pi/state.json`) cross-checks each
+  // node's marker so a resolved checkpoint shows `resolved` + `reply`, a pending one drives `awaiting-input`.
+  const ckJournal = await readCheckpointJournal(runDir);
+
   const nodes: NodeView[] = [];
   for (const rec of Object.values(status.nodes)) {
     const io = ioById[rec.id];
@@ -116,18 +126,21 @@ export async function readRunModel(runDir: string): Promise<RunModel> {
     );
     const missing = states.filter((s) => !s.exists).map((s) => s.path);
     const place = placement[rec.id] ?? { stageIndex: 0, lane: 0 };
+    const marker = await readMarker(runDir, rec.id);
+    const checkpoint = checkpointViewFrom(marker, ckJournal[rec.id]) as CheckpointView | null;
     nodes.push({
       id: rec.id,
       label: rec.label,
       phase: io?.phase ?? null,
       reported: rec.status,
-      status: deriveStatus(rec.status, missing),
+      status: deriveStatus(rec.status, missing, checkpoint),
       artifactsVerified: states.filter((s) => s.exists).length,
       artifactsTotal: declared.length,
       missing,
       durationMs: rec.durationMs,
       stageIndex: place.stageIndex,
       lane: place.lane,
+      ...(checkpoint ? { checkpoint } : {}),
     });
   }
   // stamp the real phase (from io) onto the stages (buildStages can't see io).
