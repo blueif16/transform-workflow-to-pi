@@ -48,17 +48,17 @@ describe('expandFusion — moa (mixture-of-agents)', () => {
     expect(p1.model).toBe('model-a');
     expect(p2.model).toBe('model-b');
     expect(p1.prompt).toBe('ORIGINAL TASK: write the answer.'); // sibling clones X's prompt verbatim
-    expect(p1.io.produces).toEqual(['fusion/synth/p1.json']);
-    expect(p2.io.produces).toEqual(['fusion/synth/p2.json']);
+    expect(p1.io.produces).toEqual(['fusion-synth-p1/partial.json']);
+    expect(p2.io.produces).toEqual(['fusion-synth-p2/partial.json']);
     // write-disjoint owns ⇒ the siblings are a parallel lane.
-    expect(p1.sandbox?.write).toEqual(['fusion/synth/p1.json']);
-    expect(p2.sandbox?.write).toEqual(['fusion/synth/p2.json']);
+    expect(p1.sandbox?.write).toEqual(['fusion-synth-p1/partial.json']);
+    expect(p2.sandbox?.write).toEqual(['fusion-synth-p2/partial.json']);
   });
 
   it('the judge reads every partial, keeps the original produces, and drops the fusion block', () => {
     const out = expandFusion(specWith({ mode: 'moa', panel: ['model-a', 'model-b'] }));
     const judge = find(out, 'synth');
-    expect(judge.io.reads).toEqual(['fusion/synth/p1.json', 'fusion/synth/p2.json']);
+    expect(judge.io.reads).toEqual(['fusion-synth-p1/partial.json', 'fusion-synth-p2/partial.json']);
     expect(judge.io.produces).toEqual(['out/answer.md']); // original artifact → downstream edge preserved
     expect(judge.fusion).toBeUndefined(); // no re-expansion
     expect(judge.prompt).toContain('JUDGE of a mixture-of-agents panel'); // A1 prompt
@@ -102,14 +102,14 @@ describe('expandFusion — obligations pre-node', () => {
   it('adds an obligations node the judge reads when obligations:true', () => {
     const out = expandFusion(specWith({ mode: 'moa', panel: ['model-a', 'model-b'], obligations: true }));
     const obl = find(out, 'synth__obl');
-    expect(obl.io.produces).toEqual(['fusion/synth/obligations.json']);
+    expect(obl.io.produces).toEqual(['fusion-synth-obl/obligations.json']);
     expect(obl.prompt).toContain('COVERAGE CHECKLIST'); // A3 prompt
     expect(obl.agentType).toBe('fusion-obligations'); // the obligations preset agent
 
     // the judge reads the obligations artifact too (so its {{OBLIGATIONS}} slot is wired).
     const judge = find(out, 'synth');
-    expect(judge.io.reads).toContain('fusion/synth/obligations.json');
-    expect(judge.prompt).toContain('fusion/synth/obligations.json');
+    expect(judge.io.reads).toContain('fusion-synth-obl/obligations.json');
+    expect(judge.prompt).toContain('fusion-synth-obl/obligations.json');
     // it compiles (the obl node sits in the siblings' stage, upstream of the judge).
     const wf = compile(out);
     expect(wf.edges.filter((e) => e.to === 'synth').map((e) => e.from).sort()).toEqual([

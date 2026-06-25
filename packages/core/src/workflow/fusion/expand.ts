@@ -69,7 +69,16 @@ function producerIo(x: NodeIntent, produces: string, deps: string[] | undefined)
 function expandNode(x: NodeIntent, opts: FusionExpandOpts): NodeIntent[] {
   const f = x.fusion as FusionSpec;
   const d = opts.defaults ?? {};
-  const base = `fusion/${slugify(x.label, 0)}`;
+  // Each generated PRODUCER (sibling / obligations) collects into its OWN unique TOP-LEVEL dir
+  // (`fusion-<id>-p<i>/`, `fusion-<id>-obl/`). This is load-bearing: the runner collects every node's
+  // output via a per-node `fs.cp(out/<id> → runRoot)` that runs IN PARALLEL for a parallel stage and
+  // SWALLOWS errors — so if two siblings shared a collected dir (e.g. `fusion/<id>/p{i}.json`), their
+  // concurrent copies would race on the common parent and one partial would be silently dropped (→ a
+  // mysterious "blocked"). Disjoint top-level dirs match the only pattern the runner's collect supports
+  // for a parallel lane (the way `w2a`/`w2b` write to distinct top-level dirs). The judge reads them back.
+  const ns = slugify(x.label, 0);
+  const partialPath = (i: number): string => `fusion-${ns}-p${i}/partial.json`;
+  const obligationsPath = `fusion-${ns}-obl/obligations.json`;
   const obligations = f.obligations ?? d.obligations ?? false;
   const deps = x.io.dependsOn; // siblings + obligations inherit X's upstream deps
 
@@ -94,7 +103,7 @@ function expandNode(x: NodeIntent, opts: FusionExpandOpts): NodeIntent[] {
   const partials: string[] = [];
   const siblings: NodeIntent[] = [];
   for (let i = 1; i <= count; i++) {
-    const partial = `${base}/p${i}.json`;
+    const partial = partialPath(i);
     partials.push(partial);
     siblings.push({
       label: `${x.label}__p${i}`,
@@ -112,7 +121,7 @@ function expandNode(x: NodeIntent, opts: FusionExpandOpts): NodeIntent[] {
   const out: NodeIntent[] = [];
   let oblPath: string | undefined;
   if (obligations) {
-    oblPath = `${base}/obligations.json`;
+    oblPath = obligationsPath;
     out.push({
       label: `${x.label}__obl`,
       // The obligations role is a fusion PRESET AGENT → `agentType` brands it (observe → GUI icon).
