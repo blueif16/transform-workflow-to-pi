@@ -216,7 +216,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
             </Panel>
           </ReactFlow>
 
-          <NodeExpandOverlay id={expandedId} data={expandedData} onClose={() => setExpandedId(null)} />
+          <NodeExpandOverlay id={expandedId} data={expandedData} run={activeRun} onClose={() => setExpandedId(null)} />
           <MenuBar activeRun={activeRun} onSelectRun={selectRun} ix={ix} />
           <ModeBar chatOpen={companionOpen} onToggleChat={() => setCompanionOpen((o) => !o)} />
           <Companion activeRun={activeRun} open={companionOpen} onOpenChange={setCompanionOpen} />

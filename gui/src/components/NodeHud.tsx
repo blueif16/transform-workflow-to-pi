@@ -24,16 +24,20 @@ import { MarkdownReader } from "./MarkdownReader";
 import { CacheDonut } from "./CacheDonut";
 import { expandTransition, easing } from "../motion/transitions";
 import type { FlowNodeData } from "./WorkflowNode";
-import { formatMs, formatBytes, type RunViewNode, type ScopeKind, type ReadRef } from "../data/runView";
+import { formatMs, formatBytes, fileUrl, isImagePath, type RunViewNode, type ScopeKind } from "../data/runView";
 import "../styles/hud.css";
 import "../styles/reader.css";
 
 type RegionKey = "model" | "tools" | "output" | "progress";
 const REGION_KEYS: readonly RegionKey[] = ["model", "tools", "output", "progress"];
 
+// A file the CENTER can render — ANY path the node touched (input read, output artifact, or write).
+// `preview` (when present, from a read's telemetry snapshot) paints instantly while the real bytes load.
+type FileTarget = { path: string; displayPath: string; preview?: string };
+
 // what the CENTER shows beyond the at-rest Overview: a hovered region's detail (sticky)
-// or a clicked input file's content. `null` = the Overview.
-type CenterView = { kind: "region"; region: RegionKey } | { kind: "file"; idx: number } | null;
+// or a clicked file's content. `null` = the Overview.
+type CenterView = { kind: "region"; region: RegionKey } | { kind: "file"; file: FileTarget } | null;
 
 // Deep-link a region open via `?peek=<region>` (also how the hover-expand is verified/screenshotted).
 const initialPeek: RegionKey | null =
@@ -53,8 +57,9 @@ const initialFile: number | null =
       })()
     : null;
 
-const initialView: CenterView =
-  initialFile != null ? { kind: "file", idx: initialFile } : initialPeek ? { kind: "region", region: initialPeek } : null;
+// the ?file= deep-link is an index into rv.reads, resolved to a FileTarget in the component (rv-dependent);
+// only the region peek can be applied before rv is known.
+const initialView: CenterView = initialPeek ? { kind: "region", region: initialPeek } : null;
 
 const SCOPE_META: Record<ScopeKind, { label: string; hint: string }> = {
   run: { label: "Run workspace", hint: "filesystem" },
@@ -81,19 +86,27 @@ const fileName = (p: string) => p.split("/").pop() || p;
 export interface NodeHudProps {
   id: string;
   data: FlowNodeData;
+  /** the run id — used to fetch a file's real bytes from the read-back endpoint. */
+  run: string;
   onClose: () => void;
   reduce: boolean;
   dialogRef: Ref<HTMLDivElement>;
 }
 
-export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) {
+export function NodeHud({ id, data, run, onClose, reduce, dialogRef }: NodeHudProps) {
   const rv = data.rv;
   const status = data.status ?? "idle";
   // the single CENTER state: a hovered region (sticky), a clicked file, or null (Overview)
   const [view, setView] = useState<CenterView>(initialView);
   const pin = (region: RegionKey) => setView({ kind: "region", region });
-  const selectFile = (idx: number) => setView({ kind: "file", idx });
+  const openFile = (f: FileTarget) => setView({ kind: "file", file: { path: f.path, displayPath: f.displayPath, preview: f.preview } });
   const reset = () => setView(null);
+
+  // apply the ?file=<idx> deep-link once (rv-dependent, so it can't be in the module-level initialView).
+  useEffect(() => {
+    if (initialFile != null && rv?.reads[initialFile]) openFile(rv.reads[initialFile]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // progress: a completed node is 100%; the ETA is the mean of prior runs (rv.expectedMs)
   const done = status === "success" || status === "error";
@@ -111,16 +124,15 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
 
   const breakdown = Object.entries(rv.toolBreakdown).sort((a, b) => b[1] - a[1]);
 
-  // input files grouped by source, each carrying its global index into rv.reads (for click→select)
+  // input files grouped by source — each read is opened by its path in the CENTER file viewer
   const sources = rv.scopes.map((s) => ({
     kind: s.kind,
     label: SCOPE_META[s.kind]?.label ?? s.label,
-    items: rv.reads.map((r, i) => ({ r, i })).filter(({ r }) => r.scope === s.kind),
+    items: rv.reads.map((r) => ({ r })).filter(({ r }) => r.scope === s.kind),
   }));
 
   const pinnedRegion = view?.kind === "region" ? view.region : null;
-  const pinnedFile = view?.kind === "file" ? view.idx : null;
-  const fileRef = pinnedFile != null ? rv.reads[pinnedFile] : null;
+  const openPath = view?.kind === "file" ? view.file.path : null;
 
   return (
     <div
@@ -166,12 +178,12 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
               <span className="ds-source__count">{g.items.length}</span>
             </div>
             <div className="ds-source__files">
-              {g.items.map(({ r, i }) => (
+              {g.items.map(({ r }) => (
                 <button
                   key={r.path}
                   type="button"
-                  className={`ds-filebtn${pinnedFile === i ? " is-sel" : ""}`}
-                  onClick={() => selectFile(i)}
+                  className={`ds-filebtn${openPath === r.path ? " is-sel" : ""}`}
+                  onClick={() => openFile(r)}
                   title={r.path}
                 >
                   {fileName(r.displayPath)}
@@ -192,12 +204,12 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
         {view === null && <Overview rv={rv} status={status} expected={expected} />}
         {pinnedRegion && (
           <CenterPanel key={`r-${pinnedRegion}`} title={DETAIL_TITLE[pinnedRegion]} onBack={reset} reduce={reduce}>
-            <Detail region={pinnedRegion} rv={rv} expected={expected} pct={pct} />
+            <Detail region={pinnedRegion} rv={rv} expected={expected} pct={pct} onOpenFile={openFile} />
           </CenterPanel>
         )}
-        {fileRef && (
-          <CenterPanel key={`f-${pinnedFile}`} title={fileRef.displayPath} onBack={reset} reduce={reduce} wide>
-            <FileContent file={fileRef} />
+        {view?.kind === "file" && (
+          <CenterPanel key={`f-${view.file.path}`} title={view.file.displayPath} onBack={reset} reduce={reduce} wide>
+            <FileView run={run} file={view.file} />
           </CenterPanel>
         )}
       </div>
@@ -207,18 +219,26 @@ export function NodeHud({ id, data, onClose, reduce, dialogRef }: NodeHudProps) 
         <div className="ds-out">
           {rv.artifacts.length === 0 && rv.writes.length === 0 && <div className="ds-hud-empty">no artifacts</div>}
           {rv.artifacts.map((a) => (
-            <div key={a.path} className="ds-out__row" data-ok={a.exists}>
+            <button
+              key={a.path} type="button"
+              className={`ds-out__row ds-out__row--btn${openPath === a.path ? " is-sel" : ""}`}
+              data-ok={a.exists} onClick={() => openFile(a)} title={a.displayPath}
+            >
               <span className="ds-out__spark" aria-hidden="true" />
-              <span className="ds-out__name" title={a.displayPath}>{fileName(a.displayPath)}</span>
+              <span className="ds-out__name">{fileName(a.displayPath)}</span>
               <span className="ds-out__meta">{formatBytes(a.bytes)}{a.exists ? " ✓" : " ✗"}</span>
-            </div>
+            </button>
           ))}
           {rv.writes.filter((w) => !rv.artifacts.some((a) => a.displayPath === w.displayPath)).map((w) => (
-            <div key={w.path} className="ds-out__row" data-ok={w.verified}>
+            <button
+              key={w.path} type="button"
+              className={`ds-out__row ds-out__row--btn${openPath === w.path ? " is-sel" : ""}`}
+              data-ok={w.verified} onClick={() => openFile(w)} title={w.displayPath}
+            >
               <span className="ds-out__spark" aria-hidden="true" />
-              <span className="ds-out__name" title={w.displayPath}>{fileName(w.displayPath)}</span>
+              <span className="ds-out__name">{fileName(w.displayPath)}</span>
               <span className="ds-out__meta">{w.bytes != null ? formatBytes(w.bytes) : "wrote"}</span>
-            </div>
+            </button>
           ))}
         </div>
       </Region>
@@ -399,7 +419,7 @@ const DETAIL_TITLE: Record<RegionKey, string> = {
 };
 
 /* ── the full-detail panels shown in the CENTER on hover ───────────────── */
-function Detail({ region, rv, expected, pct }: { region: RegionKey; rv: RunViewNode; expected: number | null; pct?: number }) {
+function Detail({ region, rv, expected, pct, onOpenFile }: { region: RegionKey; rv: RunViewNode; expected: number | null; pct?: number; onOpenFile: (f: FileTarget) => void }) {
   if (region === "model") {
     const t = rv.tokens;
     return (
@@ -479,18 +499,18 @@ function Detail({ region, rv, expected, pct }: { region: RegionKey; rv: RunViewN
       <div className="ds-files">
         {rv.summary && <p className="ds-detail-prose">{rv.summary}</p>}
         {rv.artifacts.map((a) => (
-          <div key={a.path} className="ds-out__row ds-out__row--lg" data-ok={a.exists}>
+          <button key={a.path} type="button" className="ds-out__row ds-out__row--lg ds-out__row--btn" data-ok={a.exists} onClick={() => onOpenFile(a)} title={a.displayPath}>
             <span className="ds-out__spark" aria-hidden="true" />
-            <span className="ds-out__name" title={a.displayPath}>{a.displayPath}</span>
+            <span className="ds-out__name">{a.displayPath}</span>
             <span className="ds-out__meta">{formatBytes(a.bytes)}{a.exists ? " ✓ verified" : " ✗ missing"}</span>
-          </div>
+          </button>
         ))}
         {rv.writes.map((w) => (
-          <div key={`w-${w.path}`} className="ds-out__row ds-out__row--lg" data-ok={w.verified}>
+          <button key={`w-${w.path}`} type="button" className="ds-out__row ds-out__row--lg ds-out__row--btn" data-ok={w.verified} onClick={() => onOpenFile(w)} title={w.displayPath}>
             <span className="ds-out__spark" aria-hidden="true" />
-            <span className="ds-out__name" title={w.displayPath}>{w.displayPath}</span>
+            <span className="ds-out__name">{w.displayPath}</span>
             <span className="ds-out__meta">{w.bytes != null ? formatBytes(w.bytes) : "wrote"}{w.verified ? " ✓" : ""}</span>
-          </div>
+          </button>
         ))}
         {rv.artifacts.length === 0 && rv.writes.length === 0 && <div className="ds-hud-empty">no artifacts emitted</div>}
       </div>
@@ -529,13 +549,39 @@ function Detail({ region, rv, expected, pct }: { region: RegionKey; rv: RunViewN
   );
 }
 
-/* ── a clicked input file's REAL content, rendered BARE (no card/background): markdown
-   parsed to themed nodes, everything else as plain mono text. ── */
-function FileContent({ file }: { file: ReadRef }) {
-  if (!file?.preview) return <div className="ds-hud-empty">content not captured for this read</div>;
-  const ext = (file.displayPath.split(".").pop() || "").toLowerCase();
-  if (ext === "md" || ext === "markdown") return <MarkdownReader source={file.preview} />;
-  return <pre className="ds-codeblock">{file.preview}</pre>;
+/* ── a clicked file's REAL content, fetched from disk via the read-back endpoint and rendered BARE
+   (no card/background): images as <img>, markdown parsed to themed nodes, everything else as mono text.
+   Works for ANY path — input read, output, or artifact. A read's telemetry `preview` paints instantly
+   while the full bytes load, and is the fallback if the fetch fails (e.g. the file was since removed). ── */
+function FileView({ run, file }: { run: string; file: FileTarget }) {
+  const src = fileUrl(run, file.path);
+  const isImage = isImagePath(file.displayPath);
+  const [state, setState] = useState<{ status: "loading" | "ok" | "error"; text?: string; error?: string }>({ status: "loading" });
+
+  useEffect(() => {
+    if (isImage) return; // images load through <img>, no text fetch
+    let alive = true;
+    setState({ status: "loading" });
+    fetch(src)
+      .then(async (r) => { if (!r.ok) throw new Error(`${r.status} ${r.statusText}`); return r.text(); })
+      .then((text) => { if (alive) setState({ status: "ok", text }); })
+      .catch((e) => { if (alive) setState({ status: "error", error: String(e?.message ?? e) }); });
+    return () => { alive = false; };
+  }, [src, isImage]);
+
+  if (isImage) return <div className="ds-fileimg"><img src={src} alt={file.displayPath} loading="lazy" /></div>;
+  if (state.status === "loading")
+    return file.preview ? renderFileText(file.displayPath, file.preview) : <div className="ds-hud-empty">loading {file.displayPath}…</div>;
+  if (state.status === "error")
+    return file.preview ? renderFileText(file.displayPath, file.preview) : <div className="ds-hud-empty">couldn’t read {file.displayPath} — {state.error}</div>;
+  return renderFileText(file.displayPath, state.text ?? "");
+}
+
+// markdown → themed reader; anything else → plain mono. Shared by the live fetch + the preview fallback.
+function renderFileText(displayPath: string, text: string) {
+  const ext = (displayPath.split(".").pop() || "").toLowerCase();
+  if (ext === "md" || ext === "markdown") return <MarkdownReader source={text} />;
+  return <pre className="ds-codeblock">{text}</pre>;
 }
 
 function KV({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {

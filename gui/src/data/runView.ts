@@ -85,6 +85,17 @@ export async function loadRunView(run: string): Promise<RunView> {
   return (await res.json()) as RunView;
 }
 
+/** URL for the file read-back endpoint (`vite.config.ts` `piflowFile`) — serves a file's REAL bytes from
+ *  disk (text or image), resolved under the run's workspace. The HUD uses this to render ANY file it has a
+ *  path for — input read, output artifact, or write — not just the telemetry preview snapshot. */
+export function fileUrl(run: string, path: string): string {
+  return `/__piflow/file/${encodeURIComponent(run)}?path=${encodeURIComponent(path)}`;
+}
+
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]);
+/** True when a path should render as an <img> (served binary) rather than fetched as text. */
+export const isImagePath = (p: string) => IMAGE_EXTS.has((p.split(".").pop() || "").toLowerCase());
+
 /** Map the engine's node status ladder onto the design-system's visual NodeStatus. */
 export function toNodeStatus(s: string): NodeStatus {
   switch (s) {

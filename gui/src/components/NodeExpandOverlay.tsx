@@ -18,10 +18,11 @@ import type { FlowNodeData } from "./WorkflowNode";
 export interface NodeExpandOverlayProps {
   id: string | null;
   data: FlowNodeData | null;
+  run: string;
   onClose: () => void;
 }
 
-export function NodeExpandOverlay({ id, data, onClose }: NodeExpandOverlayProps) {
+export function NodeExpandOverlay({ id, data, run, onClose }: NodeExpandOverlayProps) {
   const reduce = useReducedMotion() ?? false;
   const windowRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -67,7 +68,7 @@ export function NodeExpandOverlay({ id, data, onClose }: NodeExpandOverlayProps)
               pointerEvents: "none",
             }}
           >
-            <NodeHud id={id} data={data} onClose={onClose} reduce={reduce} dialogRef={windowRef} />
+            <NodeHud id={id} data={data} run={run} onClose={onClose} reduce={reduce} dialogRef={windowRef} />
           </div>
         </>
       )}
