@@ -110,7 +110,7 @@ function KindIcon({ kind }: { kind: FlowNodeData["kind"] }) {
 /** (G6) Agent-PRESET glyphs, keyed by the `icon` string a preset declares (display.icon). A preset's icon
  *  is its headline — the pre-customized mark that makes a node feel purpose-built. An unknown key falls back
  *  to the default agent glyph, so a missing/new icon never breaks the chip (the icon is cosmetic). */
-function AgentPresetIcon({ icon }: { icon?: string }) {
+export function AgentPresetIcon({ icon }: { icon?: string }) {
   switch (icon) {
     case "chart-trend": // market-research — an upward trend line
       return (

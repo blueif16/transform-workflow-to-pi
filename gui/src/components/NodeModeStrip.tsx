@@ -8,7 +8,7 @@
  * A LIVE/foreign run carries a lean model (status only, no rv) — those modes
  * degrade to a muted "—" rather than fabricate. See the per-mode branches below.
  */
-import type { FlowNodeData } from "./WorkflowNode";
+import { AgentPresetIcon, type FlowNodeData } from "./WorkflowNode";
 import type { ViewMode } from "./ViewModeContext";
 import { contextTone, DEFAULT_CONTEXT_WINDOW, formatBytes, formatMs, formatTokens, type ContextTone } from "../data/runView";
 import "../styles/modes.css";
@@ -71,6 +71,27 @@ export function NodeModeStrip({ mode, data }: { mode: ViewMode; data: FlowNodeDa
       <div className="ds-nodemode ds-nodemode--model">
         <span className="ds-modelchip">{rv.model}</span>
         {sub && <span className="ds-nodemode__sub">{sub}</span>}
+      </div>
+    );
+  }
+
+  if (mode === "basis") {
+    // (G6) the basic agent type this node INHERITS from — its `agentType` preset. `mergePreset` folds the
+    // base agent's role-prompt + base tools into the node at author-time; the `agentType` label rides through
+    // (spec → observe → here) so the map can show each node's basis. A node with no `agentType` is bespoke:
+    // authored from scratch, inheriting nothing. `agentLabel`/`agentIcon`/`agentColor` are the base's branding,
+    // resolved from the agents catalog (absent when the preset isn't in the catalog — we fall back to the id).
+    const base = rv?.agentType;
+    if (!base) return <div className="ds-nodemode ds-nodemode--muted">bespoke · no base</div>;
+    return (
+      <div className="ds-nodemode ds-nodemode--basis">
+        <span className="ds-basischip__tag">inherits</span>
+        <span className="ds-basischip">
+          <span className="ds-basischip__mark" style={data.agentColor ? { color: data.agentColor } : undefined}>
+            <AgentPresetIcon icon={data.agentIcon} />
+          </span>
+          <span className="ds-basischip__label" title={base}>{data.agentLabel ?? base}</span>
+        </span>
       </div>
     );
   }

@@ -144,6 +144,24 @@
 }
 .ds-nodemode__sub { color: var(--ds-text-tertiary); }
 
+/* basis = which basic agent type this node inherits from (its agentType preset), or "bespoke" if none */
+.ds-nodemode--basis { flex-direction: row; align-items: center; gap: var(--ds-space-2); }
+.ds-basischip__tag { color: var(--ds-text-tertiary); text-transform: uppercase; letter-spacing: var(--ds-tracking-label); flex: none; }
+.ds-basischip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 1px 8px 1px 5px;
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-bg-surface);
+  border: 1px solid var(--ds-border-strong);
+  color: var(--ds-text-primary);
+  font-weight: var(--ds-weight-medium);
+}
+.ds-basischip__mark { display: inline-flex; flex: none; }   /* tinted by the base's color (inline style) */
+.ds-basischip__label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* artifact rows */
 .ds-artrow { display: flex; align-items: baseline; justify-content: space-between; gap: var(--ds-space-2); }
 .ds-artrow__name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

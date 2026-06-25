@@ -11,7 +11,7 @@
  */
 import { createContext, useContext } from "react";
 
-export type ViewMode = "status" | "model" | "artifacts";
+export type ViewMode = "status" | "model" | "artifacts" | "basis";
 
 export interface ViewModeApi {
   mode: ViewMode | null;
@@ -35,4 +35,5 @@ export const VIEW_MODES: ReadonlyArray<{ mode: ViewMode; key: string; label: str
   { mode: "status", key: "t", label: "Status" },
   { mode: "model", key: "m", label: "Model" },
   { mode: "artifacts", key: "a", label: "Artifacts" },
+  { mode: "basis", key: "b", label: "Basis" },
 ];
