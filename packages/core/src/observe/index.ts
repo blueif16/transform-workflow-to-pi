@@ -12,8 +12,8 @@ export type { RunModel, RunUpdate, NodeView, StageView, EdgeView } from './types
 // GUI middleware, the TUI, and the CLI all build the SAME enriched view from these (no view-local copy).
 export { createNodeAccumulator } from './distill.js';
 export type { RichNode, RichTokens, NodeAccumulator } from './distill.js';
-export { buildRunView } from './runView.js';
-export type { RunView, RunViewNode, RunViewStage, RunViewEdge, RunTokens, ScopeBucket, ReadRef, WriteRef, ArtifactRef, NodeAudit } from './runView.js';
+export { buildRunView, previewView } from './runView.js';
+export type { RunView, RunViewNode, RunViewStage, RunViewEdge, RunTokens, ScopeBucket, ReadRef, WriteRef, ArtifactRef, NodeAudit, PreviewViewOpts } from './runView.js';
 export { loadModelCatalog, contextWindowFor, DEFAULT_CONTEXT_WINDOW } from './models.js';
 export type { ModelCaps, ModelCatalog } from './models.js';
 

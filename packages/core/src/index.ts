@@ -46,7 +46,7 @@ export type { AgentPreset, PresetMergeable } from './workflow/agent-preset.js';
 // (Phase 2) Fusion nodes: the pre-compile siblings+judge expansion + its built-in fusion PRESET AGENTS
 // (the judge/obligations roles). `expandFusion` runs before `compile`; the presets brand the generated
 // nodes via `agentType`. The verbatim Appendix-A prompt bodies + token fillers live in `fusion/prompts`.
-export { expandFusion, FusionConfigError } from './workflow/fusion/expand.js';
+export { expandFusion, withNodeFusion, FusionConfigError } from './workflow/fusion/expand.js';
 export type { FusionDefaults, FusionExpandOpts } from './workflow/fusion/expand.js';
 // (G12 — M3) Bounded conditional reroute / self-fix: the pre-compile UNROLL of a QA loop into forward-only
 // acyclic clones (the `expandFusion` move), with a zero-pi existence-gate short-circuit (#17). Runs before
