@@ -69,9 +69,12 @@ describe('consultPreamble — the escalation feeds VERIFIED evidence, never a se
   });
 });
 
-describe('legacyRetry — io.retries reproduces today exactly', () => {
-  it('maps io.retries into { max, on:[infra,degenerate] } (today: retry on error/blocked transients)', () => {
-    expect(legacyRetry(2)).toEqual({ max: 2, on: ['infra', 'degenerate'] });
+describe('legacyRetry — io.retries reproduces today exactly (retry on ANY error/blocked)', () => {
+  it('maps io.retries into an UNFILTERED budget (no `on` ⇒ every non-halt class, today behavior)', () => {
+    // Today's runNodeWithRetries re-ran on ANY error/blocked — so legacy retry must NOT filter by class
+    // (a `contract`/missing-artifact blocked retried up to N pre-M4; an `on:[...]` set would regress it).
+    expect(legacyRetry(2)).toEqual({ max: 2 });
+    expect(legacyRetry(2).on).toBeUndefined();
   });
   it('undefined/0 retries ⇒ max 0 (one attempt, today)', () => {
     expect(legacyRetry(undefined).max).toBe(0);
