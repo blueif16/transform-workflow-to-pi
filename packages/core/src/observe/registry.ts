@@ -3,7 +3,7 @@
 // The product-AGNOSTIC half of the fleet-observe surface: a list of REGISTERED repo ROOTS (paths only —
 // NEVER any product's collected data) under the global home `~/.piflow/`, the analogue of the pi runtime's
 // `~/.pi/`. This is the SAME registry the GUI middleware reads, the TUI's fleet picker reads, and
-// `piflow run` self-registers into — so the CLI, the TUI, and the GUI are all exposed to the EXACT same set
+// `piflowctl run` self-registers into — so the CLI, the TUI, and the GUI are all exposed to the EXACT same set
 // of repos. It writes ONLY under `~/.piflow/` (the architectural law: a global mapping/index lives there,
 // never inside packages/ or a repo). It stores only POINTERS (roots), never a product's data — consistent
 // with "the SDK is logic only".

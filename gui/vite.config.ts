@@ -106,7 +106,7 @@ function piflowRunStream(): Plugin {
               if (t.run === run && t.runDir) runDir = t.runDir;
       } catch { /* fall through to 404 */ }
     }
-    if (!runDir) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered? (piflow gui / npm run data:index)` });
+    if (!runDir) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered? (piflowctl gui / npm run data:index)` });
 
     const obs = findUp("packages/core/dist/observe/index.js");
     if (!obs) return sendJson(res, 500, { error: "@piflow/core observe dist not found — run: npm run build (at repo root)" });
@@ -187,7 +187,7 @@ function piflowRunView(): Plugin {
           }
       } catch { /* fall through to 404 */ }
     }
-    if (!runDir) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered? (piflow gui / npm run data:index)` });
+    if (!runDir) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered? (piflowctl gui / npm run data:index)` });
 
     const obs = findUp("packages/core/dist/observe/index.js");
     if (!obs) return sendJson(res, 500, { error: "@piflow/core observe dist not found — run: npm run build (at repo root)" });

@@ -43,7 +43,7 @@ if (config.runDir) {
   // Surface an empty fleet up front (no registered repos) instead of an empty dashboard with no hint.
   const fleet = await discoverFleet();
   if (!fleet.length) {
-    console.error('piflow-tui: no runs found across the registered repos (~/.piflow).\n  Start a `piflow run`, or point me at one run dir:  piflow-tui <rundir>');
+    console.error('piflow-tui: no runs found across the registered repos (~/.piflow).\n  Start a `piflowctl run`, or point me at one run dir:  piflow-tui <rundir>');
     process.exit(1);
   }
 }

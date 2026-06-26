@@ -1,4 +1,4 @@
-// `piflow run <templateDir> [--dry-run] [--run <id>] [--arg k=v ...]` — DRIVE a template run.
+// `piflowctl run <templateDir> [--dry-run] [--run <id>] [--arg k=v ...]` — DRIVE a template run.
 //
 // The orchestrator over the T5 seam: it RESOLVES the env+args (`loadConfig`), LOADS + compiles the
 // authored template into a `WorkflowSpec` (`loadTemplate` — runs the §8 static gate), MATERIALIZES a
@@ -237,13 +237,13 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
   const print = deps.print ?? ((s: string) => process.stdout.write(s + '\n'));
 
   const { templateDir } = parsed;
-  if (!templateDir) throw new Error('piflow run: a template directory is required (piflow run <templateDir>).');
+  if (!templateDir) throw new Error('piflowctl run: a template directory is required (piflowctl run <templateDir>).');
 
   const workspace = parsed.workspace ?? process.cwd();
   const tdir = path.resolve(templateDir);
   // The run's CANONICAL HOME is `.piflow/<wf>/runs/<id>` (sdk-canonical-build-plan §D9) — the single place
   // discovery + the global index read runs from. Derive the `runs/` parent from the template's own
-  // `.piflow/<wf>/template/` layout so a bare `piflow run <templateDir>` lands under it; a template outside
+  // `.piflow/<wf>/template/` layout so a bare `piflowctl run <templateDir>` lands under it; a template outside
   // that layout has no canonical home (falls back to `out/<id>`).
   const runsHome = path.basename(tdir) === 'template' ? path.join(path.dirname(tdir), 'runs') : null;
   // The directory a sibling run lands in (and so the collision-check namespace): the canonical `runs/`
@@ -261,7 +261,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
   // `.piflow/<wf>/runs/<id>/` home, so moving it would split the source of truth. `--out` therefore
   // applies ONLY when there is no canonical home (a loose template outside `.piflow/<wf>/template/`).
   if (canonicalHome && parsed.outDir) {
-    console.warn(`piflow run: --out is ignored — the run lands in its canonical home ${canonicalHome}; a canonical run is never relocated (export a copy instead).`);
+    console.warn(`piflowctl run: --out is ignored — the run lands in its canonical home ${canonicalHome}; a canonical run is never relocated (export a copy instead).`);
   }
   const outDir = canonicalHome ?? parsed.outDir ?? `out/${runId}`;
   // PROMPT METADATA: carry an `--arg prompt`/`--arg promptId` as run metadata (run.json `promptId`), so the
@@ -295,7 +295,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
   // (G7) `--detach` ⇒ UNATTENDED: take each (G5) checkpoint's declared default so a backgrounded run never
   // hangs on a human gate. The run is already durable; the caller backgrounds the process (`&`/harness).
   if (parsed.detach) {
-    print(`piflow run: detached/unattended — checkpoints take their default; run dir: ${outDir} (monitor: piflow watch ${outDir})`);
+    print(`piflowctl run: detached/unattended — checkpoints take their default; run dir: ${outDir} (monitor: piflowctl watch ${outDir})`);
   }
   return runFromTemplate(templateDir, {
     runDir: outDir,
@@ -323,7 +323,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
  * The loud top-level verdict for a FINISHED live run: `null` when it succeeded (or is still running),
  * else the multi-line failure report the CLI prints to stderr before exiting non-zero — the blocking
  * node(s) (`error`/`blocked`, e.g. the synthetic `__resume__` preflight) each followed by their `issues`,
- * and a `piflow status` hint. PURE (no process/stderr side effects) so it is unit-tested directly: a
+ * and a `piflowctl status` hint. PURE (no process/stderr side effects) so it is unit-tested directly: a
  * blocked resume MUST surface its `__resume__` issue; an `ok` run MUST report nothing.
  */
 export function runFailureReport(status: RunResult['status'], runDir: string): string | null {
@@ -331,17 +331,17 @@ export function runFailureReport(status: RunResult['status'], runDir: string): s
   const failed = Object.values(status.nodes ?? {}).filter(
     (n) => n.status === 'error' || n.status === 'blocked',
   );
-  const lines = [`piflow run: ✗ FAILED — ${failed.length || 'a'} node(s) blocked/errored`];
+  const lines = [`piflowctl run: ✗ FAILED — ${failed.length || 'a'} node(s) blocked/errored`];
   for (const n of failed) for (const issue of n.issues ?? []) lines.push(`  ✗ ${n.id}: ${issue}`);
-  lines.push(`  → inspect: piflow status ${runDir}`);
+  lines.push(`  → inspect: piflowctl status ${runDir}`);
   return lines.join('\n');
 }
 
-/** `piflow run <templateDir> [--dry-run] [--run <id>] [--arg k=v ...]` — the bin body. */
+/** `piflowctl run <templateDir> [--dry-run] [--run <id>] [--arg k=v ...]` — the bin body. */
 export async function runRunCli(argv: string[]): Promise<void> {
   const parsed = parseRunArgs(argv);
   if (!parsed.templateDir) {
-    process.stderr.write('piflow run: a template directory is required (piflow run <templateDir>)\n');
+    process.stderr.write('piflowctl run: a template directory is required (piflowctl run <templateDir>)\n');
     process.exitCode = 1;
     return;
   }
@@ -349,7 +349,7 @@ export async function runRunCli(argv: string[]): Promise<void> {
   // SURFACE FAILURE — a LIVE run that ends `done && ok===false` (a blocked resume preflight, or an
   // errored/blocked node) MUST NOT exit 0 in silence: print the blocking node(s) + their issues to stderr
   // and exit non-zero. Without this a blocked `--from` resume wrote an EMPTY log and returned 0 — the only
-  // signal was a separate `piflow status`. The status/event archives stay the deep view; this is the loud
+  // signal was a separate `piflowctl status`. The status/event archives stay the deep view; this is the loud
   // top-level verdict every CLI consumer (and a backgrounded run's exit code) can rely on. (dry-run → no result.)
   // Use the RESULT's resolved `outDir` for the status hint — it is the real run dir, including any
   // auto-generated `<adjective>-<pie>` name (which the caller can't reconstruct from `parsed.run`).

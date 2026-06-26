@@ -107,7 +107,7 @@ describe('parseRunArgs — the run subcommand flag surface', () => {
 // (B) DRY-RUN — builds + prints the per-node pi command WITHOUT invoking a model, and materializes
 // the ${RUN}/.pi structure via instantiateRun.
 // ─────────────────────────────────────────────────────────────────────────────
-describe('piflow run --dry-run — realized commands, no model', () => {
+describe('piflowctl run --dry-run — realized commands, no model', () => {
   let dryWorkspace: string;
   let dryOut: string;
   beforeAll(async () => {
@@ -250,7 +250,7 @@ describe('piflow run --dry-run — realized commands, no model', () => {
 // template-min is not runnable headless (seed/inject the fixture has no product seed for), so the spy
 // stands in for the real run; a live E2E awaits a real template (T6).
 // ─────────────────────────────────────────────────────────────────────────────
-describe('piflow run — LIVE branch routes through core runFromTemplate, threading every option', () => {
+describe('piflowctl run — LIVE branch routes through core runFromTemplate, threading every option', () => {
   let out: string;
   beforeAll(async () => {
     out = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-run-wire-out-'));
@@ -332,7 +332,7 @@ describe('piflow run — LIVE branch routes through core runFromTemplate, thread
 // (G5) `checkpointReply: 'default'` so a backgrounded run takes each checkpoint's declared default
 // instead of parking forever. The CLI never threaded this before — the load-bearing G7 gap.
 // ─────────────────────────────────────────────────────────────────────────────
-describe('piflow run — --detach (unattended) threads checkpointReply', () => {
+describe('piflowctl run — --detach (unattended) threads checkpointReply', () => {
   it('parseRunArgs recognizes --detach', () => {
     expect(parseRunArgs([TEMPLATE_MIN, '--detach']).detach).toBe(true);
     expect(parseRunArgs([TEMPLATE_MIN]).detach).toBeFalsy();
@@ -376,7 +376,7 @@ describe('piflow run — --detach (unattended) threads checkpointReply', () => {
 // `.piflow/<wf>/runs/<id>/` home, and `--out` can NEVER relocate it (observation reads the fixed home).
 // These FAIL if the precedence regresses to `parsed.outDir ?? canonicalHome` (the old --out-wins order).
 // ─────────────────────────────────────────────────────────────────────────────
-describe('piflow run — a canonical run home is never relocated by --out', () => {
+describe('piflowctl run — a canonical run home is never relocated by --out', () => {
   let wfRoot: string;   // the `.piflow/<wf>/` dir; its `template/` child gives runsHome = <wfRoot>/runs
   let canonTemplate: string;
   let elsewhere: string;
@@ -439,7 +439,7 @@ describe('piflow run — a canonical run home is never relocated by --out', () =
 // run's identity from the prompt id. These FAIL if the old `?? 'run'` constant fallback returns, if an
 // explicit id stops winning, or if the prompt metadata is dropped.
 // ─────────────────────────────────────────────────────────────────────────────
-describe('piflow run — Docker-style auto-naming when --run is omitted', () => {
+describe('piflowctl run — Docker-style auto-naming when --run is omitted', () => {
   let out: string;
   beforeAll(async () => {
     out = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-run-name-out-'));
@@ -531,7 +531,7 @@ describe('runFailureReport — the loud verdict for a finished failed run', () =
     expect(report).toContain('__resume__');
     // the LOAD-BEARING line: the actual blocking reason must reach the user, not just a count.
     expect(report).toContain('missing upstream artifact(s): verify/report.M1.json (verify-2-m1)');
-    expect(report).toContain('piflow status out/p06');
+    expect(report).toContain('piflowctl status out/p06');
     // a `reused` (non-failed) node is not listed as a failure.
     expect(report).not.toContain('w2-scaffold');
   });
@@ -548,7 +548,7 @@ describe('runFailureReport — the loud verdict for a finished failed run', () =
 // template-min and inject a `profiles` block that elides the `build` phase (both leaf nodes), leaving
 // only the `classify` root. Drop the applyProfileByName call in run.ts ⇒ these go red (the leaves reappear).
 // ─────────────────────────────────────────────────────────────────────────────
-describe('piflow run --dry-run --profile — the plan reflects the elided DAG', () => {
+describe('piflowctl run --dry-run --profile — the plan reflects the elided DAG', () => {
   let PROFILED: string; // a template-min clone with a profiles block
   let pOut: string;
   let pWs: string;

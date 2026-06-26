@@ -5,7 +5,7 @@
 // the existing `runWorkflow`. There is NO env parsing here — that is `loadConfig`'s job (the CLI/convention
 // layer). The WORKFLOW BRIDGE stays CONSUMER-INJECTED: the consumer supplies either a literal `workflowSpec`
 // or a `buildWorkflowSpec` factory (the workflow-dialect-specific bit core does NOT own). `runFromConfig` is
-// the clean seam the `piflow run` CLI subcommand (the follow-on unit) calls after it resolves the env.
+// the clean seam the `piflowctl run` CLI subcommand (the follow-on unit) calls after it resolves the env.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import path from 'node:path';

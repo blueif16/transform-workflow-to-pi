@@ -10,7 +10,7 @@
 //
 // PURE reads only: it READS each repo's run data and aggregates SUMMARIES + POINTERS into the snapshot — it
 // NEVER copies a product's collected data anywhere (the data boundary). Both the live GUI middleware (per
-// request) and `piflow run` / `build-index` consume this one builder, so they can never diverge.
+// request) and `piflowctl run` / `build-index` consume this one builder, so they can never diverge.
 
 import fssync from 'node:fs';
 import path from 'node:path';
