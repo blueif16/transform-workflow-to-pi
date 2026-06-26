@@ -90,6 +90,27 @@ const PROFILE_TEMPLATE = ((): string => {
     '  (literal "/var"))',
     '(allow file-read*',
     '@SCOPE_ALLOWS@)',
+    // --- write jail (symmetric; toolchain writable set from Codex workspace-write, see read-scope.sb) ---
+    '(deny file-write*)',
+    '(allow file-write*',
+    '  (subpath "@TMPDIR@")',
+    '  (subpath "/private/tmp")',
+    '  (subpath "/private/var/folders")',
+    '  (subpath "@HOME@/.pi")',
+    '  (subpath "@HOME@/.piflow")',
+    '  (subpath "@HOME@/.npm")',
+    '  (subpath "@HOME@/.cache")',
+    '  (subpath "@HOME@/.config")',
+    '  (literal "/dev/null")',
+    '  (literal "/dev/zero")',
+    '  (literal "/dev/stdout")',
+    '  (literal "/dev/stderr")',
+    '  (literal "/dev/tty")',
+    '  (subpath "/dev/fd")',
+    '  (literal "/tmp")',
+    '  (subpath "/private/var/tmp"))',
+    '(allow file-write*',
+    '@WRITE_SCOPE_ALLOWS@)',
     '',
   ].join('\n');
 })();
@@ -131,15 +152,22 @@ function expand(p: string): string[] {
 /**
  * Generate the per-exec Seatbelt profile from the union of:
  *   - the declared `readScope` (resolved absolute),
+ *   - the declared `writeScope` (resolved absolute; = the node's `owns`),
  *   - the working dir + its own output/_pi dirs,
  *   - the toolchain/system grants a node+toolchain need (node_modules of the workdir, $TMPDIR, ~/.pi
- *     — the system roots /usr,/System,… live in the template).
+ *     — the system roots /usr,/System,… and the Codex-derived write-scratch roots live in the template).
  * Every root is `{itself, realpath}`-expanded and granted as a recursive `(subpath …)`; the workdir is
  * ALSO granted as a non-recursive `(literal …)` so getcwd/uv_cwd can read the cwd dir ENTRY even when
  * the dir itself is the boundary (a bare subpath already covers it, but the literal mirrors run.mjs and
- * is harmless). Returns the rendered SBPL text.
+ * is harmless). The WRITE allow block grants the workdir (recursive) + the declared writeScope; the
+ * read-only toolchain scratch (/tmp, $TMPDIR, /dev/null, ~/.npm, …) lives in the template. Returns the
+ * rendered SBPL text.
  */
-export function buildSeatbeltProfile(opts: { workdir: string; readScope: string[] }): string {
+export function buildSeatbeltProfile(opts: {
+  workdir: string;
+  readScope: string[];
+  writeScope?: string[];
+}): string {
   const workdir = path.resolve(opts.workdir);
   // The actual node binary + its install prefix (e.g. ~/.nvm/versions/node/v20/bin and .../v20, which
   // holds lib/node_modules where a global `pi` lives). `process.execPath` is whatever node launched the
@@ -168,9 +196,16 @@ export function buildSeatbeltProfile(opts: { workdir: string; readScope: string[
   // (literal) too (expanded to {itself, realpath}) so a symlinked workdir matches.
   const cwdLits = [...new Set(expand(workdir))].map((p) => `  (literal ${sbplString(p)})`).join('\n');
   const allows = `${subpaths}\n${cwdLits}`;
+  // WRITE allows: the workdir (recursive — the node's deliverable tree, where it stages out/_pi) + the
+  // declared writeScope (== owns). Realpath-expanded + de-duped, same as reads. The toolchain write-
+  // scratch roots (/tmp, $TMPDIR, /dev/*, ~/.npm, …) live in the template, so this block is ONLY the
+  // node's own lane — a write outside {this block, the template scratch} EPERMs.
+  const writeRoots = [...new Set([workdir, ...(opts.writeScope ?? [])].flatMap(expand))];
+  const writeAllows = writeRoots.map((p) => `  (subpath ${sbplString(p)})`).join('\n');
   return PROFILE_TEMPLATE.replaceAll('@HOME@', os.homedir())
     .replaceAll('@TMPDIR@', os.tmpdir().replace(/\/+$/, ''))
-    .replace('@SCOPE_ALLOWS@', allows);
+    .replace('@SCOPE_ALLOWS@', allows)
+    .replace('@WRITE_SCOPE_ALLOWS@', writeAllows);
 }
 
 // ── the shared exec-wrap seam (reused by SeatbeltSandbox AND the in-place LocalSandbox) ─────────────
@@ -196,13 +231,17 @@ export interface SeatbeltExecPlan {
  */
 export function seatbeltExecPlan(
   cmd: string,
-  opts: { workdir: string; readScope: string[]; profileDir: string },
+  opts: { workdir: string; readScope: string[]; writeScope?: string[]; profileDir: string },
 ): SeatbeltExecPlan | null {
   if (!IS_DARWIN) {
     warnNonDarwinOnce();
     return null;
   }
-  const profile = buildSeatbeltProfile({ workdir: opts.workdir, readScope: opts.readScope });
+  const profile = buildSeatbeltProfile({
+    workdir: opts.workdir,
+    readScope: opts.readScope,
+    writeScope: opts.writeScope,
+  });
   const profilePath = path.join(opts.profileDir, `piflow-sb-${process.pid}-${Date.now()}-${execSeq++}.sb`);
   fsSync.writeFileSync(profilePath, profile);
   return { file: 'sandbox-exec', argv: ['-f', profilePath, 'sh', '-c', cmd], profilePath };
@@ -218,6 +257,7 @@ export class SeatbeltSandbox implements Sandbox {
     public readonly workdir: string,
     private readonly env: Record<string, string>,
     private readonly readScope: string[],
+    private readonly writeScope: string[],
   ) {}
 
   static async create(opts: CreateOpts): Promise<SeatbeltSandbox> {
@@ -228,10 +268,15 @@ export class SeatbeltSandbox implements Sandbox {
     if (!IS_DARWIN) warnNonDarwinOnce();
     // Resolve the declared read scope to absolute (CreateOpts.readScope entries are absolute by
     // contract, but a relative entry resolves vs the workdir to stay self-consistent).
-    const readScope = (opts.readScope ?? []).map((p) =>
-      path.isAbsolute(p) ? p : path.resolve(workdir, p),
+    const resolveScope = (s: string[] | undefined): string[] =>
+      (s ?? []).map((p) => (path.isAbsolute(p) ? p : path.resolve(workdir, p)));
+    return new SeatbeltSandbox(
+      root,
+      workdir,
+      opts.env ?? {},
+      resolveScope(opts.readScope),
+      resolveScope(opts.writeScope),
     );
-    return new SeatbeltSandbox(root, workdir, opts.env ?? {}, readScope);
   }
 
   private abs(p: string): string {
@@ -263,6 +308,7 @@ export class SeatbeltSandbox implements Sandbox {
       const plan = seatbeltExecPlan(cmd, {
         workdir: this.workdir,
         readScope: [...this.readScope, cwd],
+        writeScope: this.writeScope,
         profileDir: this.root,
       });
       const child = spawn(plan ? plan.file : cmd, plan ? plan.argv : [], {

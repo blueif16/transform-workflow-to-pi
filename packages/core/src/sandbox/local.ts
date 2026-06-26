@@ -16,10 +16,11 @@
 //   dispose  — NO-OP (the workspace is the user's project tree — NEVER fs.rm the root)
 // exec keeps the reference impl's detached process-group kill + closed-stdin, but is
 // SECURE BY DEFAULT: on darwin it wraps the command in the SHARED `seatbeltExecPlan`
-// (sandbox-exec, kernel-enforced read-scope) so a node reads ONLY its declared readScope
-// + the toolchain — the whole reason a per-node swarm exists. Writes stay open (the
-// in-place tree is the deliverable) and network stays open (the `pi` agent MUST reach its
-// model gateway — UNLIKE Codex, which sandboxes shell sub-commands that need no network).
+// (sandbox-exec, kernel-enforced read+write scope) so a node reads ONLY its declared
+// readScope + toolchain AND writes ONLY its workdir + declared writeScope (owns) + toolchain
+// scratch — the whole reason a per-node swarm exists. A write to a sibling node dir, ~/.ssh,
+// or the repo at large EPERMs. Network stays open (the `pi` agent MUST reach its model gateway
+// — UNLIKE Codex, which sandboxes shell sub-commands that need no network).
 // Off darwin the wrap is a no-op (warns once) until the Linux bwrap backend lands. The jail
 // is the DEFAULT; `enforceReadScope:false` is the loud `danger-full-access` escape hatch.
 // There is NO `execCwd` argument: U1 staged each node under `_pi/<id>/`, so one shared
@@ -61,7 +62,9 @@ export class LocalSandbox implements Sandbox {
     private readonly env: Record<string, string>,
     /** Declared read roots (resolved absolute) granted to the kernel jail beyond the workdir + toolchain. */
     private readonly readScope: string[],
-    /** Wrap exec in the read-scope jail (darwin). Default true; false ⇒ the danger-full-access bypass. */
+    /** Declared WRITE roots (resolved absolute; = owns) the kernel jail allows beyond the workdir + scratch. */
+    private readonly writeScope: string[],
+    /** Wrap exec in the read+write jail (darwin). Default true; false ⇒ the danger-full-access bypass. */
     private readonly enforceReadScope: boolean,
   ) {}
 
@@ -80,10 +83,16 @@ export class LocalSandbox implements Sandbox {
     if (opts.outputDir) await fs.mkdir(path.resolve(root, opts.outputDir), { recursive: true });
     // Resolve declared scope to absolute (entries are absolute by contract; a relative one resolves
     // vs the in-place root to stay self-consistent), mirroring SeatbeltSandbox.create.
-    const readScope = (opts.readScope ?? []).map((p) =>
-      path.isAbsolute(p) ? p : path.resolve(root, p),
+    const resolveScope = (s: string[] | undefined): string[] =>
+      (s ?? []).map((p) => (path.isAbsolute(p) ? p : path.resolve(root, p)));
+    return new LocalSandbox(
+      root,
+      root,
+      opts.env ?? {},
+      resolveScope(opts.readScope),
+      resolveScope(opts.writeScope),
+      runtime.enforceReadScope ?? true,
     );
-    return new LocalSandbox(root, root, opts.env ?? {}, readScope, runtime.enforceReadScope ?? true);
   }
 
   private abs(p: string): string {
@@ -117,6 +126,7 @@ export class LocalSandbox implements Sandbox {
           ? seatbeltExecPlan(cmd, {
               workdir: this.workdir,
               readScope: [...this.readScope, cwd], // grant the workdir + declared scope + the exec cwd
+              writeScope: this.writeScope, // grant the workdir + declared write scope (owns) + scratch
               profileDir: os.tmpdir(),
             })
           : null;

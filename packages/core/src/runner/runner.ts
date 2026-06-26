@@ -996,6 +996,7 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
   try {
     sandbox = await scope.create({
       readScope: node.sandbox.read,
+      writeScope: node.sandbox.write, // = contract.owns; bounds file-write* to the node's lane (darwin jail)
       outputDir: node.sandbox.output,
       workdir: node.sandbox.workspace,
       image: node.sandbox.image,

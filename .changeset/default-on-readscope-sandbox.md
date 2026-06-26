@@ -11,10 +11,13 @@ node's declared `contract.readScope` — a node's shell could read the entire fi
 was unreachable from the CLI.
 
 Now the in-place `LocalSandbox` wraps every node exec in the shared `seatbeltExecPlan` jail on
-macOS (kernel-enforced deny-all-reads-then-allow `readScope` + toolchain), so a per-node swarm
-gets exactly its prepared context and nothing else. Writes stay open (the in-place tree is the
-deliverable) and network stays open (the `pi` agent must reach its model gateway — unlike Codex,
-which jails shell sub-commands that need no network).
+macOS, kernel-enforced and SYMMETRIC: reads are bound to `readScope` + toolchain, and WRITES are
+bound to the node's `owns` (write scope) + workdir + toolchain scratch (the writable set is adopted
+from OpenAI Codex's `workspace-write` profile). Because the Seatbelt profile inherits to every
+child, a node's `bash` can neither read nor write outside its declared lane — it gets exactly its
+prepared context and writes only its own outputs. `process-exec` and network stay open (the `pi`
+agent must run tools and reach its model gateway — unlike Codex, which jails shell sub-commands
+that need no network).
 
 - New `--sandbox danger-full-access` value: the loud, explicit escape hatch that disables the
   jail (`LocalSandboxProvider({ enforceReadScope: false })`).
