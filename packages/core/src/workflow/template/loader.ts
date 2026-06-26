@@ -17,6 +17,7 @@ import { defaultSchemaValidator, type SchemaValidator } from '../../runner/schem
 import { nodeSchema, metaSchema } from './schema/index.js';
 import type { LoadedNode, TemplateNode, TemplateMeta } from './types.js';
 import { renderRealizedPrompt, collectChecks, toPolicy } from './render.js';
+import { lowerToOps } from './lower.js';
 import {
   checkSchemas,
   checkDeps,
@@ -103,10 +104,25 @@ function toNodeOps(h: LoadedNode['def']['hooks']): NodeOps | undefined {
   return ops;
 }
 
+/** Dedup a string list, preserving first-seen order. */
+const unique = (xs: string[]): string[] => [...new Set(xs)];
+
+/** Strip a leading `{{RUN}}/` so an injected forced-read becomes a RUN-relative `io.reads` path (edges). */
+const runRel = (p: string): string => p.replace(/^\{\{RUN\}\}\//, '');
+
 /** Map an authored TemplateNode → the runtime NodeIntent the existing DAG compiler consumes. */
 function toNodeIntent(n: LoadedNode): NodeIntent {
   const c = n.def.contract;
   const ops = toNodeOps(n.def.hooks);
+  // (M5 · G13) LOWER the deprecated aliases (inject/hooks/checks/policy) into the canonical op[] envelope.
+  // AT THE LOADER ONLY — the dense NodeSpec gains exactly this one field; the runtime ops/checks/policy
+  // carried below stay byte-identical so the runner's existing dispatch is unchanged (additive).
+  const op = lowerToOps(n.def);
+  // (M5 · #10/#16) The node's declared reads = injected forced-reads ∪ every op's `reads` (RUN-relative).
+  // Replaces the `reads:[]` hardcode: an injected read now FOLDS into the prompt (the realized-prompt
+  // renderer below) AND draws a DAG edge from its producer.
+  const opReads = (op ?? []).flatMap((o) => (o.reads ?? []).map(runRel));
+  const opWrites = (op ?? []).flatMap((o) => (o.writes ?? []).map(runRel));
   const intent: NodeIntent = {
     // label = the template id so `slugify(label)` round-trips to the SAME id (the DAG compiler derives
     // ids from labels, not from an authored id — keeping `compile`'s graph aligned with the template).
@@ -117,10 +133,12 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
     skill: n.def.prompt.skill,
     tools: { allow: n.def.tools?.allow, deny: n.def.tools?.deny },
     io: {
-      // {{RUN}}-relative injected reads become the node's declared reads (raw inputs — the template
-      // checks already proved each is produced upstream or is canonical); deps carry routing explicitly.
-      reads: [],
-      produces: c.artifacts.slice(),
+      // (M5 · #10/#16) The node's declared reads = the lowered ops' reads (incl. {{RUN}}-relative injected
+      // forced-reads) — raw inputs the template checks already proved are produced upstream or canonical.
+      // Replaces the long-stale `reads:[]` hardcode (deps still carry routing explicitly).
+      reads: unique(opReads),
+      // produces = the required artifacts ∪ every op's declared writes (#16).
+      produces: unique([...c.artifacts, ...opWrites]),
       externalInputs: [],
       dependsOn: n.def.deps.slice(),
       artifacts: c.artifacts.map((p) => (c.schema ? { path: p, schema: c.schema } : { path: p })),
@@ -145,6 +163,9 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
   };
   // Additive: only attach `ops` when the node authored a hooks block (a node with none stays op-free).
   if (ops) intent.ops = ops;
+  // (M5 · G13) Carry the lowered op[] envelope onto the intent → the dense NodeSpec (the one new field).
+  // Additive: a node declaring none of the lowerable surfaces stays op-free.
+  if (op) intent.op = op;
   // (G6) Carry the agent-PRESET label verbatim (the preset was already expanded into tools/prompt at init);
   // it rides to observe so the GUI renders the icon. Additive — a node with none stays label-free.
   if (n.def.agentType) intent.agentType = n.def.agentType;
@@ -215,9 +236,19 @@ export async function loadTemplate(dir: string, opts: LoadTemplateOpts = {}): Pr
 
   // (5) build + return the in-memory WorkflowSpec (deterministic node order = id-sorted from scan).
   const m = meta as TemplateMeta;
+  const nodes = loaded.map(toNodeIntent);
+  // (M5 · #10/#16) Now that `io.reads` folds the op/injected reads (no longer the `reads:[]` hardcode),
+  // mark each read with NO producer in the spec as an externalInput — a RAW input, NOT a missing-producer
+  // error (the template's `checkRefs` already proved each injected read is produced upstream or canonical).
+  // A read another node PRODUCES stays an inferred edge (the data-flow join). This makes the new edges sound.
+  const producers = new Set(nodes.flatMap((n) => n.io.produces ?? []));
+  for (const n of nodes) {
+    const raw = (n.io.reads ?? []).filter((r) => !producers.has(r));
+    if (raw.length) n.io.externalInputs = unique([...(n.io.externalInputs ?? []), ...raw]);
+  }
   const spec: WorkflowSpec = {
     meta: { name: m.name, description: m.description },
-    nodes: loaded.map(toNodeIntent),
+    nodes,
   };
   // Carry the product-declared run modes (DATA) onto the spec when authored — additive, the SDK only
   // applies the named profile's GENERIC predicate; the product owns the names/vocabulary in its meta.json.

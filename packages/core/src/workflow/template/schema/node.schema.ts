@@ -218,8 +218,43 @@ export const nodeSchema = {
         verify: { type: 'boolean', description: 'Judge verify→revise loop (quality). false ⇒ fast. Default true.' },
       },
     },
+    op: {
+      // (G13 — M5) The UNIFIED op envelope, authored directly. Each entry carries EXACTLY ONE body
+      // (transform | run | gate | action) — the `mergeHook` oneOf precedent. The frame fields
+      // (id/when/reads/writes/onFailure/idempotent) are common; bodies stay permissive (the loader/runner
+      // discriminate on the body's `kind`). When present, the deprecated aliases are NOT also lowered.
+      type: 'array',
+      description: 'The unified node-op envelope (G13) — one ordered list; each entry has exactly one body.',
+      items: { $ref: '#/$defs/op' },
+    },
   },
   $defs: {
+    op: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', minLength: 1, description: 'Ledger/resume key + reroute target. SDK-fills a slug if omitted.' },
+        when: { enum: ['pre', 'post', 'on-success', 'on-failure', 'always'], description: 'Firing phase/condition. Default post.' },
+        reads: { type: 'array', items: { type: 'string', minLength: 1 }, description: 'Files READ — edges + (pre) folded into the prompt.' },
+        writes: { type: 'array', items: { type: 'string', minLength: 1 }, description: 'Files WRITTEN — the produced set.' },
+        onFailure: { $ref: '#/$defs/policyAction', description: 'Consequence of THIS op failing. Default block.' },
+        idempotent: { type: 'boolean', description: 'Skip when outputs fresh. Default true.' },
+        // The four bodies stay permissive (the loader/runner read body-specific params). EXACTLY ONE present.
+        transform: { type: 'object', description: 'DERIVE — seed/project/merge/promote/projectRegistry (discriminated by kind).' },
+        run: { type: 'object', description: 'ACT — a deterministic shell/fn side-effect. Never an LLM.' },
+        gate: { type: 'object', description: 'DETECT — a Check predicate over reads.' },
+        action: { type: 'object', description: 'CONTROL — retry/escalate/notify/rerouteTo (discriminated by kind).' },
+      },
+      // EXACTLY ONE body key per op (the discriminator) — the mergeHook oneOf precedent.
+      oneOf: [
+        { required: ['transform'] },
+        { required: ['run'] },
+        { required: ['gate'] },
+        { required: ['action'] },
+        // A pure read/write op (the lowered `inject` form) carries NO body — allow a body-less op too.
+        { not: { anyOf: [{ required: ['transform'] }, { required: ['run'] }, { required: ['gate'] }, { required: ['action'] }] } },
+      ],
+    },
     check: {
       type: 'object',
       additionalProperties: false,

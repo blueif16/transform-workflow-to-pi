@@ -56,6 +56,12 @@ export interface TemplateNode {
     registryProject?: { source: string; mapRef: string; key: string };
   };
   return?: object;
+  /**
+   * (G13 — M5) The unified op envelope, authored DIRECTLY. When present, it is carried verbatim (the
+   * deprecated `inject`/`hooks`/`checks`/`policy` aliases are NOT also lowered — direct authoring wins).
+   * Each entry carries EXACTLY ONE body (transform|run|gate|action). Omitted ⇒ lower the aliases instead.
+   */
+  op?: import('../../types.js').OpSpec[];
   /** (G5 — HITL) A human checkpoint on this node → runtime `NodeSpec.checkpoint`. Spawns no `pi`. */
   checkpoint?: {
     kind: 'confirm' | 'input' | 'select';
