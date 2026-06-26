@@ -139,6 +139,14 @@ export { LocalSandbox, LocalSandboxProvider } from './sandbox/local.js';
 export { tailAppend, DEFAULT_CAPTURE_MAX } from './sandbox/capture.js';
 // Seatbelt read-scope provider (macOS)
 export { SeatbeltSandbox, SeatbeltSandboxProvider, buildSeatbeltProfile } from './sandbox/seatbelt.js';
+// Shared scope policy (read-roots/write-roots) both OS jail backends render; bwrap argv builder + plan (linux).
+export { computeScopeRoots } from './sandbox/scope.js';
+export type { ScopeRoots } from './sandbox/scope.js';
+export { bwrapExecPlan, buildBwrapArgs } from './sandbox/bwrap.js';
+export type { BwrapExecPlan } from './sandbox/bwrap.js';
+// OS dispatcher for `--sandbox local`'s kernel jail (darwin→seatbelt, linux→bwrap).
+export { localJailPlan } from './sandbox/jail.js';
+export type { JailPlan } from './sandbox/jail.js';
 // Worktree per-run git WRITE-isolation provider (run-scoped: branch pi/<run> + sibling .pi-worktrees/<run>)
 export { WorktreeSandbox, WorktreeSandboxProvider } from './sandbox/worktree.js';
 // Daytona cloud provider (run-scoped VM lifecycle) + its dependency-inversion SDK seam.

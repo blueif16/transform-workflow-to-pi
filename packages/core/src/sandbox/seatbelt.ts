@@ -26,6 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tailAppend } from './capture.js';
+import { computeScopeRoots, expandRealpath } from './scope.js';
 import type {
   Sandbox,
   SandboxProvider,
@@ -136,19 +137,6 @@ function sbplString(p: string): string {
   return JSON.stringify(p);
 }
 
-/** Expand a path to {itself, its realpath} — Seatbelt matches the RESOLVED realpath, not the lexical
- * path. Granting both means a symlinked root (node_modules, $TMPDIR, a worktree dir) reads correctly,
- * AND a model cannot escape via a self-made symlink (the target realpath is what is checked). */
-function expand(p: string): string[] {
-  const a = path.resolve(p);
-  try {
-    const r = fsSync.realpathSync(a);
-    return a === r ? [a] : [a, r];
-  } catch {
-    return [a];
-  }
-}
-
 /**
  * Generate the per-exec Seatbelt profile from the union of:
  *   - the declared `readScope` (resolved absolute),
@@ -169,38 +157,21 @@ export function buildSeatbeltProfile(opts: {
   writeScope?: string[];
 }): string {
   const workdir = path.resolve(opts.workdir);
-  // The actual node binary + its install prefix (e.g. ~/.nvm/versions/node/v20/bin and .../v20, which
-  // holds lib/node_modules where a global `pi` lives). `process.execPath` is whatever node launched the
-  // runner — granting its dir is what lets `pi` (a node CLI) boot under the sandbox regardless of how
-  // node was installed. The .nvm subpath is also in the template, but fnm/mise/volta/pnpm install
-  // elsewhere, so resolve those manager roots from the environment too (the research brief's gotcha).
-  const nodeBin = path.dirname(process.execPath);
-  const nodePrefix = path.dirname(nodeBin);
-  const vmRoots = ['NVM_DIR', 'FNM_DIR', 'MISE_DATA_DIR', 'VOLTA_HOME', 'PNPM_HOME']
-    .map((k) => process.env[k])
-    .filter((v): v is string => !!v);
-  // Auto-grants beyond the declared scope (the toolchain reads more than the lesson scope; a profile
-  // that passes a static demo can still EPERM on the first real toolchain call — see the research brief).
-  const auto = [
-    workdir, // the node's own working tree (workspace + its out/_pi dirs live under here)
-    path.join(workdir, 'node_modules'), // modules must resolve
-    path.join(process.cwd(), 'node_modules'), // the host process cwd's modules (test toolchain, tsc)
-    nodeBin, // the node binary's dir — pi is a node CLI; it must read its own interpreter
-    nodePrefix, // the install prefix (lib/node_modules — a globally-installed `pi` lives here)
-    ...vmRoots, // version-manager roots (fnm/mise/volta/pnpm) when node is managed outside ~/.nvm
-  ];
-  // Union, realpath-expanded + de-duped. (The system roots /usr,/System,… are in the template.)
-  const roots = [...new Set([...auto, ...opts.readScope].flatMap(expand))];
-  const subpaths = roots.map((p) => `  (subpath ${sbplString(p)})`).join('\n');
+  // The SHARED policy: compute the read-roots (workdir + node_modules + node toolchain + readScope) and
+  // write-roots (workdir + writeScope/owns), realpath-expanded + de-duped. This is the SAME helper the
+  // bwrap backend consumes, so the macOS and Linux jails grant an identical set. The system read roots
+  // (/usr,/System,…) and the write-scratch roots (/tmp,$TMPDIR,~/.npm,…) live in the template below.
+  const { readRoots, writeRoots } = computeScopeRoots(opts);
+  const subpaths = readRoots.map((p) => `  (subpath ${sbplString(p)})`).join('\n');
   // getcwd needs file-read DATA on the cwd dir ENTRY, not just metadata; grant the workdir as a
   // (literal) too (expanded to {itself, realpath}) so a symlinked workdir matches.
-  const cwdLits = [...new Set(expand(workdir))].map((p) => `  (literal ${sbplString(p)})`).join('\n');
+  const cwdLits = [...new Set(expandRealpath(workdir))]
+    .map((p) => `  (literal ${sbplString(p)})`)
+    .join('\n');
   const allows = `${subpaths}\n${cwdLits}`;
-  // WRITE allows: the workdir (recursive — the node's deliverable tree, where it stages out/_pi) + the
-  // declared writeScope (== owns). Realpath-expanded + de-duped, same as reads. The toolchain write-
-  // scratch roots (/tmp, $TMPDIR, /dev/*, ~/.npm, …) live in the template, so this block is ONLY the
-  // node's own lane — a write outside {this block, the template scratch} EPERMs.
-  const writeRoots = [...new Set([workdir, ...(opts.writeScope ?? [])].flatMap(expand))];
+  // WRITE allows: the workdir + declared writeScope (== owns), from the shared policy. The toolchain
+  // write-scratch roots (/tmp, $TMPDIR, /dev/*, ~/.npm, …) live in the template, so this block is ONLY
+  // the node's own lane — a write outside {this block, the template scratch} EPERMs.
   const writeAllows = writeRoots.map((p) => `  (subpath ${sbplString(p)})`).join('\n');
   return PROFILE_TEMPLATE.replaceAll('@HOME@', os.homedir())
     .replaceAll('@TMPDIR@', os.tmpdir().replace(/\/+$/, ''))

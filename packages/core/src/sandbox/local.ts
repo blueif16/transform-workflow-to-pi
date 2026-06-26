@@ -50,7 +50,7 @@ import type {
   OpenRunOpts,
 } from '../types.js';
 import { tailAppend } from './capture.js';
-import { seatbeltExecPlan } from './seatbelt.js';
+import { localJailPlan } from './jail.js';
 
 export class LocalSandbox implements Sandbox {
   readonly kind = 'local' as const;
@@ -118,12 +118,13 @@ export class LocalSandbox implements Sandbox {
   exec(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
     return new Promise((resolve) => {
       const cwd = opts.cwd ? this.abs(opts.cwd) : this.workdir;
-      // Secure by default: wrap in the shared read-scope jail (darwin) so reads outside the declared
-      // scope EPERM. The per-exec profile is written to the OS tmpdir — NEVER littered into the user's
-      // in-place tree. `null` ⇒ off-darwin or the danger bypass ⇒ run the bare command (unsandboxed).
+      // Secure by default: wrap in the OS-dispatched kernel jail (darwin→seatbelt, linux→bwrap) so reads
+      // AND writes outside the declared scope EPERM. The seatbelt backend's per-exec profile is written to
+      // the OS tmpdir — NEVER littered into the user's in-place tree (bwrap writes no profile). `null` ⇒
+      // an OS with no backend (or linux without bubblewrap), or the danger bypass ⇒ run bare (unsandboxed).
       const plan =
         this.enforceReadScope && cmd
-          ? seatbeltExecPlan(cmd, {
+          ? localJailPlan(cmd, {
               workdir: this.workdir,
               readScope: [...this.readScope, cwd], // grant the workdir + declared scope + the exec cwd
               writeScope: this.writeScope, // grant the workdir + declared write scope (owns) + scratch
@@ -156,7 +157,8 @@ export class LocalSandbox implements Sandbox {
       };
       const cleanup = (): void => {
         signal?.removeEventListener('abort', onAbort);
-        if (plan) { try { fsSync.unlinkSync(plan.profilePath); } catch { /* already gone */ } }
+        // Only the seatbelt backend writes a per-exec profile to unlink; bwrap's profilePath is undefined.
+        if (plan?.profilePath) { try { fsSync.unlinkSync(plan.profilePath); } catch { /* already gone */ } }
       };
       const finish = (r: ExecResult): void => { if (done) return; done = true; cleanup(); resolve(r); };
       if (signal) {
