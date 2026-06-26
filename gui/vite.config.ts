@@ -207,6 +207,71 @@ function piflowRunView(): Plugin {
 }
 
 /**
+ * On-demand FUSION/STRUCTURE PREVIEW — `GET /__piflow/preview/<run>?overrides=<json>` re-compiles the
+ * run's TEMPLATE with per-node fusion activations TOGGLED ON and returns the resulting DAG in the SAME
+ * run-view contract the canvas renders. This is what powers the GUI's "fusion mode": the siblings+judge
+ * expansion is the SDK's OWN transform (`loadTemplate → withNodeFusion → expandFusion → compile →
+ * previewView` — the exact chain the CLI `run --dry-run` uses), NEVER a view-local DAG rewrite. `overrides`
+ * is `{ "<nodeId>": "moa" | "best-of-n" }`; the chosen mode is merged over any authored fusion params, and
+ * everything else resolves through the SDK's fusion defaults (`~/.piflow/fusion.json`) + a demo-panel
+ * fallback so a moa toggle never errors with no config. The template is the run's canonical sibling
+ * `<wf>/template/` (runDir = `<wf>/runs/<id>`). NOTE: it re-compiles the raw template (no profile applied),
+ * so for an unprofiled run the no-override structure matches the run-view exactly.
+ */
+function piflowPreview(): Plugin {
+  // A moa panel is REQUIRED; when neither the node nor ~/.piflow/fusion.json supplies one, the preview
+  // falls back to these tiers (resolved like any tier alias) so the toggle is demoable with zero config.
+  const DEMO_PANEL = ["fast", "balanced", "deep"];
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const m = req.url?.match(/^\/__piflow\/preview\/([^/?]+)/);
+    if (!m) return next();
+    const run = decodeURIComponent(m[1]);
+
+    const resolved = await resolveRunDir(run);
+    if (!resolved) return sendJson(res, 404, { error: `no run "${run}" found — is its repo registered?` });
+    // The template is the run's canonical sibling: runDir = <wf>/runs/<id> ⇒ template = <wf>/template.
+    const templateDir = join(resolved.runDir, "..", "..", "template");
+    if (!existsSync(templateDir)) return sendJson(res, 404, { error: `no template for "${run}" at ${templateDir} (preview needs the canonical <wf>/template layout)` });
+
+    let overrides: Record<string, string> = {};
+    const raw = new URL(req.url!, "http://localhost").searchParams.get("overrides");
+    if (raw) { try { overrides = JSON.parse(raw); } catch { return sendJson(res, 400, { error: "overrides must be JSON" }); } }
+
+    const core = findUp("packages/core/dist/index.js");
+    const obs = findUp("packages/core/dist/observe/index.js");
+    if (!core || !obs) return sendJson(res, 500, { error: "@piflow/core dist not found — run: npm run build (at repo root)" });
+    try {
+      const { loadTemplate, withNodeFusion, expandFusion, compile, loadFusionConfig, loadModelTiers, FusionConfigError } = await import(pathToFileURL(core).href);
+      const { previewView } = await import(pathToFileURL(obs).href);
+
+      let spec = await loadTemplate(templateDir);
+      // Toggle each requested node ON, merging the chosen mode over any authored fusion params.
+      for (const [nodeId, mode] of Object.entries(overrides)) {
+        if (mode !== "moa" && mode !== "best-of-n") continue;
+        const current = spec.nodes.find((n: { label: string; fusion?: object }) => n.label === nodeId)?.fusion ?? {};
+        spec = withNodeFusion(spec, nodeId, { ...current, mode });
+      }
+      const fcfg = loadFusionConfig();
+      const defaults = { ...fcfg.defaults, panel: fcfg.defaults.panel ?? DEMO_PANEL };
+      try {
+        spec = expandFusion(spec, { defaults, tiers: loadModelTiers() });
+      } catch (e) {
+        if (e instanceof FusionConfigError) return sendJson(res, 422, { error: String((e as Error).message) });
+        throw e;
+      }
+      sendJson(res, 200, previewView(compile(spec), { run }));
+    } catch (e) {
+      sendJson(res, 500, { error: `preview build failed for "${run}" (${String(e)})` });
+    }
+  };
+  return {
+    name: "piflow-preview",
+    configureServer(server) { server.middlewares.use(handler); },
+    configurePreviewServer(server) { server.middlewares.use(handler); },
+  };
+}
+
+/**
  * On-demand FILE READ-BACK — `GET /__piflow/file/<run>?path=<rel|abs>` serves a file's REAL bytes from
  * disk so the HUD renders ANY file it has a path for (input read, output artifact, or write) — markdown,
  * json, code, or image — not just the 8 KB telemetry snapshot. The run-view records paths only; this is
@@ -424,6 +489,6 @@ function piflowAgents(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowFile(), piflowTree(), piflowCheckpointReply(), piflowAgents()],
+  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowPreview(), piflowFile(), piflowTree(), piflowCheckpointReply(), piflowAgents()],
   server: { port: 5173, host: true },
 });
