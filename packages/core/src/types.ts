@@ -71,7 +71,81 @@ export interface NodeSpec {
    * additive: a node with no `rerouteGate` behaves exactly as before. See `RerouteGate`.
    */
   rerouteGate?: RerouteGate;
+  /**
+   * 8. (G13 — M5) The UNIFIED node-op envelope (design §2/§5): the ONE ordered list every deprecated
+   * authoring grammar (`hooks`/`ops`/`checks`/`policy`/`inject`) LOWERS into AT THE LOADER. The dense
+   * `NodeSpec` gains EXACTLY this one new field (the justified spine widen — `types.ts:10-11`); the named
+   * five concerns are unchanged. Each entry DETECTS (`gate`), DERIVES (`transform`), ACTS (`run`), or
+   * CONTROLS (`action`), all routing through ONE `onFailure` consequence vocabulary. The per-transform
+   * executors (`seed.ts`/`project.ts`/`merge.ts`/`promote.ts`/`checks.ts`) are reused UNCHANGED — the
+   * envelope changes only the authoring + dispatch frame. Optional/additive: a node with no `op` behaves
+   * exactly as before (the loader still carries the byte-identical `ops`/`io.checks`/`io.policy`).
+   */
+  op?: OpSpec[];
 }
+
+// 8 ── THE UNIFIED OP ENVELOPE (G13 — M5) ───────────────────────────────────────
+
+/** When an op fires (extends `HookWhen`): a PRE op runs before the model, a POST op after, etc. */
+export type OpWhen = 'pre' | 'post' | 'on-success' | 'on-failure' | 'always';
+
+/**
+ * The consequence of an op (or check) failing — `PolicyAction` generalized to every op (design §2.4).
+ * `block` fails the node + halts before the next stage; `warn` records a non-fatal issue; `stop` is the
+ * documented `block` alias; `retry`/`escalate` route to the canonical M4 `NodeIO` lanes.
+ */
+export type OnFailure = PolicyAction;
+
+/**
+ * One discriminated node-op record (design §2.1). A node carries an ordered `op[]`; every existing grammar
+ * is a PROFILE of this shape. EXACTLY ONE body is present (the discriminator — the `mergeHook` oneOf
+ * precedent; the loader rejects a multi-body op). Additive: the field is optional on `NodeSpec`/`NodeIntent`.
+ */
+export interface OpSpec {
+  /** Ledger key + resume key + the reroute target (#2). SDK-fills a slug if omitted. */
+  id?: string;
+  /** Firing phase/condition. Default 'post' (the dbt-`when` knob made explicit). */
+  when?: OpWhen;
+  /** Files READ — fold into DAG edge inference AND (for `pre` ops) into the realized prompt (#10). */
+  reads?: string[];
+  /** Files WRITTEN — the produced set the next node's `reads` draws an edge from (#16). */
+  writes?: string[];
+  /** The consequence of THIS op failing. Default 'block' (the checks⊥policy split, universal — design §2.4). */
+  onFailure?: OnFailure;
+  /** Skip when outputs fresh. Default true (carried from `Hook.idempotent`). */
+  idempotent?: boolean;
+
+  // EXACTLY ONE body (the discriminator; the loader rejects a multi-body op — the `mergeHook` oneOf precedent):
+  /** DERIVE — declarative data transform (seed/project/merge/promote/projectRegistry). */
+  transform?: TransformBody;
+  /** ACT — deterministic shell/fn side-effect (the ported, now-authorable `Hook.run`). Never an LLM. */
+  run?: RunBody;
+  /** DETECT — pure predicate over `reads` emitting a verdict (the Check family). */
+  gate?: GateBody;
+  /** CONTROL — model-free control action (retry/escalate/notify/rerouteTo) — the G12 family. */
+  action?: ActionBody;
+}
+
+/** The DERIVE body — one of the five transform families; the `kind` discriminates which executor runs. */
+export type TransformBody =
+  | { kind: 'seed'; from: string }
+  | { kind: 'project'; ops?: Record<string, unknown>[]; from?: string | string[] }
+  | { kind: 'merge'; ops: Record<string, unknown>[] }
+  | { kind: 'promote'; from: string; to: string; reducer?: Reducer }
+  | { kind: 'projectRegistry'; source: string; mapRef: string; key: string };
+
+/** The ACT body — a deterministic shell command or an in-process fn ref. Never an LLM. */
+export type RunBody = { cmd: string; args?: string[]; cwd?: string } | { fn: string };
+
+/** The DETECT body — a `Check` predicate; `advisory` = Dagster blocking=False (a non-fatal gate). */
+export type GateBody = { kind: CheckKind | string; path?: string; param?: unknown; advisory?: boolean };
+
+/** The CONTROL body — a model-free control action (G12 owns the runtime; G13 owns the SLOT). */
+export type ActionBody =
+  | { kind: 'retry'; onVerdict?: 'fail' | 'warn'; max?: number }
+  | { kind: 'escalate'; via: string; evidence?: string[] }
+  | { kind: 'notify'; channel: string; payload?: string[] }
+  | { kind: 'rerouteTo'; node: string; max: number; evidence?: string[] };
 
 // 6 ── HUMAN CHECKPOINT (G5 — HITL) ────────────────────────────────────────────
 
@@ -717,6 +791,12 @@ export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentTyp
   sandbox?: Partial<SandboxSpec>;
   hooks?: NodeSpec['hooks'];
   ops?: NodeSpec['ops'];
+  /**
+   * (G13 — M5) The unified op envelope — the loader LOWERS the deprecated `hooks`/`ops`/`checks`/`policy`/
+   * `inject` aliases into this one ordered list and carries it verbatim onto the dense `NodeSpec`. Authoring
+   * may also declare `op` directly. Additive — a node with none behaves exactly as before.
+   */
+  op?: NodeSpec['op'];
   /** (G5) A human checkpoint on this node — carried verbatim onto the dense NodeSpec. */
   checkpoint?: NodeSpec['checkpoint'];
   /** (G12 — M3) A generated reroute existence-gate marker — carried verbatim onto the dense NodeSpec. */
