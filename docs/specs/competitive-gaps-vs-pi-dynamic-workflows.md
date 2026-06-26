@@ -10,7 +10,8 @@
 > (`workflow/agent-preset.ts` `mergePreset`, init seeds, GUI chip icons + "Basis" view mode). **Fusion
 > nodes** (T2.x — siblings + judge sub-DAG expansion) also shipped — the precedent G9 reused. ◑ **G9**
 > shipped v1 (`expandSubworkflow` — dep-wired sub-DAG splice; `inputs`/`outputs` path-rewiring + catalog
-> deferred to v2). **Remaining:** **G7, G8** (not started; designs ready) · **G3** PARTIAL (fusion delivers
+> deferred to v2). ◑ **G7** shipped v1 (`--detach` unattended — threads `checkpointReply:'default'`; self-
+> fork/notify/dead-stall deferred). **Remaining:** **G8** (not started; design ready) · **G3** PARTIAL (fusion delivers
 > the judge/best-of-N verb; `verify`/`loop-until-dry`/`completeness` templates still to ship) · **G10** PARTIAL
 > (a separate telemetry backlog — `remaining-telemetry-features.md` — covers truncation/retries/cache/tool
 > charts; tok/s rate + per-phase budgets still unbuilt; cost stays blocked upstream).
@@ -33,7 +34,7 @@ are, in priority order:
 4. **True journal/replay resume** (content-hash, mid-DAG) — §G4 · ✅ shipped
 5. Journaled **human checkpoint** — §G5 · ✅ shipped
 6. **`agentType` consumption** — §G6 · ✅ shipped
-7. **Background + auto-continue** — §G7 · ⬜ not started
+7. **Background + auto-continue** — §G7 · ◑ shipped (v1: `--detach` unattended)
 8. **Structured-output repair loop** — §G8 · ⬜ not started
 9. **Saved & nested (sub-)workflows** — §G9 · ◑ shipped (v1: dep-wired splice)
 10. tok/s + per-phase budgets (telemetry) — §G10 · ◑ PARTIAL (telemetry backlog open; tok/s + budgets unbuilt)
@@ -260,12 +261,16 @@ command builder — AND the template format has no `agentType` field at all (`te
 the additive thing PDW's in-process model structurally can't do (§1b) — while keeping presets thin,
 overridable, and branded.
 
-### G7 — Background + auto-continue delivery · severity: LOW–MED · effort: LOW · ⬜ NOT STARTED
+### G7 — Background + auto-continue delivery · severity: LOW–MED · effort: LOW · ◑ SHIPPED (v1)
 
-> **Design:** `wiring-g7-detach.md`. Key finding: the gap is smaller than it looks — runs are already
-> durable + detachable + pollable (`run.json.done` + `watchRun`); the real miss is the CLI never threads
-> the shipped `RunOptions.checkpointReply:'default'` (so a detached checkpoint parks forever) + no liveness
-> signal. Recommendation: a thin `--detach` (reuse G5), `--notify`, and a `run.json.updatedAt` heartbeat.
+> **Done (2026-06-25):** `cli/run.ts` `--detach` (alias `--unattended`) threads the shipped (G5)
+> `RunOptions.checkpointReply:'default'` so a backgrounded run takes each checkpoint's declared default
+> instead of parking forever — the load-bearing gap (the CLI never threaded the field). Prints the run dir
+> + a `piflow watch` monitor hint. +3 tests (mutation-checked). Design: `wiring-g7-detach.md`.
+>
+> **Deferred (v2):** the self-fork/disown (redundant with the harness/`&` per the research — `--detach`
+> currently runs unattended in the foreground; background it with `&`), wiring the inert `piflow watch
+> --notify`, and exposing `run.json.updatedAt` for `--dead-stall` (crashed-run liveness).
 
 **PDW.** Background by default: the turn ends immediately, a live panel tracks runs, and each result is
 delivered back so the conversation auto-continues.
@@ -401,6 +406,7 @@ optional per-stage token budget. Cost stays blocked until pi reports it.
    namespacing + cycle/depth guards; `inputs`/`outputs` path-rewiring + catalog deferred to v2). **G3
    quality-verb node templates** — NEXT: `verify`/`loop-until-dry`/`completeness` ship as composable
    sub-DAGs on top of G9; fusion already covers the judge/best-of-N verb.
-6. **G8 repair loop**, **G7 detach**, **G10 tok/s + budgets** — designs ready (`wiring-g7-detach.md`,
-   `wiring-g8-repair-loop.md`). G8 modifies the core `runNode` path (needs the exec→validate closure
-   extraction); G7 is CLI-only (`--detach` threading the shipped `checkpointReply:'default'`).
+6. ~~**G7 detach**~~ — ◑ SHIPPED v1 2026-06-25 (`--detach` unattended; self-fork/notify/dead-stall deferred).
+   **G8 repair loop** — design ready (`wiring-g8-repair-loop.md`); modifies the core `runNode` path (needs
+   the exec→validate closure extraction so a repair turn re-runs in the live sandbox). **G10 tok/s + budgets**
+   — telemetry backlog (`remaining-telemetry-features.md`).
