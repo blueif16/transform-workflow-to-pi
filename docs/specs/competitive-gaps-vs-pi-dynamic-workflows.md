@@ -12,7 +12,7 @@
 > shipped v1 (`expandSubworkflow` — dep-wired sub-DAG splice; `inputs`/`outputs` path-rewiring + catalog
 > deferred to v2). ◑ **G7** shipped v1 (`--detach` unattended — threads `checkpointReply:'default'`; self-
 > fork/notify/dead-stall deferred). **Remaining:** **G8** (not started; design ready) · **G3** PARTIAL (fusion delivers
-> the judge/best-of-N verb; `verify`/`loop-until-dry`/`completeness` templates still to ship) · **G10** PARTIAL
+> the judge/best-of-N verb + the `verify` sub-template `templates/quality/verify/`; `loop-until-dry`/`completeness` still to ship) · **G10** PARTIAL
 > (a separate telemetry backlog — `remaining-telemetry-features.md` — covers truncation/retries/cache/tool
 > charts; tok/s rate + per-phase budgets still unbuilt; cost stays blocked upstream).
 
@@ -30,7 +30,7 @@ are, in priority order:
 
 1. **Per-node model routing** (tiers + exact model) — §G1 · ✅ shipped
 2. **Concurrency cap / process pool** — §G2 (today a latent fork-bomb, not just a feature) · ✅ shipped
-3. **Quality-pattern vocabulary** for verify-nodes — §G3 · ◑ PARTIAL (fusion judge/best-of-N shipped)
+3. **Quality-pattern vocabulary** for verify-nodes — §G3 · ◑ PARTIAL (fusion judge + `verify` sub-template shipped; loop/completeness TODO)
 4. **True journal/replay resume** (content-hash, mid-DAG) — §G4 · ✅ shipped
 5. Journaled **human checkpoint** — §G5 · ✅ shipped
 6. **`agentType` consumption** — §G6 · ✅ shipped
@@ -163,11 +163,13 @@ clamped); an optional run-wide node cap. Small, self-contained change in `runner
 
 ### G3 — Quality-pattern vocabulary for verify-nodes · severity: MED · effort: MED · ◑ PARTIAL
 
-> **Partial (2026-06-25):** the **judge / best-of-N** verb now exists as compile-time DAG expansion —
-> `expandFusion` turns one fusion node into N sibling candidates + a judge node (`workflow/fusion/`,
-> prompts in `fusion/prompts.ts`). Still to ship as reusable node templates: **`verify`** (fan N reviewers →
-> consensus), **`loop-until-dry`** (controller), **`completeness-check`**. Cleanest once §G9 sub-DAG
-> composition lands (the judge sub-DAG generalizes fusion); usable as one-off templates before that.
+> **Partial (2026-06-25):** two verbs now exist. (1) The **judge / best-of-N** verb as compile-time DAG
+> expansion — `expandFusion` turns one fusion node into N sibling candidates + a judge node
+> (`workflow/fusion/`, prompts in `fusion/prompts.ts`). (2) **`verify`** (fan N reviewers → consensus) now
+> ships as a reusable sub-template at `templates/quality/verify/` — referenced via `node.subworkflow` (G9),
+> evidence-required reviewers + a dedup/majority consensus adjudicator (prompts on the agentic-prompt-design
+> skeleton); +5 integration tests proving it passes the §8 gate and splices on top of G9. Still to ship:
+> **`loop-until-dry`** (controller) and **`completeness-check`**.
 
 **PDW.** `verify()`, `judgePanel()`, `loopUntilDry()`, `completenessCheck()`, `retry()`, `gate()` as
 composable vm globals built purely on `agent()`/`parallel()` (`src/workflow.ts:638-786`). Ships
@@ -404,8 +406,8 @@ optional per-stage token budget. Cost stays blocked until pi reports it.
    compile-time sub-DAG expansion precedent G9 reuses.
 5. ~~**G9 sub-DAG composition**~~ — ◑ SHIPPED v1 2026-06-25 (`expandSubworkflow`; dep-wired splice +
    namespacing + cycle/depth guards; `inputs`/`outputs` path-rewiring + catalog deferred to v2). **G3
-   quality-verb node templates** — NEXT: `verify`/`loop-until-dry`/`completeness` ship as composable
-   sub-DAGs on top of G9; fusion already covers the judge/best-of-N verb.
+   quality-verb node templates** — ◑ `verify` SHIPPED on top of G9 (`templates/quality/verify/`); fusion
+   covers judge/best-of-N; `loop-until-dry`/`completeness` still to ship as sub-DAGs.
 6. ~~**G7 detach**~~ — ◑ SHIPPED v1 2026-06-25 (`--detach` unattended; self-fork/notify/dead-stall deferred).
    **G8 repair loop** — design ready (`wiring-g8-repair-loop.md`); modifies the core `runNode` path (needs
    the exec→validate closure extraction so a repair turn re-runs in the live sandbox). **G10 tok/s + budgets**
