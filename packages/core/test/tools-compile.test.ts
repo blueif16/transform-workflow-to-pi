@@ -205,6 +205,55 @@ describe('compileToolExtension — the sdk branch (native execute, NOT the bridg
   });
 });
 
+// ── StringEnum normalization (#21 — Gemini-safe enum) ───────────────────────────────────────────────
+// A generated param schema with an all-string `{ enum: [...] }` must render as the Gemini-safe StringEnum
+// form (a generated-preamble helper emitting `{ type:'string', enum:[...] }`), NOT a raw `enum` array left
+// inside `Type.Unsafe(...)` (which Google rejects) nor a `Type.Union` of literals. Authoring is unchanged;
+// the compiler produces the safe form. A param with NO enum must render byte-identically to today.
+
+describe('compileToolExtension — StringEnum normalization (#21, Gemini-safe)', () => {
+  const ENUM_TOOL: ToolEntry = {
+    address: 'oc.report:status',
+    source: 'sdk',
+    piName: 'report_status',
+    description: 'Report a status.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['ok', 'gap', 'blocked'], description: 'the verdict' },
+      },
+      required: ['status'],
+    },
+  };
+
+  it('renders an all-string enum param via the StringEnum helper, not a raw enum / Type.Union', () => {
+    const src = compileToolExtension([ENUM_TOOL]).source;
+    // the generated extension defines + uses a StringEnum helper carrying the three values.
+    expect(src).toContain('StringEnum');
+    expect(src).toMatch(/StringEnum\(\["ok","gap","blocked"\]\)/);
+    // it must NOT leave the all-string enum as a bare JSON array inside Type.Unsafe (the Gemini-unsafe form),
+    // nor wrap it in Type.Union.
+    expect(src).not.toContain('"enum":["ok","gap","blocked"]');
+    expect(src).not.toContain('Type.Union');
+  });
+
+  it('emits a StringEnum helper definition in the preamble (a real, callable factory)', () => {
+    const src = compileToolExtension([ENUM_TOOL]).source;
+    // the helper is DEFINED (a const/function) so the generated `StringEnum(...)` call resolves at load.
+    expect(src).toMatch(/(const|function)\s+StringEnum\b/);
+    // and it produces the Gemini-safe `{ type:'string', enum }` shape (carries type:'string').
+    expect(src).toMatch(/type:\s*['"]string['"]/);
+  });
+
+  it('ADDITIVITY: a param with NO enum renders byte-identically (still a flat Type.Unsafe of the schema)', () => {
+    // MCP_ISSUE has no enum anywhere → its param block must be the unchanged `Type.Unsafe(<json>)` form,
+    // and the StringEnum helper must NOT be emitted (nothing needs it).
+    const src = compileToolExtension([MCP_ISSUE]).source;
+    expect(src).toContain(`parameters: Type.Unsafe(${JSON.stringify(MCP_ISSUE.parameters)}),`);
+    expect(src).not.toContain('StringEnum');
+  });
+});
+
 // ── the bundle seam: one self-contained ESM file (cross-provider delivery) ──────────────────────────
 // pi's jiti loader resolves an extension's imports from the staged file's OWN location, which fails on an
 // outside-repo temp dir / empty cloud VM. The fix: esbuild-bundle the rendered extension so the only
