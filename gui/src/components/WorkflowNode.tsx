@@ -136,6 +136,28 @@ export function AgentPresetIcon({ icon }: { icon?: string }) {
           <path d="M13 6.5h.5A1.5 1.5 0 0115 8v3a1.5 1.5 0 01-1.5 1.5H13L10.5 14v-2" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
         </svg>
       );
+    case "spark": // general-purpose — a four-point sparkle (the do-anything default agent)
+      return (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 2l1.2 4.8L14 8l-4.8 1.2L8 14l-1.2-4.8L2 8l4.8-1.2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+        </svg>
+      );
+    case "compass": // explore — a compass (read-only fan-out search)
+      return (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M8 4.4l1.7 3.6L8 11.6 6.3 8z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+        </svg>
+      );
+    case "list": // plan — a checklist (step-by-step implementation plan)
+      return (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M6 4.5h7M6 8h7M6 11.5h7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          <circle cx="3.3" cy="4.5" r="1" fill="currentColor" />
+          <circle cx="3.3" cy="8" r="1" fill="currentColor" />
+          <circle cx="3.3" cy="11.5" r="1" fill="currentColor" />
+        </svg>
+      );
     default: // unknown / no icon key → the default agent glyph
       return <KindIcon kind="agent" />;
   }
