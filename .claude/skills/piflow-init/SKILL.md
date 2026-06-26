@@ -196,6 +196,31 @@ are in `reference/sdk-consumer.md` — read it first.** The flow:
   deny-all-reads-except-{toolchain ∪ scope}, inherited by every child process, so a `grep /` or a
   sibling-source spelunk EPERMs instead of bloating context. A node left un-scoped is a hole. See
   `reference/read-scope-sandbox.md`.
+- **A node WIRES its own tools in `tools.allow`/`deny`, and as of G11 a catalog tool BINDS on the canonical
+  path — so author the address, don't fear it.** Four address families (`tools.allow` entries, template
+  `node.json` `tools:{allow,deny}` — template/types.ts:26): `fs:*`/`sh:*` (pi builtins), `oc.<plugin>:<tool>`
+  (the OpenClaw sdk catalog, e.g. the live-proven pure `oc.calc:add` → `tool_execution_end{calc_add, sum:5}`),
+  `mcp.<server>:<tool>` (a per-node MCP server), and `contract:submit_result` (the typed terminating return
+  tool, `tools/contract-tool.ts:20`). These now bind because `assembleRunTools` (`runner/tool-config.ts`)
+  seeds the run registry (builtins + the `oc.calc:add` seed + the community catalog + `submit_result`) into
+  BOTH `runFromConfig` and `runFromTemplate` (`runner/entry.ts:34-37,132-142`) under an explicit-caller-wins
+  guard — before G11 a selected `oc.*`/`mcp.*` had ZERO canonical caller and the node went `blocked`. The bind
+  PRE-CHECK runs LOUD and EARLY: `verifyToolBinding` (`runner.ts:771-778`, *before* pi spawns) marks the node
+  `blocked` if a declared address is absent from the catalog or two addresses collide on one bare name — so a
+  selected `oc.*`/`mcp.*` MUST exist in the catalog; the dry-run's `⚠ TOOL BINDING` audit (line 112 above)
+  surfaces it for free. Per-node MCP creds: declare `mcp.servers` in the `node.json` (the loader reads
+  `def.mcp` → `NodeIntent.mcp`, `template/loader.ts:165`), and **every secret-bearing value MUST be a
+  `$VAR`/`${VAR}` env REFERENCE — the loader REJECTS a committed literal** (`checkMcpSecrets`,
+  `template/checks.ts:318`); the runner forwards ONLY the referenced `$VAR`s through the `SecretResolver`
+  allowlist, never the full env (on cloud, only the allowlist crosses — `runner.ts:447-478`). Param `enum`s
+  render Gemini-safe automatically (`StringEnum`, `tools/params.ts` / `tools/compile.ts` #21) — authoring is
+  unchanged. CAVEAT: an `oc.*` tool with a pure native execute runs end-to-end TODAY; a `mcp.*` tool routed
+  through the bridge still needs the `$VAR`→value EXPANSION, a `@piflow/tool-bridge` follow-on **deferred
+  (#14)** — `template/checks.ts:271-273`. FORWARD-POINTER: `docs/design/node-action-protocol.md` is the
+  CONVERGING canonical node-action format (a unified `op[]` envelope), but its `op[]` is milestone M5 and is
+  **NOT loadable today** (no `op`/`OpSpec` field in the loader/template types — the loader will REJECT it). So
+  author today's loadable shape — `tools`/`mcp` above + `hooks`/`checks`/`policy` — and treat that doc as the
+  target the format moves toward; **do NOT emit `op[]` yet.**
 - **Hand-roll the orchestration; reach for pi-native only at the interpretation surfaces.** The
   driver's own deterministic plumbing (the DAG, filesystem coordination, artifact `stat()`, worktree)
   is YOURS — pi is minimal by design (no sub-agents, no native typed-return) and *expects* you to own
