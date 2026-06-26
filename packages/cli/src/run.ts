@@ -31,8 +31,11 @@ import {
   loadFusionConfig,
   nodePromptFile,
   generateRunName,
+  writeStatus,
+  nowISO,
   type Workflow,
   type WorkflowSpec,
+  type RunStatus,
   type LoadConfigInput,
   type ResolvedRunOpts,
   type InstantiateRunOpts,
@@ -44,6 +47,7 @@ import {
 } from '@piflow/core';
 import path from 'node:path';
 import { readdirSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 
 /**
  * List the run-NAME basenames already present under a runs home (the canonical `.piflow/<wf>/runs/`), so
@@ -283,9 +287,44 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     spec = expandFusion(spec, { defaults: loadFusionConfig().defaults, tiers: loadModelTiers() });
     const wf = compile(spec);
     await instantiateRun(templateDir, outDir, { workspace });
+    // Make the dry-run plan VIEWABLE, not just printable: persist the resolved DAG + a `dry`-status run.json
+    // so discovery + every observe surface (GUI/TUI/`status`) render the SAME expanded graph the plan prints
+    // — WITHOUT invoking a model. `.pi/workflow.json` is the authoritative topology `buildRunView` draws from
+    // (mirrors the live runner's write); each node carries the reserved `dry` status (status.ts) + `done:true`
+    // so a surface labels it "planned, not run" and never polls it. This is what lets a free dry-run seed a
+    // GUI-openable demo (and the per-node fusion toggle then re-expands the DAG live on top of it).
+    await writeFile(
+      path.join(outDir, '.pi', 'workflow.json'),
+      JSON.stringify({ meta: wf.meta, profile: parsed.profile ?? null, stages: wf.stages, edges: wf.edges }, null, 2) + '\n',
+    );
+    const ts = nowISO();
+    const dryStatus: RunStatus = {
+      run: runId,
+      name: runId,
+      ...(promptId ? { promptId } : {}),
+      source: wf.meta.name,
+      profile: parsed.profile ?? null,
+      provider: parsed.provider ?? 'cp',
+      model: parsed.model ?? null,
+      startedAt: ts,
+      updatedAt: ts,
+      done: true,
+      ok: null,
+      durationMs: null,
+      stage: null,
+      totals: null,
+      nodes: Object.fromEntries(
+        Object.values(wf.nodes).map((n) => [
+          n.id,
+          { id: n.id, label: n.label, ...(n.agentType ? { agentType: n.agentType } : {}), status: 'dry' as const, artifacts: [], issues: [] },
+        ]),
+      ),
+    };
+    await writeStatus(outDir, dryStatus);
     // reference the actual realized prompt path the run materialized (engine-owned layout helper).
     const samplePromptDir = nodePromptFile(outDir, '<id>').replace(/\/<id>\/prompt\.md$/, '');
     print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: parsed.provider ?? 'cp', model: parsed.model, thinking: parsed.thinking, profile: parsed.profile }));
+    print(`piflowctl run: dry-run materialized a viewable plan at ${outDir} (open it: piflowctl gui / piflowctl status ${outDir}). Nodes are status "dry" — no model ran.`);
     return undefined;
   }
 
