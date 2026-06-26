@@ -2,7 +2,7 @@
 // reads to learn the node's artifacts / owned paths / read-scope / tools / seeds. Ported from the
 // `run.mjs` marker grammar; round-trippable (emit → parse → emit).
 
-import type { NodeSpec, ResolveResult, Check, ChecksPrePost, Policy, ReturnMode, Reducer } from './types.js';
+import type { NodeSpec, ResolveResult, Check, ChecksPrePost, Policy, ReturnMode, Reducer, OpSpec } from './types.js';
 import type { PromoteSpec } from './workflow/ops/promote.js';
 
 // ── POLICY VOCABULARY (decided T3) ─────────────────────────────────────────────────────────────────
@@ -40,6 +40,13 @@ export interface ContractMarkers {
   checksPrePost?: ChecksPrePost;
   /** Verdict→action policy (consequence). Carried base64-on-one-line. Runtime vocabulary: block|warn|stop. */
   policy?: Policy;
+  /**
+   * (G13 — M5) The UNIFIED op envelope (`NodeSpec.op`) — every deprecated grammar lowered into one ordered
+   * list. Carried base64-on-one-line (DRIVER-OP) since an op carries arbitrary bodies/params, so the new
+   * shape round-trips losslessly through the codec (the `checksPrePost` marker precedent). Independent of
+   * `checks`/`policy`: a node MAY carry both (the lowered `op` alongside the byte-identical legacy markers).
+   */
+  op?: OpSpec[];
   /** Return-handshake mode override (required|optional). */
   returnMode?: ReturnMode;
   /**
@@ -120,6 +127,7 @@ export function emitMarkers(m: ContractMarkers): string {
   if (m.checksPrePost && (m.checksPrePost.pre?.length || m.checksPrePost.post?.length))
     lines.push(`DRIVER-CHECKS-PREPOST: ${encodeB64(m.checksPrePost)}`);
   if (m.policy && Object.keys(m.policy).length) lines.push(`DRIVER-POLICY: ${encodeB64(m.policy)}`);
+  if (m.op?.length) lines.push(`DRIVER-OP: ${encodeB64(m.op)}`);
   if (m.returnMode) lines.push(`DRIVER-RETURN: ${m.returnMode}`);
   if (m.returnSchema && Object.keys(m.returnSchema).length)
     lines.push(`DRIVER-RETURN-SCHEMA: ${encodeB64(m.returnSchema)}`);
@@ -170,6 +178,11 @@ export function parseMarkers(prompt: string): ContractMarkers {
     const p = decodeB64(policyRaw);
     if (p && typeof p === 'object' && !Array.isArray(p)) out.policy = p as Policy;
   }
+  const opRaw = firstValue(prompt, 'DRIVER-OP');
+  if (opRaw !== null) {
+    const o = decodeB64(opRaw);
+    if (Array.isArray(o)) out.op = o as OpSpec[];
+  }
   const ret = firstValue(prompt, 'DRIVER-RETURN');
   if (ret === 'optional' || ret === 'required') out.returnMode = ret;
   const retSchemaRaw = firstValue(prompt, 'DRIVER-RETURN-SCHEMA');
@@ -198,6 +211,7 @@ export function markersFromNode(node: NodeSpec, resolved?: ResolveResult): Contr
   if (node.io.checksPrePost && (node.io.checksPrePost.pre?.length || node.io.checksPrePost.post?.length))
     m.checksPrePost = node.io.checksPrePost;
   if (node.io.policy && Object.keys(node.io.policy).length) m.policy = node.io.policy;
+  if (node.op?.length) m.op = node.op;
   if (node.io.returnMode) m.returnMode = node.io.returnMode;
   if (node.io.returnSchema && Object.keys(node.io.returnSchema).length) m.returnSchema = node.io.returnSchema;
   if (node.io.fillSentinel) m.fillSentinel = node.io.fillSentinel;
