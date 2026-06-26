@@ -11,6 +11,10 @@
 import type { NodeSpec, Check, ReturnMode, Policy } from '../../types.js';
 import { markersFromNode, emitMarkers } from '../../contract.js';
 import type { TemplateNode } from './types.js';
+import { lowerToOps } from './lower.js';
+
+/** Strip a leading `{{RUN}}/` so an injected forced-read renders as a RUN-relative path in the fold. */
+const runRel = (p: string): string => p.replace(/^\{\{RUN\}\}\//, '');
 
 /** Flatten pre+post checks into the runtime `Check[]` (detection). Render order: pre then post. */
 export function collectChecks(def: TemplateNode): Check[] | undefined {
@@ -36,6 +40,10 @@ export function toPolicy(p: TemplateNode['policy']): Policy | undefined {
  */
 export function renderRealizedPrompt(def: TemplateNode, prose: string): string {
   const c = def.contract;
+  // (M5 · G13) Lower the deprecated aliases into the canonical op[] so the realized prompt carries a
+  // DRIVER-OP marker (the codec round-trips it) AND #10: each pre-op's `reads` (the injected forced-reads)
+  // FOLD into the realized prompt — a NEW behavior (the loader's reads:[] hardcode never folded them).
+  const op = lowerToOps(def);
   const node = {
     id: def.id,
     label: def.id,
@@ -55,8 +63,14 @@ export function renderRealizedPrompt(def: TemplateNode, prose: string): string {
       returnSchema: def.return as Record<string, unknown> | undefined,
       fillSentinel: c.fillSentinel ?? undefined,
     },
+    ...(op ? { op } : {}),
   } as unknown as NodeSpec;
   const tail = emitMarkers(markersFromNode(node));
+  // #10 — fold the PRE ops' reads (the injected forced-reads) into a human-readable line so the model knows
+  // which inputs to load. The base64 DRIVER-OP marker round-trips them; this line makes them legible in-prompt.
+  const preReads = [...new Set((op ?? []).filter((o) => o.when === 'pre').flatMap((o) => (o.reads ?? []).map(runRel)))];
+  const injectLine = preReads.length ? `DRIVER-INJECT: ${preReads.join(' ')}` : '';
+  const fullTail = [tail, injectLine].filter(Boolean).join('\n');
   const body = prose.trimEnd();
-  return tail ? `${body}\n\n${tail}` : body;
+  return fullTail ? `${body}\n\n${fullTail}` : body;
 }
