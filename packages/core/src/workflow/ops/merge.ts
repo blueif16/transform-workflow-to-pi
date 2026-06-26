@@ -15,6 +15,25 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { ensureDir, projJson, drillPath, absUnder } from './util.js';
 
+// (M6 · #13) SAME-TARGET FOLD BARRIER. `fold` is a read-modify-write on the target file: read it, SET one
+// key, write the WHOLE object back. When N folds into the SAME target run concurrently (the runner runs a
+// parallel stage's POST merge ops via `Promise.all`), all read the same base before any write lands, so the
+// last writer clobbers the others — a lost update (#13). We serialize the read-modify-write per ABSOLUTE
+// TARGET PATH via a chained-promise lock: folds into the SAME file run one-at-a-time (each sees the prior's
+// write), while folds into DISJOINT files keep running in parallel (the lock keys on the path, never global).
+const foldLocks = new Map<string, Promise<unknown>>();
+function withTargetLock<T>(targetAbs: string, fn: () => Promise<T>): Promise<T> {
+  const prev = foldLocks.get(targetAbs) ?? Promise.resolve();
+  // Chain after the prior holder; swallow its rejection so one failed fold never poisons the queue.
+  const next = prev.then(fn, fn);
+  // Keep the chain tail current; drop the entry once it is the tail and settled (avoid an unbounded map).
+  foldLocks.set(targetAbs, next);
+  void next.catch(() => {}).finally(() => {
+    if (foldLocks.get(targetAbs) === next) foldLocks.delete(targetAbs);
+  });
+  return next;
+}
+
 /** One merge op result. `wrote` is the on-disk effect; `failed` flags a non-zero `run` exit. */
 export interface MergeResult {
   op: string;
@@ -147,27 +166,31 @@ export async function applyMergeOp(
     const { from, to, into } = opSpec.fold as { from?: string; to?: string; into?: string };
     if (!from || !to || !into) return { op: 'fold', to, wrote: false, skipped: 'fold needs { from, to, into }' };
     const toAbs = absUnder(projectBase, to);
-    let toJson: Record<string, unknown>;
-    try {
-      toJson = JSON.parse(await fs.readFile(toAbs, 'utf8'));
-    } catch (e) {
-      return { op: 'fold', to, wrote: false, skipped: `target unreadable: ${(e as Error).message}` };
-    }
-    const fromAbs = absUnder(projectBase, from);
-    let frag: unknown;
-    try {
-      frag = JSON.parse(await fs.readFile(fromAbs, 'utf8'));
-    } catch (e) {
-      return {
-        op: 'fold',
-        to,
-        wrote: false,
-        skipped: `fragment "${from}" unreadable: ${(e as Error).message} (target left unchanged)`,
-      };
-    }
-    toJson[into] = frag;
-    await fs.writeFile(toAbs, projJson(toJson));
-    return { op: 'fold', to, wrote: true, into };
+    // (M6 · #13) The read-modify-write runs under a per-target-path lock so N folds into the SAME file
+    // serialize (each sees the prior's write) — no lost update — while disjoint targets stay parallel.
+    return withTargetLock(toAbs, async () => {
+      let toJson: Record<string, unknown>;
+      try {
+        toJson = JSON.parse(await fs.readFile(toAbs, 'utf8'));
+      } catch (e) {
+        return { op: 'fold', to, wrote: false, skipped: `target unreadable: ${(e as Error).message}` };
+      }
+      const fromAbs = absUnder(projectBase, from);
+      let frag: unknown;
+      try {
+        frag = JSON.parse(await fs.readFile(fromAbs, 'utf8'));
+      } catch (e) {
+        return {
+          op: 'fold',
+          to,
+          wrote: false,
+          skipped: `fragment "${from}" unreadable: ${(e as Error).message} (target left unchanged)`,
+        };
+      }
+      toJson[into] = frag;
+      await fs.writeFile(toAbs, projJson(toJson));
+      return { op: 'fold', to, wrote: true, into };
+    });
   }
 
   // ---- run: execute a declared command — a deterministic GENERATE/derive step. `{project}` substitutes
