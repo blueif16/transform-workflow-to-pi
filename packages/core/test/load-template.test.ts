@@ -287,3 +287,49 @@ describe('loadTemplate — §8 STATIC CHECKS (each goes RED when violated)', () 
     expect(after2).toBe(after1);
   });
 });
+
+// #3 (M2) — the per-node `mcp.servers` field is now READ (the M1 carry). A committable template must
+// reference secrets as `$VAR`/`${VAR}` env REFERENCES, never a literal secret on disk. The loader rejects
+// a literal secret-bearing value loudly at author time (the SecretResolver allowlist contract, design §4).
+describe('loadTemplate — #3 literal-secret guard on mcp.servers', () => {
+  it('rejects a literal secret in mcp.servers (a raw Bearer token in a header)', async () => {
+    dir = await cloneFixture();
+    const n = await readJson(nodeJson(dir, 'w0-classify'));
+    // A LITERAL credential committed in a header value — exactly what must never reach disk.
+    n.mcp = {
+      servers: {
+        github: {
+          transport: 'http',
+          url: 'https://api.githubcopilot.com/mcp/',
+          headers: { Authorization: 'Bearer ghp_LIVE_LITERAL_TOKEN_abc123' },
+        },
+      },
+    };
+    await writeJson(nodeJson(dir, 'w0-classify'), n);
+    const e = await expectReject(dir);
+    // the message must name the offence (secret/literal) and locate it (the node + the server).
+    expect(e.message).toMatch(/secret|literal/i);
+    expect(e.message).toContain('w0-classify');
+    expect(e.message).toContain('github');
+  });
+
+  it('ACCEPTS a $VAR-ref secret in mcp.servers (the committable form loads cleanly)', async () => {
+    dir = await cloneFixture();
+    const n = await readJson(nodeJson(dir, 'w0-classify'));
+    // The SAME header, but a `$VAR` REFERENCE — the only committable form. Must NOT reject.
+    n.mcp = {
+      servers: {
+        github: {
+          transport: 'http',
+          url: 'https://api.githubcopilot.com/mcp/',
+          headers: { Authorization: 'Bearer $GITHUB_TOKEN' },
+        },
+      },
+    };
+    await writeJson(nodeJson(dir, 'w0-classify'), n);
+    const spec = await loadTemplate(dir); // must resolve, not throw
+    const w0 = spec.nodes.find((nd) => nd.label === 'w0-classify')!;
+    // and the carried-through mcp survives onto the intent (the M1 carry, intact).
+    expect((w0.mcp?.servers as any).github.headers.Authorization).toBe('Bearer $GITHUB_TOKEN');
+  });
+});
