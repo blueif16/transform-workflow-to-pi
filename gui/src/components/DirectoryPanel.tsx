@@ -15,7 +15,7 @@
  * the perf budget allows blur on. Float it over the canvas with React Flow's
  * <Panel> (see WorkflowCanvas). Honors prefers-reduced-motion (no slide).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, useReducedMotion } from "motion/react";
 import * as motion from "motion/react-client";
 import { GlassSurface } from "./GlassSurface";
@@ -79,6 +79,17 @@ export function DirectoryPanel({ tree, title = "Files", onOpenFile, reverse = fa
     return cols;
   }, [tree, path]);
 
+  // The strip holds ~3 columns before it overflows; without this the deeper columns just render off-screen
+  // and the navigator *looks* capped. Scroll the leading (newest) column into view whenever depth grows, so
+  // folders keep drilling in freely. (reverse grows right→left and never overflows in practice — skip it to
+  // avoid row-reverse scrollLeft quirks.)
+  const colsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (reverse) return;
+    const el = colsRef.current;
+    if (el) el.scrollTo({ left: el.scrollWidth, behavior: reduce ? "auto" : "smooth" });
+  }, [columns.length, reverse, reduce]);
+
   const crumb = path.map((p) => p.name).join(" / ");
 
   function onRow(entry: DirEntry, depth: number) {
@@ -101,7 +112,7 @@ export function DirectoryPanel({ tree, title = "Files", onOpenFile, reverse = fa
         {crumb && <span className="ds-dir__crumb" title={crumb}>{crumb}</span>}
       </div>
 
-      <div className={`ds-dir__cols${reverse ? " ds-dir__cols--reverse" : ""}`}>
+      <div ref={colsRef} className={`ds-dir__cols${reverse ? " ds-dir__cols--reverse" : ""}`}>
         <AnimatePresence initial={false}>
           {columns.map((col, depth) => {
             const selectedId = path[depth]?.id ?? null;

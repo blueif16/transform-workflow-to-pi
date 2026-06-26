@@ -506,7 +506,9 @@ function Detail({ region, rv, expected, pct, onOpenFile }: { region: RegionKey; 
             <span className="ds-out__meta">{formatBytes(a.bytes)}{a.exists ? " ✓ verified" : " ✗ missing"}</span>
           </button>
         ))}
-        {rv.writes.map((w) => (
+        {/* de-dupe against artifacts (same as the collapsed RIGHT panel): a produced file is usually BOTH
+            a declared artifact AND a captured write — show it once (as the verified artifact), not twice. */}
+        {rv.writes.filter((w) => !rv.artifacts.some((a) => a.displayPath === w.displayPath)).map((w) => (
           <button key={`w-${w.path}`} type="button" className="ds-out__row ds-out__row--lg ds-out__row--btn" data-ok={w.verified} onClick={() => onOpenFile(w)} title={w.displayPath}>
             <span className="ds-out__spark" aria-hidden="true" />
             <span className="ds-out__name">{w.displayPath}</span>
