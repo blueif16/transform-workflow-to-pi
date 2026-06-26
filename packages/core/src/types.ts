@@ -574,6 +574,25 @@ export interface FusionSpec {
 }
 
 /**
+ * (G12 — M3) A node's bounded conditional REROUTE / self-fix activation (template `node.json` `reroute`,
+ * design §3-control). Lives ONLY on the authoring/intent layer: `expandReroute(spec)` consumes it BEFORE
+ * `compile`, cloning the path slice `[onFail … V]` into namespaced forward-only stages (`V__r{i}`) bounded
+ * by `max` total attempts — so the QA loop is UNROLLED at compile time and `checkCycles`/`stagesOf` accept
+ * an acyclic DAG (never a runtime back-edge). By the time a node is materialized into a dense `NodeSpec`,
+ * no `reroute` remains (the `fusion?` precedent — `NodeSpec` carries no `reroute` field).
+ */
+export interface RerouteSpec {
+  /** The upstream node (label or id) to re-enter on a FAIL. MUST be an ancestor of this node, else RerouteConfigError. */
+  onFail: string;
+  /** Total attempts (≥1): attempt 1 is the original; attempts 2..max are the cloned re-entries. `< 1` ⇒ RerouteConfigError. */
+  max: number;
+  /** Prior-attempt artifacts the re-entry clone READS (its failure evidence) + folds into the fix-prefix. Optional. */
+  evidence?: string[];
+  /** The final clone's consequence — `'block'` (default) or its documented alias `'stop'` (design §2.4). */
+  onFailure?: 'block' | 'stop';
+}
+
+/**
  * The AUTHORED subset of a node — what the COMPOSE agent fills. Mechanics (id, edges, stage/lane,
  * sandbox profile, provider/workspace defaults) are SDK-filled by `compile`. `phase` is generic node
  * metadata (a display label, §5) carried through so a PROFILE predicate can select nodes by it — it
@@ -590,6 +609,14 @@ export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentTyp
   checkpoint?: NodeSpec['checkpoint'];
   /** (Phase 2) Fusion activation — consumed by `expandFusion` BEFORE compile; never reaches the dense NodeSpec. */
   fusion?: FusionSpec;
+  /**
+   * (G12 — M3) Bounded conditional REROUTE / self-fix on a verify node: on a FAIL, re-enter the upstream
+   * `onFail` node up to `max` total attempts. Lives ONLY on the authoring/intent layer — `expandReroute`
+   * consumes it BEFORE `compile`, UNROLLING the bounded loop into forward-only acyclic clones (the
+   * `fusion?` precedent: never reaches the dense `NodeSpec`, so no runtime back-edge / cycle). A reroute
+   * to a non-ancestor target, or `max < 1`, is a loud `RerouteConfigError`.
+   */
+  reroute?: RerouteSpec;
   /**
    * (G11) Per-node external MCP gateway config (the authored `node.json.mcp`). Lives ONLY on the
    * authoring/intent layer: `assembleRunTools` reads `mcp.servers` off the spec to assemble the run's
