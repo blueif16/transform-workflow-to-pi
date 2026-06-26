@@ -68,6 +68,14 @@ export interface NodeStatusRecord {
    * `schemaInvalid` for the return-handshake side: a present-but-NON-CONFORMING result blocks the node.
    */
   returnSchemaInvalid?: string[];
+  /**
+   * (G8 fold) How many bounded IN-SANDBOX schema-repair turns this node took (a schema miss re-prompts
+   * the live sandbox from {previousOutput, ajvErrors, schema} BEFORE any full `retry`/`escalate` re-run).
+   * Absent ⇒ no repair lane fired (the default, `maxRepairAttempts:0`). A repair is NOT a retry.
+   */
+  repairAttempts?: number;
+  /** (G8 fold) The repair budget was spent and the output STILL failed its schema — terminal `blocked`. */
+  repairExhausted?: boolean;
 }
 
 /** Run-level rollup at completion. */

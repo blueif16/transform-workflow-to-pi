@@ -1067,7 +1067,10 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     // watchdog's own onStdout, so recording can never disable the stall kill). See ./events.ts.
     const recorder = ctx.recordEvents ? new NodeRecorder(ctx.outDir, node.id, ctx.onEvent) : null;
     const execSandbox = recorder ? recordingSandbox(sandbox, recorder) : sandbox;
-    const { result, killed } = await ctx.execRunner(execSandbox, cmd, { ...ctx.watchdog, nodeTimeoutMs });
+    // `let result` (not `const`): the G8 repair loop re-execs in the live sandbox and re-binds it.
+    const exec0 = await ctx.execRunner(execSandbox, cmd, { ...ctx.watchdog, nodeTimeoutMs });
+    let result = exec0.result;
+    const { killed } = exec0;
     await recorder?.close();
     rec.exitCode = result.code;
 
@@ -1128,15 +1131,17 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     }
 
     // VERIFY by host-stat (run.mjs: a node is `ok` only if its declared artifacts exist on disk).
-    const artifacts: ArtifactState[] = await Promise.all(
+    // `let` (not `const`): the G8 in-sandbox repair loop (below) re-execs + re-validates in place, so a
+    // repaired-good node re-binds these to the corrected results the status ladder then reads.
+    let artifacts: ArtifactState[] = await Promise.all(
       node.io.artifacts.map((a) => artifactState(path.resolve(ctx.outDir, a.path), a.path)),
     );
-    const missing = artifacts.filter((a) => !a.exists).map((a) => a.path);
+    let missing = artifacts.filter((a) => !a.exists).map((a) => a.path);
 
     // POST-NODE SCHEMA GATE: a present-but-invalid artifact (vs its declared draft-2020-12 schema) is a
     // contract breach, driver-verified — exactly like a missing one. Skips (advisory) when no schema is
     // declared or no validator resolved (run.mjs schemaCheck).
-    const schema = await validateArtifactSchemas(node.io.artifacts, {
+    let schema = await validateArtifactSchemas(node.io.artifacts, {
       outDir: ctx.outDir,
       roots: [ctx.outDir, scope.root],
       validate: ctx.validateSchema,
@@ -1176,7 +1181,7 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     // The status ladder (run.mjs 1876–1883): kill/nonzero ⇒ error; then the driver-verified contract
     // breaches (missing → schema-invalid → blocking integrity check), each beating any self-report; then
     // a non-ok self-report is honored; then a MISSING handshake errors ONLY when it was required; else ok.
-    const parsed = lastJsonBlock(result.stdout);
+    let parsed = lastJsonBlock(result.stdout);
 
     // POST-NODE RETURN-SCHEMA GATE (mirrors the artifact schema gate, runner.ts above): a node's authored
     // `returnSchema` (node.json top-level `return`) constrains the SHAPE of its structured result. We
@@ -1191,13 +1196,79 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     // NEVER gated — the return-schema mechanism stays available for rigid workflows without ever blocking
     // (or warning on) a node that simply writes its files. Under 'required' a non-conforming result is a
     // contract breach that BLOCKS (mirrors the artifact schema gate).
-    let returnSchemaInvalid: string[] = [];
-    if (returnMode === 'required' && node.io.returnSchema && Object.keys(node.io.returnSchema).length && parsed && ctx.validateSchema) {
-      const r = ctx.validateSchema(node.io.returnSchema, parsed);
-      if (!r.ok) returnSchemaInvalid = r.errors;
+    // The return-schema validation, factored so the G8 repair loop can RE-RUN it on the repaired output.
+    const validateReturn = (): string[] => {
+      if (returnMode === 'required' && node.io.returnSchema && Object.keys(node.io.returnSchema).length && parsed && ctx.validateSchema) {
+        const r = ctx.validateSchema(node.io.returnSchema, parsed);
+        if (!r.ok) return r.errors;
+      }
+      return [];
+    };
+    let returnSchemaInvalid: string[] = validateReturn();
+    let returnSchemaBreach = returnSchemaInvalid.length > 0 && returnMode === 'required';
+
+    // ── G8 fold — bounded IN-SANDBOX schema repair (composed in M4) ────────────────────────────────────
+    // When the node would block SOLELY on a schema miss (artifact-schema OR return-schema breach, with the
+    // exec CLEAN, NO missing artifact, NO blocking integrity check) and `maxRepairAttempts > 0`, re-prompt
+    // the STILL-ALIVE sandbox from {previousOutput, ajvErrors, schema} up to N times BEFORE the verdict
+    // ladder runs — a CHEAP correction that reuses the node's ONE slot. A repair is NOT a retry: it does
+    // NOT re-seed a fresh sandbox and does NOT touch the `retry`/`escalate` budget (it runs entirely
+    // inside this single `runNode`). Default `maxRepairAttempts:0` ⇒ this whole block is skipped and a
+    // schema miss falls straight through to `blocked` (today's exact behavior).
+    const maxRepair = Math.max(0, node.io.maxRepairAttempts ?? 0);
+    const schemaOnlyBreach = (): boolean =>
+      killed === null && result.code === 0 && !missing.length && !blockingChecks.length &&
+      (schema.invalid.length > 0 || returnSchemaBreach);
+    if (maxRepair > 0 && schemaOnlyBreach()) {
+      let repairs = 0;
+      while (repairs < maxRepair && schemaOnlyBreach()) {
+        repairs++;
+        // Build the repair prompt from the in-hand failing facts (the G8 §"Repair-prompt template" shape):
+        // the declared schema + the ajv errors + the previous output — fix EXACTLY these, invent nothing.
+        const ajvErrors = [
+          ...schema.invalid.flatMap((x) => x.errors.map((e) => `${x.path}: ${e}`)),
+          ...returnSchemaInvalid.map((e) => `return: ${e}`),
+        ];
+        const declaredSchema = schema.invalid.length
+          ? JSON.stringify(node.io.artifacts.find((a) => schema.invalid.some((x) => x.path === a.path))?.schema ?? {})
+          : JSON.stringify(node.io.returnSchema ?? {});
+        const target = schema.invalid.length ? schema.invalid.map((x) => x.path).join(', ') : 'the fenced-JSON return tail';
+        const repairPrompt = [
+          'You fix a structured output that FAILED its schema. Output ONLY the corrected result — no prose.',
+          'Produce a CORRECTED version that conforms exactly. Change ONLY what the errors require; preserve all valid content.',
+          `<schema>${declaredSchema}</schema>`,
+          `<validation_errors>${ajvErrors.join(' | ')}</validation_errors>`,
+          `<your_previous_output>${result.stdout.slice(-2000)}</your_previous_output>`,
+          `<output_spec>Write the corrected result to ${target}. It MUST validate against <schema>. Use only values present in your previous output or logically implied by it — do NOT fabricate.</output_spec>`,
+          '',
+        ].join('\n');
+        const repairFile = path.posix.join(nodeStage, `repair-${repairs}.md`);
+        await sandbox.writeFile(repairFile, repairPrompt);
+        const repairCmd = ctx.buildCommand(node, resolved, { promptFile: repairFile, model: effModel, provider: effProvider, extensionFile }, ctx.commandOpts);
+        const repairExec = await ctx.execRunner(execSandbox, repairCmd, { ...ctx.watchdog, nodeTimeoutMs });
+        result = repairExec.result;
+        // Re-collect (a fresh artifact may have been rewritten) under the same serialized collect mutex.
+        if (repairExec.killed === null && result.code === 0) {
+          try {
+            await ctx.collectMutex(() => sandbox.downloadDir(node.sandbox.output, ctx.outDir));
+          } catch { /* a collect miss is caught by the re-stat below */ }
+        }
+        // Re-validate the WHOLE gate set (artifacts present + schema + return) on the corrected output.
+        artifacts = await Promise.all(node.io.artifacts.map((a) => artifactState(path.resolve(ctx.outDir, a.path), a.path)));
+        missing = artifacts.filter((a) => !a.exists).map((a) => a.path);
+        schema = await validateArtifactSchemas(node.io.artifacts, { outDir: ctx.outDir, roots: [ctx.outDir, scope.root], validate: ctx.validateSchema });
+        parsed = lastJsonBlock(result.stdout);
+        returnSchemaInvalid = validateReturn();
+        returnSchemaBreach = returnSchemaInvalid.length > 0 && returnMode === 'required';
+      }
+      rec.repairAttempts = repairs;
+      // Refresh the recorded breach fields off the post-repair state (so a cleared breach leaves no stale record).
+      rec.schemaInvalid = schema.invalid.length ? schema.invalid : undefined;
+      rec.returnSchemaInvalid = returnSchemaInvalid.length ? returnSchemaInvalid : undefined;
+      // Budget spent and STILL a schema miss ⇒ terminal, surfaced loudly (the run halts at the barrier).
+      if (schemaOnlyBreach()) rec.repairExhausted = true;
     }
     if (returnSchemaInvalid.length) rec.returnSchemaInvalid = returnSchemaInvalid;
-    const returnSchemaBreach = returnSchemaInvalid.length > 0 && returnMode === 'required';
 
     let st: NodeStatusRecord['status'];
     const issues: string[] = [];
