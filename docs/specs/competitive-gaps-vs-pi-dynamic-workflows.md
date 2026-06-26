@@ -4,10 +4,15 @@
 > (commit cloned 2026-06-25). Evidence is cited as `file:line` in BOTH repos. Honest by
 > construction: where we are PARTIAL or ABSENT it says so; where we are AHEAD it says so.
 >
-> **Progress (2026-06-25):** ✅ **G2**, ✅ **G4**, ✅ **G5** shipped (10 commits, +46 tests, typecheck
-> green; see `wiring-g{2,4,5}-*.md`). **G1** in progress (separate session — see
-> `per-node-routing-and-fusion.md`). 📐 **G6** designed (`wiring-g6-agenttype.md` — thin presets +
-> author-time expansion). Remaining: G3, G7–G10 (+ G6 impl).
+> **Progress (last verified 2026-06-25 against the code, not self-report):** ✅ **G1**, ✅ **G2**, ✅ **G4**,
+> ✅ **G5**, ✅ **G6** all shipped. G1 per-node model routing landed (`runner/model-routing.ts`, template
+> carries `model/provider/tier`, dry-run prints the effective model). G6 `agentType` presets landed
+> (`workflow/agent-preset.ts` `mergePreset`, init seeds, GUI chip icons + "Basis" view mode). **Fusion
+> nodes** (T2.x — siblings + judge sub-DAG expansion) also shipped — the compile-time expansion precedent
+> G9 should reuse. **Remaining:** **G7, G8, G9** (not started) · **G3** PARTIAL (fusion delivers the
+> judge/best-of-N verb; `verify`/`loop-until-dry`/`completeness` templates still to ship) · **G10** PARTIAL
+> (a separate telemetry backlog — `remaining-telemetry-features.md` — covers truncation/retries/cache/tool
+> charts; tok/s rate + per-phase budgets still unbuilt; cost stays blocked upstream).
 
 ## 0. TL;DR
 
@@ -21,16 +26,16 @@ equivalent — because they finished the thing we deliberately moved past. Of th
 parts that are **real backlog for us** (capabilities our architecture wants and we just haven't built)
 are, in priority order:
 
-1. **Per-node model routing** (tiers + exact model) — §G1 · 🚧 in progress
+1. **Per-node model routing** (tiers + exact model) — §G1 · ✅ shipped
 2. **Concurrency cap / process pool** — §G2 (today a latent fork-bomb, not just a feature) · ✅ shipped
-3. **Quality-pattern vocabulary** for verify-nodes — §G3
+3. **Quality-pattern vocabulary** for verify-nodes — §G3 · ◑ PARTIAL (fusion judge/best-of-N shipped)
 4. **True journal/replay resume** (content-hash, mid-DAG) — §G4 · ✅ shipped
 5. Journaled **human checkpoint** — §G5 · ✅ shipped
-6. **`agentType` consumption** — §G6
-7. **Background + auto-continue** — §G7
-8. **Structured-output repair loop** — §G8
-9. **Saved & nested (sub-)workflows** — §G9
-10. tok/s + per-phase budgets (telemetry) — §G10
+6. **`agentType` consumption** — §G6 · ✅ shipped
+7. **Background + auto-continue** — §G7 · ⬜ not started
+8. **Structured-output repair loop** — §G8 · ⬜ not started
+9. **Saved & nested (sub-)workflows** — §G9 · ⬜ not started
+10. tok/s + per-phase budgets (telemetry) — §G10 · ◑ PARTIAL (telemetry backlog open; tok/s + budgets unbuilt)
 
 Everything else is parity or a place where **we are ahead** (§3).
 
@@ -101,7 +106,14 @@ plugged-in community tools is still aspirational.
 Each gap: **what PDW has** (evidence) · **what we have** (evidence) · **the delta** · **how we'd close
 it**. Severity = impact on our "fleet of efficient models" thesis.
 
-### G1 — Per-node model routing · severity: HIGH · effort: LOW
+### G1 — Per-node model routing · severity: HIGH · effort: LOW · ✅ SHIPPED
+
+> **Done (2026-06-25):** `runner/model-routing.ts` is the single home of model/provider precedence
+> (`node.model > node.tier > run --model > provider default`). The template carries per-node
+> `model`/`provider`/`tier` (`template/types.ts` + `node.schema.ts` + `loader.ts`); the runner resolves each
+> node's effective model and populates `CommandContext.model` **per node** (not run-wide); `piflow run
+> --dry-run` prints each node's effective model/provider. Folds into G4's envelope hash. Commits
+> `5243633`/`9c64f0c`/`1abcd34`/`6acf030`.
 
 **PDW.** `agent({ tier: 'small'|'medium'|'big' })` or `agent({ model: 'provider/id' })`, plus
 `meta.phases[].model` and `meta.model`. Precedence (most specific first): explicit `model` >
@@ -147,7 +159,13 @@ fan-out) spawns 50 `pi` children at once — a latent fork-bomb.
 **How we close it.** A semaphore around the stage map; a `maxConcurrent` run option (default ~ CPU-2,
 clamped); an optional run-wide node cap. Small, self-contained change in `runner.ts`.
 
-### G3 — Quality-pattern vocabulary for verify-nodes · severity: MED · effort: MED
+### G3 — Quality-pattern vocabulary for verify-nodes · severity: MED · effort: MED · ◑ PARTIAL
+
+> **Partial (2026-06-25):** the **judge / best-of-N** verb now exists as compile-time DAG expansion —
+> `expandFusion` turns one fusion node into N sibling candidates + a judge node (`workflow/fusion/`,
+> prompts in `fusion/prompts.ts`). Still to ship as reusable node templates: **`verify`** (fan N reviewers →
+> consensus), **`loop-until-dry`** (controller), **`completeness-check`**. Cleanest once §G9 sub-DAG
+> composition lands (the judge sub-DAG generalizes fusion); usable as one-off templates before that.
 
 **PDW.** `verify()`, `judgePanel()`, `loopUntilDry()`, `completenessCheck()`, `retry()`, `gate()` as
 composable vm globals built purely on `agent()`/`parallel()` (`src/workflow.ts:638-786`). Ships
@@ -215,16 +233,17 @@ policy actions are `block|warn|stop` automated consequences (`types.ts:151`), no
 **console (Claude Code) resolves** — fits our "steer by talking to agents in the terminal" model.
 Headless default keeps background runs unattended. Journal the reply for resume (§G4).
 
-### G6 — `agentType` consumption · severity: MED · effort: LOW–MED · 📐 DESIGNED
+### G6 — `agentType` consumption · severity: MED · effort: LOW–MED · ✅ SHIPPED
 
-> **Design (2026-06-25):** `wiring-g6-agenttype.md`. Re-scoped with the owner to a **thin preset +
-> branding** model, **author-time expansion** (NOT a runtime resolver): `piflow-init` flattens a preset
-> into the node's concrete `tools`/`prompt` and keeps `agentType` as a *label*; the runner is untouched.
-> A preset = canonical skills + a base tool set + a role-prompt + a `display{icon,label,color}`; it does
-> **NOT** carry model/tier (G1 owns those). Merge is additive (node adds/removes tools; task prompt
-> appended to the role-prompt). Catalog = product data in `~/.piflow/agents/` (+ seeds bundled with the
-> init skill); the icon rides the ONE observe run-view to the GUI. Seeds: `market-research`,
-> `paper-analyzer`, `interview`. Core touch is small (pure `mergePreset` + template/observe passthrough).
+> **Done (2026-06-25):** designed in `wiring-g6-agenttype.md`, then shipped. **Thin preset + branding**,
+> **author-time expansion** (NOT a runtime resolver): `workflow/agent-preset.ts` holds the pure
+> `mergePreset` + a read-only catalog adapter; `piflow-init` flattens a preset into the node's concrete
+> `tools`/`prompt` and keeps `agentType` as a *label*; the runner is untouched. A preset = canonical skills +
+> a base tool set + a role-prompt + a `display{icon,label,color}`; it does **NOT** carry model/tier (G1 owns
+> those). Merge is additive (node adds/removes tools; task prompt appended to the role-prompt). Catalog =
+> product data in `~/.piflow/agents/` (+ seeds bundled with the init skill); the `agentType` label + icon
+> ride the ONE observe run-view to the GUI (chip icons + the **"Basis"** view mode showing each node's
+> agent-type inheritance). Commits `42e5e26`/`5604721`/`f6c5ddc`/`22cb89d`/`9446bcf`.
 
 **PDW.** `agentType` resolves a `.pi/agents/<name>.md` definition binding **tools (name allow/deny) +
 model + role prompt** (`src/agent-registry.ts`; applied `src/workflow.ts:371-375`). (Reminder: its
@@ -240,7 +259,7 @@ command builder — AND the template format has no `agentType` field at all (`te
 the additive thing PDW's in-process model structurally can't do (§1b) — while keeping presets thin,
 overridable, and branded.
 
-### G7 — Background + auto-continue delivery · severity: LOW–MED · effort: LOW
+### G7 — Background + auto-continue delivery · severity: LOW–MED · effort: LOW · ⬜ NOT STARTED
 
 **PDW.** Background by default: the turn ends immediately, a live panel tracks runs, and each result is
 delivered back so the conversation auto-continues.
@@ -255,7 +274,7 @@ left to the shell; the GUI Companion's talk-back is a commented-out stub
 completion. **Lower priority**: our console *is* Claude Code, which can already background a `Bash` run
 and be re-invoked on completion.
 
-### G8 — Structured-output repair loop · severity: LOW–MED · effort: LOW
+### G8 — Structured-output repair loop · severity: LOW–MED · effort: LOW · ⬜ NOT STARTED
 
 **PDW.** On a schema miss the subagent is re-prompted up to `maxSchemaRetries` (tools restricted to
 `structured_output`), then strict prose extraction, else a surfaced `SCHEMA_NONCOMPLIANCE`
@@ -270,7 +289,7 @@ fresh node re-run (`io.retries`).
 **How we close it.** On a return-schema miss, one bounded repair re-prompt to the same node process
 before counting a full `io.retries` attempt.
 
-### G9 — Saved & nested (sub-)workflows · severity: LOW–MED · effort: MED–HIGH
+### G9 — Saved & nested (sub-)workflows · severity: LOW–MED · effort: MED–HIGH · ⬜ NOT STARTED
 
 **PDW.** `workflow('name', args)` runs a saved workflow inline (shares caps), one level deep
 (`src/workflow.ts:607-632`); `/workflows save` turns a run into a `/<name>` command
@@ -283,7 +302,14 @@ before counting a full `io.retries` attempt.
 **How we close it.** A node kind that references another template, **inlined at compile** (sub-DAG
 expansion into the parent stages). Enables §G3 quality patterns as shippable sub-DAGs.
 
-### G10 — Telemetry: tok/s, per-phase budgets, cost · severity: LOW · effort: LOW–MED
+### G10 — Telemetry: tok/s, per-phase budgets, cost · severity: LOW · effort: LOW–MED · ◑ PARTIAL
+
+> **Partial (2026-06-25):** a focused telemetry backlog is specced separately in
+> `remaining-telemetry-features.md` (reducer-side: truncation/`stopReason`, provider retries, thinking
+> chars; GUI-side: a cache hit/miss donut + a tool-use stacked bar). Those are observe-layer additions, not
+> the G10 verbs proper. **Still unbuilt:** **tok/s** rate (derive from `usage` deltas over wall-clock in the
+> observe layer) and **per-phase token budgets**. **Cost stays blocked upstream** for both repos (pi reports
+> `usage.cost = 0`; we hide it deliberately).
 
 **PDW.** Live **tok/s** rate per agent (a stalled agent reads 0 tok/s), per-phase token sub-budgets
 (`workflow.ts:303-367`), real token usage from the session.
@@ -342,10 +368,13 @@ optional per-stage token budget. Cost stays blocked until pi reports it.
 1. ~~**G2 concurrency cap**~~ — ✅ SHIPPED 2026-06-25 (process pool; the safety fix).
 2. ~~**G4 content-hash resume** + **G5 checkpoint**~~ — ✅ SHIPPED 2026-06-25 (shared journal/state work;
    G5's reply is journaled into G4's `journal.json`).
-3. **G1 per-node model routing** — 🚧 in progress (separate session); reuses the live `timeoutMs`/`retries`
-   pattern; `command.ts` already takes `ctx.model` per call. Folds into G4's envelope hash when it lands.
-4. **G6 `agentType` presets** — 📐 DESIGNED (`wiring-g6-agenttype.md`); thin presets + author-time
-   expansion. Unlocks branded, reusable starting points and, uniquely for us, per-node MCP/community
-   binding per preset. Ready to implement (small core touch).
-5. **G3 quality-verb node templates** + **G9 sub-DAG composition** — MED+; ship the verify-node story.
-6. **G8 repair loop**, **G7 detach**, **G10 tok/s** — LOW, opportunistic.
+3. ~~**G1 per-node model routing**~~ — ✅ SHIPPED 2026-06-25 (`runner/model-routing.ts`; per-node
+   `CommandContext.model`; dry-run prints the effective model). Folds into G4's envelope hash.
+4. ~~**G6 `agentType` presets**~~ — ✅ SHIPPED 2026-06-25 (`workflow/agent-preset.ts` `mergePreset`,
+   author-time expansion, GUI chip icons + "Basis" view mode). + **Fusion nodes** (T2.x) shipped — the
+   compile-time sub-DAG expansion precedent G9 reuses.
+5. **G9 sub-DAG composition** + **G3 quality-verb node templates** — NEXT, MED+. G9 first (reuse the
+   `expandFusion` compile-time expansion), then G3 patterns (`verify`/`loop-until-dry`/`completeness`) ship
+   as composable sub-DAGs on top; fusion already covers the judge/best-of-N verb. (Research in flight.)
+6. **G8 repair loop**, **G7 detach**, **G10 tok/s + budgets** — LOW, opportunistic. (G7/G8 research in
+   flight; G10 telemetry tracked in `remaining-telemetry-features.md`.)
