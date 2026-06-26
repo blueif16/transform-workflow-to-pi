@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { ToolEntry } from '../types.js';
+import { renderParamsExpr } from './params.js';
 
 /** The SDK-facing address for the first-party contract tool. */
 export const SUBMIT_RESULT_ADDRESS = 'contract:submit_result';
@@ -94,7 +95,9 @@ export function renderContractTool(t: ContractRenderable): string {
     `    description: ${JSON.stringify(t.description)},`,
     `    promptSnippet: ${JSON.stringify(snippet)},`,
     `    promptGuidelines: ${JSON.stringify(guidelines)},`,
-    `    parameters: Type.Unsafe(${JSON.stringify(params)}),`,
+    // #21: the `status` enum renders via the Gemini-safe `StringEnum` helper (renderParamsExpr); a
+    // no-enum schema stays the byte-identical `Type.Unsafe(<json>)` form.
+    `    parameters: ${renderParamsExpr(params)},`,
     '    async execute(toolCallId, params) {',
     '      return {',
     '        content: [{ type: "text", text: `submitted: ${params.node} \\u2192 ${params.status}` }],',
