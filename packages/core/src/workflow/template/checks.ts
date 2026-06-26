@@ -262,3 +262,72 @@ export async function checkRefs(nodes: LoadedNode[]): Promise<string[]> {
   }
   return errs;
 }
+
+// ── (#3) MCP literal-secret guard ───────────────────────────────────────────────────────────────────
+// `node.json.mcp.servers` is committed to the repo, so a secret-bearing value MUST be a `$VAR`/`${VAR}`
+// env REFERENCE (the runner forwards only that declared allowlist through SecretResolver — design §4),
+// never a literal credential. A literal on disk is a leak; we reject it loudly at author time.
+//
+// #14 (DEFERRED, out of core): the runner stages this `$VAR`-bearing config VERBATIM + injects the resolved
+// env vars; the actual `$VAR`→value EXPANSION is a one-line follow-on in `@piflow/tool-bridge` (a different
+// package), not here. #14 stays DEFERRED — tracked there, never counted as closed by this milestone.
+
+/** Keys whose VALUES are secret-bearing in MCP server config: the auth-header map + named-credential fields. */
+const SECRET_KEYS = new Set([
+  'headers',
+  'authorization',
+  'token',
+  'apikey',
+  'api_key',
+  'password',
+  'secret',
+  'credential',
+  'credentials',
+  'bearer',
+]);
+
+/** The same `$VAR`/`${VAR}` vocabulary the runner resolves (runner.ts referencedEnvVars). */
+const ENV_REF = /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*/;
+
+/** A string value is a LITERAL secret iff it is non-empty and contains NO `$VAR`/`${VAR}` reference. */
+function isLiteralSecretValue(v: unknown): boolean {
+  return typeof v === 'string' && v.trim().length > 0 && !ENV_REF.test(v);
+}
+
+/**
+ * Walk a server-config sub-tree; once `underSecret` is true (we are inside a secret-bearing key's value),
+ * every leaf string with no `$VAR` ref is a violation. Re-arms `underSecret` whenever a secret-named key
+ * is entered. Returns the dotted paths of every literal-secret leaf found.
+ */
+function findLiteralSecrets(v: unknown, pathParts: string[], underSecret: boolean): string[] {
+  if (Array.isArray(v)) return v.flatMap((x, i) => findLiteralSecrets(x, [...pathParts, String(i)], underSecret));
+  if (v && typeof v === 'object') {
+    return Object.entries(v as Record<string, unknown>).flatMap(([k, val]) =>
+      findLiteralSecrets(val, [...pathParts, k], underSecret || SECRET_KEYS.has(k.toLowerCase())),
+    );
+  }
+  return underSecret && isLiteralSecretValue(v) ? [pathParts.join('.')] : [];
+}
+
+/**
+ * (8) MCP LITERAL-SECRET: every secret-bearing value in a node's `mcp.servers` must be a `$VAR`/`${VAR}`
+ * env reference, never a literal. A literal credential committed to a header/token field is rejected
+ * (it would leak the secret onto disk). Scans only the secret-bearing keys — a plain `url`/`transport`
+ * is untouched. Per-server so the message names the offending server (and node) for a fast fix.
+ */
+export function checkMcpSecrets(nodes: LoadedNode[]): string[] {
+  const errs: string[] = [];
+  for (const n of nodes) {
+    const servers = n.def.mcp?.servers;
+    if (!servers || typeof servers !== 'object') continue;
+    for (const [srv, cfg] of Object.entries(servers)) {
+      for (const leaf of findLiteralSecrets(cfg, [], false)) {
+        errs.push(
+          `literal secret in mcp.servers: node "${n.def.id}" server "${srv}" carries a LITERAL value at ` +
+            `"${leaf}" — secret-bearing fields must use a $VAR/\${VAR} env reference, never a committed literal`,
+        );
+      }
+    }
+  }
+  return errs;
+}

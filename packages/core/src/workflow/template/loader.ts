@@ -25,6 +25,7 @@ import {
   checkChannels,
   checkProducers,
   checkRefs,
+  checkMcpSecrets,
 } from './checks.js';
 import { buildWorkflowJson, writeWorkflowJson } from './workflow-json.js';
 
@@ -202,6 +203,9 @@ export async function loadTemplate(dir: string, opts: LoadTemplateOpts = {}): Pr
     errors.push(...checkChannels(loaded));
     errors.push(...checkProducers(loaded));
   }
+  // (#3) The literal-secret guard reads only `mcp.servers` (no graph dependency) — run it whenever the
+  // per-file shape is valid, independent of the topology checks above.
+  if (!schemaErrors.length) errors.push(...checkMcpSecrets(loaded));
   errors.push(...(await checkRefs(loaded)));
 
   if (errors.length) throw new TemplateError(errors);
