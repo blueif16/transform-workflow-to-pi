@@ -169,3 +169,68 @@ describe('expandSubworkflow — nesting, cycles, depth, dangling ref', () => {
     ).rejects.toThrow(SubworkflowConfigError);
   });
 });
+
+// (F3) The dropped-contract gate: when X is expanded, X (and its declared artifacts) is removed; the v1
+// convention is that the child terminal WRITES the path X declared. The parent's §8 gate ran on the
+// PRE-expansion spec (X present), so a mismatch — a downstream node injects X's declared path but the
+// surviving terminal produces a DIFFERENT path — would compile clean and break silently at run time.
+// expandSubworkflow must re-check producer/consumer coverage on the EXPANDED spec and fail LOUD.
+describe('expandSubworkflow — dropped-contract coverage (F3)', () => {
+  /** A child whose terminal produces `sub/elsewhere.json` — NOT the `out/final.md` the parent expects. */
+  const mismatchChild = (): WorkflowSpec => ({
+    meta: { name: 'mismatch', description: 'd' },
+    nodes: [
+      {
+        label: 'work',
+        prompt: 'CHILD: do work, write the WRONG path.',
+        tools: {},
+        io: { reads: [], produces: ['sub/elsewhere.json'], dependsOn: [], artifacts: [{ path: 'sub/elsewhere.json' }] },
+      },
+    ],
+  });
+
+  /** prep → review(subworkflow X, declares `out/final.md`) → publish(READS `out/final.md`). */
+  function parentConsumingX(ref: string): WorkflowSpec {
+    const s = parentWith({ ref });
+    // make `publish` actually CONSUME X's declared artifact (the real downstream-inject case).
+    const publish = s.nodes.find((n) => n.label === 'publish')!;
+    publish.io.reads = ['out/final.md'];
+    return s;
+  }
+
+  it('throws when no surviving terminal produces a path X declared AND a downstream node reads', async () => {
+    await expect(
+      expandSubworkflow(parentConsumingX('mismatch'), { loadChild: catalog({ mismatch: mismatchChild }) }),
+    ).rejects.toThrow(SubworkflowConfigError);
+  });
+
+  it('the error names X, the unproduced path, and what the child terminal(s) actually produce', async () => {
+    let caught: Error | undefined;
+    try {
+      await expandSubworkflow(parentConsumingX('mismatch'), { loadChild: catalog({ mismatch: mismatchChild }) });
+    } catch (e) {
+      caught = e as Error;
+    }
+    expect(caught).toBeInstanceOf(SubworkflowConfigError);
+    expect(caught!.message).toContain('review'); // the activated node X
+    expect(caught!.message).toContain('out/final.md'); // the unproduced path a downstream node reads
+    expect(caught!.message).toContain('sub/elsewhere.json'); // what the terminal actually produces
+  });
+
+  it('does NOT throw when the child terminal DOES produce the consumed path (convention honored)', async () => {
+    /** A child whose terminal correctly produces `out/final.md` — the path the parent declares + consumes. */
+    const okChild = (): WorkflowSpec => ({
+      meta: { name: 'ok', description: 'd' },
+      nodes: [
+        {
+          label: 'work',
+          prompt: 'CHILD: write the EXPECTED path.',
+          tools: {},
+          io: { reads: [], produces: ['out/final.md'], dependsOn: [], artifacts: [{ path: 'out/final.md' }] },
+        },
+      ],
+    });
+    const out = await expandSubworkflow(parentConsumingX('ok'), { loadChild: catalog({ ok: okChild }) });
+    expect(out.nodes.find((n) => n.label === 'review__work')!.io.produces).toContain('out/final.md');
+  });
+});

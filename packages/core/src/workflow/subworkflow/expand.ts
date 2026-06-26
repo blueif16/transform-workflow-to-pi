@@ -51,16 +51,31 @@ function dedupe(xs: string[]): string[] {
   return [...new Set(xs)];
 }
 
+/** The activated node X's expansion result: the spliced children, the terminal ids, and (for the F3
+ * dropped-contract gate) the paths X declared vs the union of paths its surviving terminal(s) produce. */
+interface ExpandedNode {
+  /** The activated node X's authored label (for the F3 error message). */
+  xLabel: string;
+  children: NodeIntent[];
+  /** Child TERMINAL ids — the rewire targets for X's dependents. */
+  terminalIds: string[];
+  /** The {{RUN}}-relative paths X declared (io.produces ∪ io.artifacts) — the v1 contract the child must honor. */
+  declaredPaths: string[];
+  /** The union of paths the surviving terminal(s) actually produce. */
+  terminalProduces: string[];
+}
+
 /**
  * Expand ONE subworkflow-activated node X into the (recursively-flattened, namespaced) child nodes.
- * Returns the spliced-in children + the child TERMINAL ids (the rewire targets for X's dependents).
+ * Returns the spliced-in children + the child TERMINAL ids (the rewire targets for X's dependents) +
+ * X's declared paths and the terminals' produced paths (the F3 coverage gate's inputs).
  */
 async function expandNode(
   x: NodeIntent,
   opts: SubworkflowExpandOpts,
   maxDepth: number,
   stack: string[],
-): Promise<{ children: NodeIntent[]; terminalIds: string[] }> {
+): Promise<ExpandedNode> {
   const ref = x.subworkflow!.ref;
   // Loud failures FIRST (cycle before depth, so a self-reference reads as a cycle, not a depth error).
   if (stack.includes(ref)) {
@@ -96,6 +111,7 @@ async function expandNode(
   const xDeps = x.io.dependsOn ?? [];
   const children: NodeIntent[] = [];
   const terminalIds: string[] = [];
+  const terminalProduces: string[] = [];
   for (const n of flat) {
     const childId = slugify(n.label, 0);
     const isEntry = !(n.io.dependsOn && n.io.dependsOn.length);
@@ -106,9 +122,15 @@ async function expandNode(
       : (n.io.dependsOn ?? []).map((d) => idMap.get(d) ?? slugify(`${x.label}__${d}`, 0));
     const { subworkflow: _consumed, ...rest } = n;
     children.push({ ...rest, label: `${x.label}__${n.label}`, io: { ...n.io, dependsOn: deps } });
-    if (isTerminal) terminalIds.push(idMap.get(childId)!);
+    if (isTerminal) {
+      terminalIds.push(idMap.get(childId)!);
+      terminalProduces.push(...(n.io.produces ?? []));
+    }
   }
-  return { children, terminalIds };
+  // X's declared {{RUN}}-relative contract: io.produces ∪ io.artifacts. The v1 convention is that the
+  // surviving terminal(s) write these; the F3 gate in `expandSpecInner` verifies coverage post-splice.
+  const declaredPaths = dedupe([...(x.io.produces ?? []), ...(x.io.artifacts ?? []).map((a) => a.path)]);
+  return { xLabel: x.label, children, terminalIds, declaredPaths, terminalProduces: dedupe(terminalProduces) };
 }
 
 /** Rewrite a node's `dependsOn`: a dep on an expanded X → deps on X's child terminal(s). */
@@ -127,6 +149,42 @@ function rewireDeps(n: NodeIntent, remap: Map<string, string[]>): NodeIntent {
   return changed ? { ...n, io: { ...n.io, dependsOn: dedupe(out) } } : n;
 }
 
+/**
+ * (F3) DROPPED-CONTRACT GATE — enforce the v1 convention ("the child terminal writes the path X declared")
+ * that was only DOCUMENTED, not checked. The parent's §8 producer/consumer gate ran on the PRE-expansion
+ * spec (X still present, declaring its artifacts), so a mismatch — a surviving node READS a path X declared
+ * but no surviving terminal PRODUCES it — compiled clean and broke silently at run time. Re-check it on the
+ * EXPANDED spec: for each expanded X, any X-declared path that some surviving node still reads MUST be
+ * produced by one of X's terminal(s). Scoped to declared paths that are actually consumed (an unconsumed
+ * declaration is harmless — nothing injects it), matching `inferEdges`' "no consumer ⇒ no break" model.
+ * Throws `SubworkflowConfigError` naming X, the unproduced path, and what the terminal(s) actually produce.
+ *
+ * COVERAGE NOTE (honest scope): the consumer surface read here is `io.reads` — the PROGRAMMATIC spec path
+ * (a `runFromConfig` consumer whose specs carry populated reads). TEMPLATE nodes carry `io.reads:[]` (the
+ * loader expresses consumption via `inject` / prompt-prose, dropped at the NodeIntent layer), so a
+ * TEMPLATE-authored mismatch is NOT caught here yet — full template-path coverage rides with the v2
+ * `subworkflow.inputs`/`outputs` path-wiring. A well-authored template (child terminal writes X's declared
+ * path) is correct regardless; this gate hardens the programmatic path against a silent break.
+ */
+function checkDroppedContracts(nodes: NodeIntent[], expansions: ExpandedNode[]): void {
+  if (!expansions.length) return;
+  // Every {{RUN}}-relative path any surviving node reads (the consumer side of the post-expansion spec).
+  const consumed = new Set<string>();
+  for (const n of nodes) for (const r of n.io.reads ?? []) consumed.add(r);
+  for (const x of expansions) {
+    const produced = new Set(x.terminalProduces);
+    for (const p of x.declaredPaths) {
+      if (produced.has(p)) continue; // a terminal honors the contract for this path
+      if (!consumed.has(p)) continue; // nobody reads it ⇒ harmless (an unconsumed declaration is no break)
+      throw new SubworkflowConfigError(
+        `subworkflow "${x.xLabel}" dropped contract: a downstream node reads "${p}" (declared by "${x.xLabel}"), ` +
+          `but no surviving child terminal produces it — the terminal(s) produce [${x.terminalProduces.join(', ') || '(nothing)'}]. ` +
+          `Point the child terminal at "${p}" (the v1 convention: the child terminal writes the path the parent declared).`,
+      );
+    }
+  }
+}
+
 /** Inner recursion: expand every subworkflow node in `spec`, then rewire dependents to the terminals. */
 async function expandSpecInner(
   spec: WorkflowSpec,
@@ -136,18 +194,23 @@ async function expandSpecInner(
 ): Promise<WorkflowSpec> {
   const nodes: NodeIntent[] = [];
   const remap = new Map<string, string[]>(); // expanded X compiled id → child terminal compiled ids
+  const expansions: ExpandedNode[] = [];
   for (const node of spec.nodes) {
     if (!node.subworkflow) {
       nodes.push(node);
       continue;
     }
-    const { children, terminalIds } = await expandNode(node, opts, maxDepth, stack);
-    remap.set(slugify(node.label, 0), terminalIds);
-    nodes.push(...children);
+    const expanded = await expandNode(node, opts, maxDepth, stack);
+    remap.set(slugify(node.label, 0), expanded.terminalIds);
+    nodes.push(...expanded.children);
+    expansions.push(expanded);
   }
   // One global rewire pass: every dep on an expanded X (parent dependents AND inherited entry deps) →
   // the child terminal(s). Cascades correctly because all expansions are done before this runs.
-  return { ...spec, nodes: nodes.map((n) => rewireDeps(n, remap)) };
+  const rewired = nodes.map((n) => rewireDeps(n, remap));
+  // (F3) After the splice + rewire, enforce the dropped-contract convention against the EXPANDED spec.
+  checkDroppedContracts(rewired, expansions);
+  return { ...spec, nodes: rewired };
 }
 
 /**
