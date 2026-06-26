@@ -18,7 +18,7 @@
 // The order is STABLE: pre reads → pre seeds → pre gates → post transforms → post gates — so the codec /
 // edge-inference see a deterministic envelope and the two authorings compare equal as a SET.
 
-import type { OpSpec, OnFailure, Reducer, TransformBody } from '../../types.js';
+import type { OpSpec, OnFailure, Reducer, TransformBody, RerouteSpec, RetrySpec, EscalateSpec, ActionBody } from '../../types.js';
 import type { TemplateNode, TemplateCheck } from './types.js';
 
 /** The consequence a lowered gate carries: a `warn`-severity check warns; a `fail` check takes policy.fail. */
@@ -79,4 +79,33 @@ export function lowerToOps(def: TemplateNode): OpSpec[] | undefined {
   for (const c of def.checks?.post ?? []) ops.push(lowerCheck(c, 'post', def.policy));
 
   return ops.length ? ops : undefined;
+}
+
+/**
+ * (M5 · G13) The CONTROL action ops are SUGAR that lowers to the canonical M3/M4 primitives:
+ *   action:rerouteTo → NodeIntent.reroute (consumed by expandReroute pre-compile — never the dense NodeSpec);
+ *   action:retry     → NodeIO.retry (M4);
+ *   action:escalate  → NodeIO.escalate (M4 — `via` resolves through model-routing as a tier, else a model id).
+ * Returns the canonical fields the loader attaches onto the intent (the action op carries the SLOT; G12 owns
+ * the runtime). A node with no action ops yields all-undefined (additive). The FIRST of each kind wins.
+ */
+export function lowerActions(op: OpSpec[] | undefined): {
+  reroute?: RerouteSpec;
+  retry?: RetrySpec;
+  escalate?: EscalateSpec;
+} {
+  const out: { reroute?: RerouteSpec; retry?: RetrySpec; escalate?: EscalateSpec } = {};
+  for (const o of op ?? []) {
+    const a = o.action as ActionBody | undefined;
+    if (!a) continue;
+    if (a.kind === 'rerouteTo' && !out.reroute) {
+      out.reroute = { onFail: a.node, max: a.max, ...(a.evidence ? { evidence: a.evidence } : {}) };
+    } else if (a.kind === 'retry' && !out.retry) {
+      out.retry = { max: a.max ?? 1 };
+    } else if (a.kind === 'escalate' && !out.escalate) {
+      // `via` is a tier alias OR a model id — carried as `tier` (resolved through model-routing precedence).
+      out.escalate = { tier: a.via };
+    }
+  }
+  return out;
 }

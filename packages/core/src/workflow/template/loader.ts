@@ -17,7 +17,7 @@ import { defaultSchemaValidator, type SchemaValidator } from '../../runner/schem
 import { nodeSchema, metaSchema } from './schema/index.js';
 import type { LoadedNode, TemplateNode, TemplateMeta } from './types.js';
 import { renderRealizedPrompt, collectChecks, toPolicy } from './render.js';
-import { lowerToOps } from './lower.js';
+import { lowerToOps, lowerActions } from './lower.js';
 import {
   checkSchemas,
   checkDeps,
@@ -118,6 +118,8 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
   // AT THE LOADER ONLY — the dense NodeSpec gains exactly this one field; the runtime ops/checks/policy
   // carried below stay byte-identical so the runner's existing dispatch is unchanged (additive).
   const op = lowerToOps(n.def);
+  // (M5 · G13) The CONTROL action ops lower to the canonical M3/M4 primitives (reroute/retry/escalate).
+  const actions = lowerActions(op);
   // (M5 · #10/#16) The node's declared reads = injected forced-reads ∪ every op's `reads` (RUN-relative).
   // Replaces the `reads:[]` hardcode: an injected read now FOLDS into the prompt (the realized-prompt
   // renderer below) AND draws a DAG edge from its producer.
@@ -153,6 +155,9 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
       fillSentinel: c.fillSentinel ?? undefined,
       // per-node retry budget → runner re-runs a fresh attempt on error/blocked (else one attempt).
       ...(n.def.retries ? { retries: n.def.retries } : {}),
+      // (M5 · G13) The action:retry/escalate sugar lowered to the canonical M4 NodeIO fields.
+      ...(actions.retry ? { retry: actions.retry } : {}),
+      ...(actions.escalate ? { escalate: actions.escalate } : {}),
     },
     sandbox: {
       read: c.readScope.slice(),
@@ -184,6 +189,9 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
   // runner stages it into a bridge-tool node's `_pi/mcp.json`. Authoring layer only (never the dense
   // NodeSpec — the `fusion?`/`checkpoint?` precedent). Additive: no block ⇒ no change (#3 was dead until now).
   if (n.def.mcp) intent.mcp = n.def.mcp;
+  // (M5 · G13) The action:rerouteTo sugar lowered to the canonical M3 NodeIntent.reroute — consumed by
+  // `expandReroute` BEFORE compile (the `fusion?` precedent: never reaches the dense NodeSpec). Additive.
+  if (actions.reroute) intent.reroute = actions.reroute;
   return intent;
 }
 

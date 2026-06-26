@@ -1955,3 +1955,122 @@ describe('runWorkflow — G2 concurrency cap', () => {
     await fs.rm(outDir2, { recursive: true, force: true });
   });
 });
+
+// ── U7-IO: token resolution at node launch ALSO covers the IO / sandbox / checks PATHS ───────────────
+//   The prompt is made physical at launch (S1), but a node's CONTRACT paths — io.artifacts[].path,
+//   sandbox.write (owns), sandbox.read (read-scope), checks[].path — carried their {{…}} tokens RAW into
+//   the existence gate (artifactState), the DRIVER-* markers (markersFromNode), and scope.create. A raw
+//   `{{WORKSPACE}}/…/{{arg.lessonId}}/x.md` is not absolute (starts with `{`), so the gate joins it under
+//   the run dir with braces intact → the stat fails / the marker lies / the read-scope is wrong. These
+//   tests pin that EVERY io/sandbox/check path is resolved with the SAME launch ctx as the prompt.
+
+describe('runWorkflow — io/sandbox/checks token resolution at node launch (U7-IO)', () => {
+  /** Records both staged prompt bytes AND each CreateOpts (so we can inspect the read-scope handed to create). */
+  function recorder(): { provider: SandboxProvider; writes: { path: string; data: string }[]; createOpts: CreateOpts[] } {
+    const writes: { path: string; data: string }[] = [];
+    const createOpts: CreateOpts[] = [];
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        createOpts.push(opts);
+        const sb = await base.create(opts);
+        const orig = sb.writeFile.bind(sb);
+        sb.writeFile = async (p: string, d: Uint8Array | string) => {
+          writes.push({ path: p, data: typeof d === 'string' ? d : Buffer.from(d).toString('utf8') });
+          return orig(p, d);
+        };
+        return sb;
+      },
+    };
+    return { provider, writes, createOpts };
+  }
+
+  it('resolves io.artifacts/owns/read-scope/checks tokens BEFORE the gate, the markers, and scope.create', async () => {
+    // A node whose CONTRACT paths all carry tokens. The gated artifact uses a {{arg.*}}-only RELATIVE path
+    // so the stub can write it (the file gate then proves it sees the RESOLVED path); owns/read-scope/checks
+    // use the fuller {{WORKSPACE}}/…/{{arg.lessonId}}/… shape (exactly the lesson-build template form).
+    const node: NodeIntent = {
+      label: 'Pedagogy',
+      prompt: 'write pedagogy for {{arg.lessonId}}',
+      tools: {},
+      io: {
+        reads: [],
+        produces: ['data/{{arg.lessonId}}/out.md'],
+        artifacts: [{ path: 'data/{{arg.lessonId}}/out.md' }],
+        // A tokenized check path that POINTS AT THE SAME produced artifact (resolves to data/kp4/out.md):
+        // pre-fix the `exists` check stat()d the braces-laden path → fail; post-fix it resolves and passes.
+        checks: [{ kind: 'exists', path: 'data/{{arg.lessonId}}/out.md' }],
+      },
+      sandbox: {
+        read: ['{{WORKSPACE}}/lesson-data/{{arg.lessonId}}'],
+        write: ['{{WORKSPACE}}/data/{{arg.lessonId}}'],
+      },
+    };
+    const outDir = await tmpOut();
+    const { provider, writes, createOpts } = recorder();
+
+    const { status } = await runWorkflow(compile(wf([node])), {
+      run: 'iores',
+      outDir,
+      provider,
+      buildCommand: stubBuilder(),
+      args: { lessonId: 'kp4' },
+      workspace: '/tmp/ws',
+    });
+
+    // (1) THE EXISTENCE GATE saw the RESOLVED path: the node is ok (the gated artifact is reported as the
+    //     physical `data/kp4/out.md`, exists:true). Pre-fix the gate stat()d `data/{{arg.lessonId}}/out.md`
+    //     verbatim → braces on disk → missing → blocked.
+    expect(status.nodes.pedagogy.status).toBe('ok');
+    expect(status.nodes.pedagogy.artifacts).toEqual([{ path: 'data/kp4/out.md', exists: true, bytes: 'pedagogy'.length }]);
+    expect(JSON.stringify(status.nodes.pedagogy.artifacts)).not.toContain('{{');
+
+    // (2) THE DRIVER-* MARKERS are physical (markersFromNode rendered RESOLVED io/sandbox paths).
+    const staged = writes.find((w) => w.path === '_pi/pedagogy/prompt.md')!;
+    expect(staged).toBeTruthy();
+    expect(staged.data).toContain('DRIVER-ARTIFACTS: data/kp4/out.md');
+    expect(staged.data).toContain('DRIVER-OWNS: /tmp/ws/data/kp4');
+    expect(staged.data).toContain('DRIVER-READ-SCOPE: /tmp/ws/lesson-data/kp4');
+    // not one {{…}} left anywhere in the staged prompt (prose + every marker).
+    expect(staged.data).not.toContain('{{');
+
+    // (3) scope.create got the RESOLVED read-scope (the OS-enforced / staging read law is physical).
+    expect(createOpts).toHaveLength(1);
+    expect(createOpts[0].readScope).toEqual(['/tmp/ws/lesson-data/kp4']);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a missing {{arg.*}} in an io PATH fails the node loudly (MissingArgError), like the prompt path', async () => {
+    // The artifact path references an arg that was never supplied → resolution must THROW, not stat a
+    // braces-laden path silently. Mirrors the S1 prompt-path discipline.
+    const node: NodeIntent = {
+      label: 'NeedArg',
+      prompt: 'plain prompt, no tokens',
+      tools: {},
+      io: { reads: [], produces: ['out/{{arg.absent}}.md'], artifacts: [{ path: 'out/{{arg.absent}}.md' }] },
+    };
+    const outDir = await tmpOut();
+    // No `args` supplied → {{arg.absent}} cannot resolve.
+    const { status } = await runWorkflow(compile(wf([node])), { run: 'ioargmiss', outDir, buildCommand: stubBuilder() });
+
+    expect(status.nodes.needarg.status).toBe('error');
+    expect(status.nodes.needarg.issues.join(' ')).toMatch(/absent/);
+    expect(status.ok).toBe(false);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a node with NO io tokens is byte-identical (additive — non-token contracts unchanged)', async () => {
+    const outDir = await tmpOut();
+    const { provider, writes, createOpts } = recorder();
+    const { status } = await runWorkflow(compile(wf([n('Plain', [], ['p.txt'])])), { run: 'iores-plain', outDir, provider, buildCommand: stubBuilder() });
+    expect(status.nodes.plain.status).toBe('ok');
+    expect(status.nodes.plain.artifacts).toEqual([{ path: 'p.txt', exists: true, bytes: 'plain'.length }]);
+    const staged = writes.find((w) => w.path === '_pi/plain/prompt.md')!;
+    expect(staged.data).toContain('DRIVER-ARTIFACTS: p.txt');
+    expect(createOpts[0].readScope).toEqual([]); // no read-scope declared ⇒ empty, unchanged
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
