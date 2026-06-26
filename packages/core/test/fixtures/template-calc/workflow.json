@@ -1,0 +1,18 @@
+{
+  "id": "template-calc",
+  "meta": {
+    "name": "template-calc",
+    "description": "Single-node template fixture whose node SELECTS the oc.calc:add catalog tool — the G11 tool-wiring blocker repro. The canonical run path (runFromTemplate, no explicit registry) builds a DefaultToolRegistry that lacks oc.calc:add, so the node blocks before pi binds until M1 seeds the catalog."
+  },
+  "stages": [
+    [
+      "calc"
+    ]
+  ],
+  "nodes": {
+    "calc": {
+      "phase": "compute",
+      "deps": []
+    }
+  }
+}
