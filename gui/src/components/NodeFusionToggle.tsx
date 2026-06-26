@@ -14,10 +14,19 @@ import { useFusion, type FusionMode } from "./FusionContext";
 /** fusion-generated producers (siblings / obligations) — `${label}__p${i}` / `${label}__obl` slugged. */
 const GENERATED = /-(p\d+|obl)$/;
 
-export function NodeFusionToggle({ nodeId }: { nodeId: string }) {
+/** The mode a node is ALREADY fused as, read from its fusion-judge preset agentType (absent ⇒ not fused). */
+function authoredMode(agentType?: string): FusionMode | undefined {
+  if (agentType === "fusion-judge-moa") return "moa";
+  if (agentType === "fusion-judge-best-of-n") return "best-of-n";
+  return undefined;
+}
+
+export function NodeFusionToggle({ nodeId, agentType }: { nodeId: string; agentType?: string }) {
   const { overrides, toggle } = useFusion();
   if (GENERATED.test(nodeId)) return null;
-  const active = overrides[nodeId];
+  // A live OVERRIDE wins; otherwise reflect the mode the node is ALREADY fused as (so an already-MoA judge
+  // shows MoA lit, and clicking the OTHER mode visibly flips it — instead of looking like a no-op).
+  const active = overrides[nodeId] ?? authoredMode(agentType);
 
   const Btn = ({ mode, label }: { mode: FusionMode; label: string }) => (
     <button

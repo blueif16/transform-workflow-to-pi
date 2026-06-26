@@ -219,7 +219,7 @@ export function WorkflowNode({ id, data, selected }: NodeProps<FlowNode>) {
 
       <Handle type="source" position={Position.Right} className="ds-handle" />
 
-      {mode === "fusion" ? <NodeFusionToggle nodeId={id} /> : mode && <NodeModeStrip mode={mode} data={data} />}
+      {mode === "fusion" ? <NodeFusionToggle nodeId={id} agentType={data.rv?.agentType} /> : mode && <NodeModeStrip mode={mode} data={data} />}
     </motion.div>
   );
 }
