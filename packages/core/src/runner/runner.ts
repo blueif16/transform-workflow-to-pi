@@ -1312,6 +1312,13 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     return finishNode(ctx, srcNode, rec, t0, 'error', `io token resolution failed: ${(e as Error).message}`, [], [(e as Error).message]);
   }
 
+  // Resolve the node's hard wall-clock cap ONCE — explicit node timeout else the run watchdog default
+  // (30 min). The runner watchdog enforces it locally; the CLOUD backends (e2b/daytona) ALSO take it as the
+  // per-command exec `timeoutMs`. E2B's `commands.run` defaults to 60_000ms when unset (verified against the
+  // SDK: CommandStartOpts.timeoutMs default 60000), so passing `undefined` here KILLS any node generating
+  // >60s. Local/seatbelt/worktree backends ignore CreateOpts.timeoutMs (watchdog-only). Threading the SAME
+  // value into both create and the watchdog (below) keeps the two caps from diverging.
+  const nodeTimeoutMs = node.sandbox.timeoutMs ?? ctx.watchdog.nodeTimeoutMs;
   let sandbox: Sandbox;
   try {
     sandbox = await scope.create({
@@ -1326,7 +1333,7 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
       env: mcpEnv || Object.keys(credEnv).length
         ? { ...node.sandbox.env, ...mcpEnv, ...credEnv }
         : node.sandbox.env,
-      timeoutMs: node.sandbox.timeoutMs,
+      timeoutMs: nodeTimeoutMs, // cloud per-command cap = the watchdog cap (NOT undefined → E2B's 60s default)
     });
   } catch (e) {
     return finishNode(ctx, node, rec, t0, 'error', `sandbox create failed: ${(e as Error).message}`, []);
@@ -1467,7 +1474,7 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     const cmd = ctx.buildCommand(node, resolved, { promptFile, model: effModel, provider: effProvider, extensionFile, skillPath }, ctx.commandOpts);
     rec.command = cmd;
 
-    const nodeTimeoutMs = node.sandbox.timeoutMs ?? ctx.watchdog.nodeTimeoutMs;
+    // `nodeTimeoutMs` is resolved ONCE above (shared with the cloud per-command cap at scope.create).
     // Tee the agent's stdout into a per-node slimmed events archive (additive — the wrap chains the
     // watchdog's own onStdout, so recording can never disable the stall kill). See ./events.ts.
     const recorder = ctx.recordEvents ? new NodeRecorder(ctx.outDir, node.id, ctx.onEvent) : null;
