@@ -54,6 +54,7 @@ import {
 } from './model-routing.js';
 import { resolveTokens, resolveAll, resolveDeep, type ResolveCtx } from '../workflow/resolver.js';
 import { stageSeed } from '../workflow/ops/seed.js';
+import { resolveSkillStage } from '../workflow/ops/skill.js';
 import { runMerge, applyMergeOp } from '../workflow/ops/merge.js';
 import { applyProjectionOp, runProjection } from '../workflow/ops/project.js';
 import { readJsonSafe, absUnder } from '../workflow/ops/util.js';
@@ -1094,6 +1095,26 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
       await sandbox.writeFile(MCP_CONFIG_FILE, JSON.stringify(ctx.mcpConfig));
     }
 
+    // SKILL stage: a node's `skill` (an Agent-Skill dir) is a forced read-only PRE-stage — so it REUSES the
+    // seed seam. Copy the source onto the host run dir at `.pi/skills/<name>/` (pi's native discovery dir),
+    // mirror it INTO the sandbox via `stageHostPathIntoSandbox`, and point `--skill` at the in-sandbox path.
+    // Staged UNDER the workdir ⇒ jail-readable by construction (no readScope widening); the bytes ride into a
+    // cloud VM like every other staged input. An ABSENT source is a graceful skip (mirrors a missing seed);
+    // a real staging failure fails the node loudly (never a silent half-stage).
+    let skillPath: string | undefined;
+    try {
+      const skillStage = resolveSkillStage(node.skill, resolveCtx);
+      const exists = skillStage && (await fs.stat(skillStage.source).then(() => true, () => false));
+      if (skillStage && exists) {
+        const skillRel = path.posix.join('.pi', 'skills', skillStage.name);
+        await fs.cp(skillStage.source, path.resolve(ctx.outDir, skillRel), { recursive: true, force: true });
+        await stageHostPathIntoSandbox(sandbox, ctx.outDir, skillRel);
+        skillPath = path.posix.join(scope.root, node.sandbox.workspace || '.', skillRel);
+      }
+    } catch (e) {
+      return finishNode(ctx, node, rec, t0, 'error', `skill staging failed: ${(e as Error).message}`, [], [(e as Error).message]);
+    }
+
     // PRE hooks (deterministic plumbing — stage inputs / seeds). A blocking failure throws → error.
     const hookCtx = { workspace: node.sandbox.workspace, inputs: node.io.reads, outputs: node.io.produces };
     try {
@@ -1119,7 +1140,7 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     const effModel = over.model ?? eff.model;
     const effProvider = over.provider ?? eff.provider;
     rec.model = effModel ?? null; // record the effective model (null ⇒ pi's provider default)
-    const cmd = ctx.buildCommand(node, resolved, { promptFile, model: effModel, provider: effProvider, extensionFile }, ctx.commandOpts);
+    const cmd = ctx.buildCommand(node, resolved, { promptFile, model: effModel, provider: effProvider, extensionFile, skillPath }, ctx.commandOpts);
     rec.command = cmd;
 
     const nodeTimeoutMs = node.sandbox.timeoutMs ?? ctx.watchdog.nodeTimeoutMs;
