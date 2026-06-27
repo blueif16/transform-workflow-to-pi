@@ -54,6 +54,17 @@ export interface NodeOpts {
   deny?: string[];
   /** KIND-1 forced reads auto-injected into the prompt (must sit inside readScope). */
   inject?: string[];
+  /** DERIVE HOOKS → emitted as the canonical `op[]`. `seed` PRE; the rest POST. See `references/hooks/`. */
+  /** seed: stage a starting artifact before the model — `{ to, from }`. */
+  seed?: { to: string; from: string }[];
+  /** project: derive an output from frozen inputs — `{ to, from }` (`from` = one path or many). */
+  project?: { to: string; from: string | string[] }[];
+  /** merge `run`: a deterministic shell side-effect (asset gen etc.) — `{ cmd, args?, cwd? }`. */
+  mergeRun?: { cmd: string; args?: string[]; cwd?: string }[];
+  /** promote: lift a node output → a RunState `{{state.<to>}}` channel — `from` = `@return:<f>` | `<file>:<f>`. */
+  promote?: { from: string; to: string; merge?: 'set' | 'append' | 'deepMerge' }[];
+  /** registryProject: project a registry record's op-map over a frozen source — `{ source, mapRef, key }`. */
+  registryProject?: { source: string; mapRef: string; key: string };
   /** Per-node external MCP servers (loader REJECTS a literal secret — use $VAR refs in values). */
   mcp?: McpServers;
   /** Per-node routing (G1). */
@@ -128,7 +139,6 @@ export function buildNode(opts: NodeOpts): Record<string, unknown> {
   if (opts.model) node.model = opts.model;
   if (opts.provider) node.provider = opts.provider;
   if (opts.tier) node.tier = opts.tier;
-  if (opts.inject?.length) node.inject = opts.inject;
   node.contract = {
     artifacts: opts.artifacts ?? [],
     owns: opts.owns ?? ['out/**'],
@@ -136,6 +146,38 @@ export function buildNode(opts: NodeOpts): Record<string, unknown> {
     ...(opts.schema ? { schema: opts.schema } : {}),
     ...(opts.returnMode ? { returnMode: opts.returnMode } : {}),
   };
+  // (G13) The canonical `op[]` envelope for the DERIVE hooks. Authoring `op[]` short-circuits the loader's
+  // alias-lowering (`lower.ts:48` — `if (def.op) return def.op`), so a node WITH derive hooks must ALSO carry
+  // its `inject` here (folded as PRE read-ops) or it would be dropped; `checks`/`policy` stay below (the
+  // loader reads them independently). The derives RUN because `op[]` is the SOLE derive rep (the legacy
+  // `node.ops` + its back-fill were retired in U6) and the runner reads each family off `op[]` via
+  // `derivesFromOp`. Order is canonical pre→post: inject reads · seed · project · registryProject · merge · promote.
+  const derive: Record<string, unknown>[] = [];
+  for (const s of opts.seed ?? []) {
+    derive.push({ when: 'pre', writes: [s.to], transform: { kind: 'seed', from: s.from } });
+  }
+  for (const p of opts.project ?? []) {
+    const reads = Array.isArray(p.from) ? p.from : [p.from];
+    derive.push({ when: 'post', writes: [p.to], reads, transform: { kind: 'project', from: p.from } });
+  }
+  if (opts.registryProject) {
+    const { source, mapRef, key } = opts.registryProject;
+    derive.push({ when: 'post', transform: { kind: 'projectRegistry', source, mapRef, key } });
+  }
+  if (opts.mergeRun?.length) {
+    const ops = opts.mergeRun.map((r) => ({
+      run: { cmd: r.cmd, ...(r.args?.length ? { args: r.args } : {}), ...(r.cwd ? { cwd: r.cwd } : {}) },
+    }));
+    derive.push({ when: 'post', transform: { kind: 'merge', ops } });
+  }
+  for (const p of opts.promote ?? []) {
+    derive.push({ when: 'post', transform: { kind: 'promote', from: p.from, to: p.to, ...(p.merge ? { reducer: p.merge } : {}) } });
+  }
+  if (derive.length) {
+    node.op = [...(opts.inject ?? []).map((p) => ({ when: 'pre', reads: [p] })), ...derive];
+  } else if (opts.inject?.length) {
+    node.inject = opts.inject; // no derive hooks ⇒ inject stays the legacy alias (the loader lowers it).
+  }
   if (opts.checks?.length) {
     node.checks = { post: opts.checks.map((c) => ({ kind: c.kind, ...(c.path ? { path: c.path } : {}) })) };
   }

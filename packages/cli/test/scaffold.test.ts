@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadTemplate, compile } from '@piflow/core';
+import { loadTemplate, compile, derivesFromOp } from '@piflow/core';
 import { scaffoldNew, scaffoldAddNode, runNewCli, runAddNodeCli } from '../src/scaffold.js';
 
 // The scaffolder EMITS schema-valid meta.json + node.json from flags so an agent only Writes prose
@@ -105,5 +105,66 @@ describe('scaffold — emit a template the real loadTemplate accepts', () => {
     const node = await readJson(path.join(DIR, 'nodes', 'n', 'node.json'));
     expect(node.contract.artifacts).toEqual(['b.md']); // CLI-owned config: overwritten.
     expect(await fs.readFile(promptPath, 'utf8')).toBe('MY PROSE'); // agent-owned prose: untouched.
+  });
+});
+
+// The scaffolder emits the CANONICAL `op[]` envelope for the derive hooks (seed/project/merge/promote/
+// registryProject) — NOT the deprecated `hooks` alias — because authoring `op[]` short-circuits the loader's
+// alias-lowering (lower.ts:48 — `if (def.op) return def.op`). `op[]` is the SOLE derive rep (the legacy
+// `node.ops` + its back-fill were retired in U6); the runner reads each derive family off `op[]` via
+// `derivesFromOp`, so we assert the round-tripped op[] reconstructs the SAME five executor inputs. The
+// load-bearing RED guard is the channel round-trip: a promote emitted as op[] resolves a downstream
+// `{{state.X}}`; if buildNode DROPS the hook flags, the channel dangles and `loadTemplate`'s `checkChannels` THROWS.
+describe('scaffold — hook flags emit a canonical op[] the real loadTemplate compiles', () => {
+  it('ALL FIVE derive families emit op[]; inject FOLDS into op[]; derivesFromOp reconstructs them; a consumer resolves', async () => {
+    await scaffoldNew(DIR, { name: 'h', description: 'hooks demo' });
+    // a producing node carrying every flag-emittable derive + an inject (which must fold INTO op[]).
+    await scaffoldAddNode(DIR, {
+      id: 'setup',
+      artifacts: ['out/pipeline.json'],
+      returnMode: 'required',
+      inject: ['{{RUN}}/in.json'],
+      seed: [{ to: 'spec/seed.json', from: '{{WORKSPACE}}/skel.json' }],
+      project: [{ to: 'out/projected.json', from: 'in/raw.json' }],
+      mergeRun: [{ cmd: 'node', args: ['gen.mjs'] }],
+      promote: [{ from: '@return:camelId', to: 'camelId' }],
+      registryProject: { source: 'out/pipeline.json', mapRef: '{{WORKSPACE}}/index.json', key: 'setup' },
+    });
+    // a consumer whose PROSE reads {{state.camelId}} — if setup never promotes it, checkChannels dangles.
+    await scaffoldAddNode(DIR, { id: 'use', deps: ['setup'], artifacts: ['out/result.md'] });
+    await writeProse('setup');
+    await fs.writeFile(path.join(DIR, 'nodes', 'use', 'prompt.md'), 'build from {{state.camelId}}\n');
+
+    // RED guard: throws `dangling channel` if the promote flag was dropped (no op[] emitted).
+    const spec = await loadTemplate(DIR);
+    const setup = compile(spec).nodes['setup'];
+
+    // The runner reads each derive family off the canonical `op[]` via `derivesFromOp` (op[] is the SOLE
+    // derive rep — node.ops retired in U6). The reconstructed executor inputs must match all five flags.
+    const d = derivesFromOp(setup.op);
+    expect(d.seeds).toEqual([{ to: 'spec/seed.json', from: '{{WORKSPACE}}/skel.json' }]);
+    expect(d.projects).toEqual([{ to: 'out/projected.json', from: 'in/raw.json' }]);
+    expect(d.merges).toEqual([{ ops: [{ run: { cmd: 'node', args: ['gen.mjs'] } }] }]);
+    expect(d.promotes).toEqual([{ from: '@return:camelId', to: 'camelId' }]);
+    expect(d.registryProjects).toEqual([{ source: 'out/pipeline.json', mapRef: '{{WORKSPACE}}/index.json', key: 'setup' }]);
+
+    // The emitted node.json carries `op` (canonical) — NOT the legacy `hooks`/`inject` keys.
+    const nodeJson = await readJson(path.join(DIR, 'nodes', 'setup', 'node.json'));
+    expect(nodeJson.op, 'derive hooks emit the canonical op[]').toBeDefined();
+    expect(nodeJson.hooks, 'never the deprecated hooks alias').toBeUndefined();
+    expect(nodeJson.inject, 'inject folds INTO op[] when derive hooks are present').toBeUndefined();
+    // inject became a pre read-op folded into op[] — so io.reads carries it (runRel-stripped).
+    expect(setup.io.reads).toContain('in.json');
+    // the op[] entries are well-formed (each exactly one body) in the canonical order pre→post.
+    const kinds = (nodeJson.op as any[]).map((o) => o.transform?.kind ?? (o.run ? 'run' : o.reads ? 'read' : '?'));
+    expect(kinds).toEqual(['read', 'seed', 'project', 'projectRegistry', 'merge', 'promote']);
+  });
+
+  it('an inject-only node (no derive hooks) still emits the legacy inject key (op[] only when hooks present)', async () => {
+    await scaffoldNew(DIR, { name: 'i', description: 'inject only' });
+    await scaffoldAddNode(DIR, { id: 'n', artifacts: ['a.md'], inject: ['{{RUN}}/x.md'] });
+    const node = await readJson(path.join(DIR, 'nodes', 'n', 'node.json'));
+    expect(node.inject).toEqual(['{{RUN}}/x.md']); // unchanged: no hooks ⇒ no op[], inject stays the alias.
+    expect(node.op).toBeUndefined();
   });
 });
