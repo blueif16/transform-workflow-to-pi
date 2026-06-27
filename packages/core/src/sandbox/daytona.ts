@@ -49,6 +49,12 @@ import type {
 export interface DaytonaCreateParams {
   /** Container image ref (real SDK also accepts an `Image` builder or a `snapshot`). */
   image?: string;
+  /**
+   * Pre-built Daytona SNAPSHOT name to boot from (real `CreateSandboxFromSnapshotParams.snapshot`) — a
+   * permanent, instant image registered in Daytona's OWN store (no external registry). This is how a node
+   * boots from our promoted `piflow-node-runtime` image; preferred over `image` when set.
+   */
+  snapshot?: string;
   /** Per-VM environment (real field: `envVars`). */
   envVars?: Record<string, string>;
   /** VM sizing — real `Resources` shape `{ cpu, memory, disk }` (memory/disk in GiB). */
@@ -495,13 +501,40 @@ export class DaytonaSandboxProvider implements SandboxProvider {
      */
     private readonly vmDefaults: {
       image?: string;
+      /** Pre-built Daytona SNAPSHOT name to boot from (preferred over `image`) — our promoted node-runtime. */
+      snapshot?: string;
       resources?: { cpu?: number; memory?: number; disk?: number };
       /** Idle auto-stop guard so a crashed run can't leak a billed VM. */
       autoStopInterval?: number;
       /** In-VM home the run dir nests under (Daytona's default user home). */
       homeDir?: string;
+      /**
+       * (M1b) Run-level files staged into the VM home BEFORE any node runs, keyed by home-relative path →
+       * content. The load-bearing case is `'.pi/agent/models.json'`: a CUSTOM gateway (`--provider nebius`/
+       * `mmgw`) is defined ONLY in the host's `~/.pi/agent/models.json` (baseUrl/api/models), which the image
+       * does NOT bake — so pi in the VM cannot resolve `--provider <gw>` without it. The staged config carries
+       * `$VAR` apiKey REFERENCES (pi's official value syntax), never literal secrets; the actual key crosses
+       * separately via the cloud cred allowlist (`runner.ts` `cloudCredEnvAdditions`). Built-in providers
+       * (anthropic/…) need no entry, so this is omitted for them.
+       */
+      stageHome?: Record<string, string>;
     } = {},
   ) {}
+
+  /**
+   * (M1b) Write each run-level home file into the booted VM at `<home>/<relPath>` (mkdir -p the parent).
+   * Idempotent-safe (uploadFile overwrites). No-op when nothing is declared.
+   */
+  private async stageHomeFiles(vm: DaytonaVm, home: string): Promise<void> {
+    const files = this.vmDefaults.stageHome;
+    if (!files) return;
+    for (const [rel, content] of Object.entries(files)) {
+      const target = path.posix.join(home, rel);
+      const dir = path.posix.dirname(target);
+      if (dir && dir !== '.' && dir !== '/') await vm.fs.createFolder(dir);
+      await vm.fs.uploadFile(toBytes(content), target);
+    }
+  }
 
   /** Boot ONE VM for the whole run and return a scope whose per-node views live inside it. */
   async openRun(opts: OpenRunOpts): Promise<RunScope> {
@@ -511,7 +544,10 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     // LATER, at the node level — `env` per `exec`, and a per-node `image` is simply UNSUPPORTED in the
     // shared-VM model (you can't reimage a running VM per node).
     const vm = await this.sdk.create({
-      image: this.vmDefaults.image,
+      // Prefer our pre-built snapshot; fall back to a raw image ref. (A snapshot name is NOT an image ref —
+      // the API distinguishes them — so this must forward `snapshot`, not stuff the name into `image`.)
+      snapshot: this.vmDefaults.snapshot,
+      image: this.vmDefaults.snapshot ? undefined : this.vmDefaults.image,
       resources: this.vmDefaults.resources,
       autoStopInterval: this.vmDefaults.autoStopInterval,
       // The run id is the natural VM label; passed via env for traceability (OpenRunOpts.run).
@@ -522,6 +558,9 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     const rootDir = path.posix.join(home, 'pi', opts.run);
     // createFolder the run root once so every node's create() nests cleanly.
     await vm.fs.createFolder(rootDir);
+    // (M1b) Stage run-level home files (e.g. the pi provider config) ONCE, before any node — so a custom
+    // gateway resolves for every node in this VM.
+    await this.stageHomeFiles(vm, home);
     return new DaytonaRunScope(this.sdk, vm, opts, rootDir);
   }
 
@@ -533,12 +572,16 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     // A per-node VM CAN honor CreateOpts.image (unlike the shared-VM path) — this is the only path
     // where per-node image actually works (research note §5).
     const vm = await this.sdk.create({
-      image: opts.image ?? this.vmDefaults.image,
+      // A per-node image override wins; else the run-level snapshot (preferred) or image default.
+      snapshot: opts.image ? undefined : this.vmDefaults.snapshot,
+      image: opts.image ?? (this.vmDefaults.snapshot ? undefined : this.vmDefaults.image),
       resources: this.vmDefaults.resources,
       autoStopInterval: this.vmDefaults.autoStopInterval,
       envVars: opts.env,
     });
     const home = this.vmDefaults.homeDir ?? '/home/daytona';
+    // (M1b) Stage run-level home files into the throwaway VM too (parity with the openRun path).
+    await this.stageHomeFiles(vm, home);
     return DaytonaSandbox.open(this.sdk, vm, opts, home, /* ownsVm */ true);
   }
 }

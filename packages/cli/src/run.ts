@@ -19,6 +19,8 @@ import {
   runFromTemplate as coreRunFromTemplate,
   applyProfileByName,
   LocalSandboxProvider,
+  createDaytonaProvider,
+  defaultSecretResolver,
   compile,
   seededRegistry,
   SUBMIT_RESULT_TOOL,
@@ -46,7 +48,8 @@ import {
   type RunResult,
 } from '@piflow/core';
 import path from 'node:path';
-import { readdirSync } from 'node:fs';
+import os from 'node:os';
+import { readdirSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 
 /**
@@ -82,6 +85,16 @@ export interface RunDeps {
    * `dangerous:true` ⇒ the `danger-full-access` bypass (read-scope jail OFF); default ⇒ secure-by-default.
    */
   makeLocalProvider?: (opts?: { dangerous?: boolean }) => SandboxProvider;
+  /**
+   * Factory for the `--sandbox daytona` cloud provider (injectable so a test asserts the instance WITHOUT a
+   * real Daytona client/VM). Default builds `createDaytonaProvider({ image: DAYTONA_IMAGE, apiKey: DAYTONA_API_KEY })`.
+   */
+  makeDaytonaProvider?: (opts: {
+    image?: string;
+    snapshot?: string;
+    apiKey?: string;
+    stageHome?: Record<string, string>;
+  }) => SandboxProvider;
   /** Mint a memorable run name not in `existing` (default: core `generateRunName`; a test injects a stub). */
   generateName?: (existing: string[]) => string;
   /** List the run-name basenames already present under a runs home (default: read the dir; '' if absent). */
@@ -97,11 +110,14 @@ export interface RunDeps {
  *     Linux bwrap backend lands).
  *   - `danger-full-access` = real in-place `pi` exec with the read-scope jail OFF (the agent can read the
  *     whole filesystem) — the loud, explicit escape hatch.
+ *   - `daytona` = real `pi` exec inside a remote Daytona CLOUD VM (one VM per run, nodes subtree-namespaced).
+ *     Reads `DAYTONA_API_KEY`/`DAYTONA_IMAGE` from env; the pi gateway credential crosses into the VM via the
+ *     cloud allowlist (the var derived from `--provider`, or `--cloud-secret NAME`).
  */
-export type SandboxChoice = 'inmemory' | 'local' | 'danger-full-access';
+export type SandboxChoice = 'inmemory' | 'local' | 'danger-full-access' | 'daytona';
 
 /** The accepted `--sandbox` values — a typo (e.g. `seatbelt`) must error loudly, not silently degrade to inmemory. */
-export const SANDBOX_CHOICES: readonly SandboxChoice[] = ['inmemory', 'local', 'danger-full-access'];
+export const SANDBOX_CHOICES: readonly SandboxChoice[] = ['inmemory', 'local', 'danger-full-access', 'daytona'];
 
 /** The parsed `run` argv. `args` carries the repeated `--arg k=v` pairs (and the run id, mirrored in). */
 export interface ParsedRunArgs {
@@ -126,6 +142,11 @@ export interface ParsedRunArgs {
   sandbox: SandboxChoice;
   /** The pi `--provider` gateway → threaded to the runner as `providerName`. */
   provider?: string;
+  /**
+   * (M1 · cloud) Explicit provider-credential env var NAME to forward into a cloud VM (e.g. `NEBIUS_API_KEY`),
+   * overriding the name derived from `--provider`. Only consulted on `--sandbox daytona`.
+   */
+  cloudSecret?: string;
   /** Reasoning-depth cap → `pi --thinking <v>`. */
   thinking?: string;
   /** Optional model pin → `pi --model <m>`. */
@@ -156,6 +177,7 @@ export function parseRunArgs(argv: string[]): ParsedRunArgs {
     else if (k === '--profile') out.profile = argv[++i];
     else if (k === '--sandbox') out.sandbox = (argv[++i] as SandboxChoice) ?? 'inmemory';
     else if (k === '--provider') out.provider = argv[++i];
+    else if (k === '--cloud-secret') out.cloudSecret = argv[++i];
     else if (k === '--thinking') out.thinking = argv[++i];
     else if (k === '--model') out.model = argv[++i];
     else if (k === '--max-concurrent') out.maxConcurrent = Number(argv[++i]);
@@ -237,6 +259,73 @@ export function dryRunPlan(wf: Workflow, opts: DryRunPlanOpts = {}): string {
 }
 
 /**
+ * (M1 · cloud) Derive the provider/gateway credential env var NAME pi reads for a given `--provider`, so a
+ * cloud VM gets a model credential forwarded (the VM does NOT inherit host env, and the pi command stamps no
+ * key). Maps the common providers to their well-known `*_API_KEY` (pi's `env-api-keys.ts` vocabulary). A
+ * custom/unknown gateway returns `undefined` — the FALLBACK only: for a custom gateway the cred var is read
+ * authoritatively from its `~/.pi/agent/models.json` entry's `$VAR` apiKey ref (`parsePiProvider`); this map
+ * is the built-in-provider default when no entry exists. An explicit `--cloud-secret` overrides both.
+ */
+/**
+ * (M1c) The DEFAULT Daytona snapshot `--sandbox daytona` boots from when neither `DAYTONA_SNAPSHOT` nor
+ * `DAYTONA_IMAGE` is set — the promoted `piflow-node-runtime` image (`deploy/daytona/promote-snapshot.mjs`
+ * registers this exact name). A snapshot is permanent + instant; making it the default means `--sandbox
+ * daytona` needs ZERO image config. Keep this string in sync with the promote script's `SNAPSHOT`.
+ */
+export const DEFAULT_DAYTONA_SNAPSHOT = 'piflow-node-runtime-0-80-2';
+
+export function providerCredVar(provider?: string): string | undefined {
+  const map: Record<string, string> = {
+    anthropic: 'ANTHROPIC_API_KEY',
+    cp: 'ANTHROPIC_API_KEY', // pi's Claude-proxy gateway reads the Anthropic key
+    deepseek: 'DEEPSEEK_API_KEY',
+    nebius: 'NEBIUS_API_KEY',
+    openai: 'OPENAI_API_KEY',
+    gemini: 'GEMINI_API_KEY',
+  };
+  return provider ? map[provider] : undefined;
+}
+
+/**
+ * (M1b) Scope a pi `~/.pi/agent/models.json` to the SELECTED provider and extract what a cloud VM needs: the
+ * minimal `{providers:{[name]:entry}}` config to STAGE (so a CUSTOM gateway's `baseUrl`/`api`/`models` resolve
+ * in the VM — the image bakes none), and the `$VAR`/`${VAR}` env-var name(s) the entry references (pi's value
+ * syntax for `apiKey`/`headers`) = the cloud cred allowlist. The official shape is `docs/models.md`
+ * (`{ providers: { <name>: { baseUrl, api, apiKey: "$VAR", models:[…] } } }`). A BUILT-IN provider (no entry)
+ * returns `{ credVars: [] }` with NO config — it needs neither. Pure + total: a malformed/empty file or an
+ * absent provider yields `{ credVars: [] }`, never a throw. Staging carries only `$VAR` REFERENCES, never the
+ * resolved secret (that crosses via the runner's cloud cred allowlist).
+ */
+export function parsePiProvider(modelsJson: string, provider?: string): { config?: string; credVars: string[] } {
+  if (!provider) return { credVars: [] };
+  let entry: unknown;
+  try {
+    entry = (JSON.parse(modelsJson) as { providers?: Record<string, unknown> })?.providers?.[provider];
+  } catch {
+    return { credVars: [] };
+  }
+  if (!entry || typeof entry !== 'object') return { credVars: [] };
+  const ref = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+  const names = new Set<string>();
+  const scan = (v: unknown): void => {
+    if (typeof v === 'string') for (const m of v.matchAll(ref)) names.add(m[1] ?? m[2]);
+    else if (Array.isArray(v)) for (const x of v) scan(x);
+    else if (v && typeof v === 'object') for (const x of Object.values(v)) scan(x);
+  };
+  scan(entry);
+  return { config: JSON.stringify({ providers: { [provider]: entry } }), credVars: [...names] };
+}
+
+/** (M1b) Best-effort load of the host's `~/.pi/agent/models.json`, scoped to `provider`. Never throws. */
+function loadPiProviderConfig(provider?: string): { config?: string; credVars: string[] } {
+  try {
+    return parsePiProvider(readFileSync(path.join(os.homedir(), '.pi', 'agent', 'models.json'), 'utf8'), provider);
+  } catch {
+    return { credVars: [] };
+  }
+}
+
+/**
  * Drive a template run. DRY-RUN: loadTemplate → compile → instantiateRun (materialize `${RUN}/.pi`) →
  * print the realized commands, then STOP (no model). LIVE: route through core `runFromTemplate` (the
  * template-run join — loadTemplate → instantiateRun → compile → runWorkflow, INSIDE core), THREADING the
@@ -252,6 +341,10 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
   const runFromTemplate = deps.runFromTemplate ?? coreRunFromTemplate;
   const makeLocalProvider =
     deps.makeLocalProvider ?? ((o?: { dangerous?: boolean }) => new LocalSandboxProvider({ enforceReadScope: !o?.dangerous }));
+  const makeDaytonaProvider =
+    deps.makeDaytonaProvider ??
+    ((o: { image?: string; snapshot?: string; apiKey?: string; stageHome?: Record<string, string> }) =>
+      createDaytonaProvider(o));
   const generateName = deps.generateName ?? ((existing: string[]) => generateRunName(existing));
   const listExistingRuns = deps.listExistingRuns ?? listExistingRunNames;
   const print = deps.print ?? ((s: string) => process.stdout.write(s + '\n'));
@@ -356,6 +449,11 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
   // in-place exec provider, SECURE BY DEFAULT (read-scope jail on). `danger-full-access` ⇒ the same
   // provider with the jail OFF — surfaced loudly so the bypass is never silent.
   let provider: SandboxProvider | undefined;
+  // (M1) The cloud provider-credential allowlist: the env var(s) the pi agent needs IN the VM (the VM does
+  // NOT inherit host env). Set ONLY on the cloud (daytona) branch — local/inmemory leave it undefined so the
+  // gateway key never needlessly enters a (non-existent) cloud allowlist. The default secretResolver reads
+  // it host-side from process.env; a host can swap in a scoped-token broker.
+  let cloudSecrets: string[] | undefined;
   if (parsed.sandbox === 'local') {
     provider = makeLocalProvider();
     print(
@@ -366,6 +464,43 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
   } else if (parsed.sandbox === 'danger-full-access') {
     provider = makeLocalProvider({ dangerous: true });
     print('piflowctl run: ⚠ DANGER — read-scope isolation BYPASSED (--sandbox danger-full-access): the agent can read your entire filesystem.');
+  } else if (parsed.sandbox === 'daytona') {
+    // Real pi exec inside a remote Daytona CLOUD VM. The image + API key come from the environment
+    // (DAYTONA_IMAGE / DAYTONA_API_KEY); an absent key makes the real client throw at construction (loud).
+    // (M1b) A CUSTOM gateway (nebius/mmgw/…) lives ONLY in the host's ~/.pi/agent/models.json; stage its
+    // entry into the VM so pi resolves --provider there (the image bakes none), and read the cred var(s)
+    // from that entry's $VAR apiKey refs (authoritative). A built-in provider has no entry → no staging.
+    const pi = loadPiProviderConfig(parsed.provider);
+    const stageHome = pi.config ? { '.pi/agent/models.json': pi.config } : undefined;
+    // (M1c) Boot from the promoted SNAPSHOT by default (zero config). A raw `DAYTONA_IMAGE` ref overrides
+    // (and suppresses the snapshot); `DAYTONA_SNAPSHOT` picks a different snapshot name.
+    const rawImage = process.env.DAYTONA_IMAGE;
+    const snapshot = process.env.DAYTONA_SNAPSHOT ?? (rawImage ? undefined : DEFAULT_DAYTONA_SNAPSHOT);
+    provider = makeDaytonaProvider({
+      ...(rawImage ? { image: rawImage } : {}),
+      ...(snapshot ? { snapshot } : {}),
+      apiKey: process.env.DAYTONA_API_KEY,
+      ...(stageHome ? { stageHome } : {}),
+    });
+    // Forward the pi gateway credential into the VM: an explicit --cloud-secret wins, else the entry's $VAR(s),
+    // else the well-known var for a built-in provider. The runner resolves each through the SAME
+    // SecretResolver+allowlist as MCP creds (the raw value never leaves the resolver seam).
+    const fallback = providerCredVar(parsed.provider);
+    cloudSecrets = parsed.cloudSecret
+      ? [parsed.cloudSecret]
+      : pi.credVars.length
+        ? pi.credVars
+        : fallback
+          ? [fallback]
+          : [];
+    const credList = cloudSecrets.join(', ');
+    const bootFrom = rawImage ? `image ${rawImage}` : `snapshot ${snapshot}`;
+    print(`piflowctl run: cloud (daytona) — booting from ${bootFrom}.`);
+    print(
+      cloudSecrets.length
+        ? `piflowctl run: cloud (daytona) — ${stageHome ? `staged ~/.pi/agent/models.json[${parsed.provider}] + ` : ''}forwarding ${credList} into the VM (allowlisted; the raw value never leaves the resolver seam).`
+        : `piflowctl run: ⚠ cloud (daytona) — no provider config/credential resolved for --provider "${parsed.provider ?? '(default)'}"; add a custom gateway to ~/.pi/agent/models.json, or declare the key with --cloud-secret NAME, or pi in the VM will have no model key.`,
+    );
   }
   // (G7) `--detach` ⇒ UNATTENDED: take each (G5) checkpoint's declared default so a backgrounded run never
   // hangs on a human gate. The run is already durable; the caller backgrounds the process (`&`/harness).
@@ -391,6 +526,9 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     ...(parsed.maxConcurrent !== undefined ? { maxConcurrent: parsed.maxConcurrent } : {}),
     ...(parsed.detach ? { checkpointReply: 'default' as const } : {}),
     ...(provider ? { provider } : {}),
+    // (M1) cloud-only: the provider-cred allowlist + a default host-side resolver (process.env). Local/
+    // inmemory leave cloudSecrets undefined, so the gateway key crosses ONLY into a cloud VM.
+    ...(cloudSecrets !== undefined ? { cloudSecrets, secretResolver: defaultSecretResolver } : {}),
   });
 }
 

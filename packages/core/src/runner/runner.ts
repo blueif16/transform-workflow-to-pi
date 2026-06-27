@@ -243,6 +243,17 @@ export interface RunOptions {
    */
   secretResolver?: SecretResolver;
   /**
+   * (M1 — provider-credential parity) The allowlist of provider/gateway credential env var NAMES the pi
+   * agent itself needs (e.g. `ANTHROPIC_API_KEY`, `NEBIUS_API_KEY`). On a CLOUD backend (daytona/e2b) the
+   * VM does NOT inherit `process.env`, and `defaultPiCommand` stamps `--provider`/`--model` but NO key — so
+   * pi would boot with no model credential. The runner resolves EACH declared name through the SAME
+   * `SecretResolver` and forwards EXACTLY that set into the node's VM exec env, on the SAME cloud allowlist
+   * the MCP `$VAR`s ride (never a wholesale host-env spread). Omit/empty ⇒ no provider cred forwarded (a
+   * LOCAL run is unaffected — the child already inherits `process.env`). The host (CLI) derives this from
+   * the selected `--provider` (or an explicit `--cloud-secret NAME`).
+   */
+  cloudSecrets?: string[];
+  /**
    * Capture each node's agent stdout (the `pi --mode json` stream) to the canonical
    * `.pi/nodes/<id>/events.jsonl` — the observability backbone the shared `watchRun` stream + `./logs.ts`
    * tail (`docker logs` for a run). Default `true`; the archive is slimmed + lazy (a node that emits
@@ -515,6 +526,37 @@ export async function mcpEnvAdditions(
   return env;
 }
 
+/**
+ * (M1 — provider-credential parity) Build the cloud env additions for the pi agent's OWN provider/gateway
+ * credential — the SAME shape `mcpEnvAdditions` builds for MCP `$VAR`s, on the SAME `SecretResolver`+allowlist
+ * seam. `defaultPiCommand` stamps `--provider`/`--model` but NO key; pi reads the key from its env. A local
+ * child inherits `process.env`, but a cloud VM (daytona/e2b) does NOT — so the declared provider var(s) must
+ * cross via the `CreateOpts.env` allowlist or pi boots with no model credential.
+ *
+ * Resolves EACH declared name through the resolver (which gets `{nodeId, isCloud}` so a host can mint a
+ * per-node, cloud-only SCOPED token, never the raw long-lived key). Returns ONLY the resolved declared set —
+ * an unknown name is simply absent, never injected as `undefined`. Empty/undefined ⇒ no additions.
+ *
+ * Gated to `isCloud`: on a LOCAL backend the child already inherits the parent `process.env`, so forwarding
+ * here is redundant — and skipping it keeps the additive promise (a local run is byte-identical). The
+ * allowlist nature is intrinsic: the returned set IS the declared names, nothing else, so an unrelated host
+ * secret can never ride along into the VM.
+ */
+export async function cloudCredEnvAdditions(
+  cloudSecrets: string[] | undefined,
+  isCloud: boolean,
+  nodeId: string,
+  resolver: SecretResolver = defaultSecretResolver,
+): Promise<Record<string, string>> {
+  const env: Record<string, string> = {};
+  if (!isCloud || !cloudSecrets?.length) return env;
+  for (const name of cloudSecrets) {
+    const value = await resolver(name, { nodeId, isCloud });
+    if (value !== undefined) env[name] = value;
+  }
+  return env;
+}
+
 // ── the per-node lifecycle ────────────────────────────────────────────────────────────────────────
 
 interface RunContext {
@@ -544,6 +586,8 @@ interface RunContext {
   providerKind: SandboxProvider['kind'];
   /** Per-node secret resolver (the scoped-token / sealing-broker seam). Undefined ⇒ `defaultSecretResolver`. */
   secretResolver?: SecretResolver;
+  /** (M1) Provider/gateway credential env var names forwarded into a CLOUD VM exec env (the allowlist). */
+  cloudSecrets?: string[];
   /** (G12 — M4) The notify host seam. Undefined ⇒ `defaultEscalator` (warn → console). */
   escalator: Escalator;
   /**
@@ -959,6 +1003,7 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
   // works around three ways (an execCwd split + an absolute @prompt ref + a per-node `wf.nodes` mutation).
   const nodeStage = path.posix.join('_pi', node.id);
   const MCP_CONFIG_FILE = path.posix.join(nodeStage, 'mcp.json');
+  const isCloud = CLOUD_KINDS.has(ctx.providerKind);
   const stageMcp = Boolean(resolved.extension) && selectedBridgedTool(node) && Boolean(ctx.mcpConfig);
   let mcpEnv: Record<string, string> | undefined;
   if (stageMcp && ctx.mcpConfig) {
@@ -970,11 +1015,21 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     mcpEnv = await mcpEnvAdditions(
       configPathAbs,
       referencedEnvVars(ctx.mcpConfig),
-      CLOUD_KINDS.has(ctx.providerKind),
+      isCloud,
       node.id,
       ctx.secretResolver ?? defaultSecretResolver,
     );
   }
+  // (M1) PROVIDER-CREDENTIAL PARITY — on a CLOUD VM, pi's OWN gateway key (`ANTHROPIC_API_KEY`, …) must
+  // cross too: the command stamps `--provider`/`--model` but no key, and the VM does NOT inherit host env.
+  // Resolve the declared provider-cred allowlist through the SAME resolver and forward EXACTLY that set
+  // (no-op on local — the child already inherits process.env; no-op when no cloudSecrets declared).
+  const credEnv = await cloudCredEnvAdditions(
+    ctx.cloudSecrets,
+    isCloud,
+    node.id,
+    ctx.secretResolver ?? defaultSecretResolver,
+  );
 
   // The per-node resolver ctx — ONE ctx threads the prompt resolve, the seed/op resolution, AND the io/
   // sandbox/checks PATH resolution (U7). `{{RUN}}` is the host run dir (the collection namespace); state is
@@ -1015,9 +1070,12 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
       outputDir: node.sandbox.output,
       workdir: node.sandbox.workspace,
       image: node.sandbox.image,
-      // Merge the MCP env additions over the node's declared env (so PIFLOW_MCP_CONFIG + the referenced
-      // secrets land in the child via the provider's exec merge). Undefined ⇒ node env unchanged.
-      env: mcpEnv ? { ...node.sandbox.env, ...mcpEnv } : node.sandbox.env,
+      // Merge the MCP env additions + the cloud provider-cred additions over the node's declared env (so
+      // PIFLOW_MCP_CONFIG + the referenced MCP secrets + the pi gateway key land in the child via the
+      // provider's exec merge). Both additions are {} when inapplicable, so a local/keyless run is unchanged.
+      env: mcpEnv || Object.keys(credEnv).length
+        ? { ...node.sandbox.env, ...mcpEnv, ...credEnv }
+        : node.sandbox.env,
       timeoutMs: node.sandbox.timeoutMs,
     });
   } catch (e) {
@@ -1763,6 +1821,7 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     mcpConfig: opts.mcpConfig,
     providerKind: provider.kind,
     secretResolver: opts.secretResolver,
+    cloudSecrets: opts.cloudSecrets,
     escalator: opts.escalator ?? defaultEscalator,
     failureSignals: new Map(),
     returnProtocol: opts.returnProtocol,
