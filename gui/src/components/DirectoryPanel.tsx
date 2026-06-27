@@ -37,6 +37,10 @@ export interface DirectoryPanelProps {
   onOpenFile?: (entry: DirEntry, path: DirEntry[]) => void;
   /** grow columns RIGHT→LEFT (root pinned right) — for a right-anchored panel like the menu-bar switcher */
   reverse?: boolean;
+  /** open the navigator to this folder chain on mount (the columns leading to a deep file) */
+  initialPath?: DirEntry[];
+  /** mark this file leaf id (`f:<displayPath>`) selected on mount */
+  initialFileId?: string | null;
 }
 
 function FolderGlyph() {
@@ -62,13 +66,14 @@ function Chevron() {
   );
 }
 
-export function DirectoryPanel({ tree, title = "Files", onOpenFile, reverse = false }: DirectoryPanelProps) {
+export function DirectoryPanel({ tree, title = "Files", onOpenFile, reverse = false, initialPath, initialFileId }: DirectoryPanelProps) {
   const reduce = useReducedMotion() ?? false;
   // columns slide in FROM the side they grow toward (left for default, right for reverse)
   const enterX = reverse ? 10 : -10;
-  // the chain of opened folders; columns derive from it
-  const [path, setPath] = useState<DirEntry[]>([]);
-  const [fileId, setFileId] = useState<string | null>(null);
+  // the chain of opened folders; columns derive from it. `initial*` seed the navigator when it's mounted
+  // already pointing at a file (e.g. the file overlay opening to the leaf the user clicked on the canvas).
+  const [path, setPath] = useState<DirEntry[]>(initialPath ?? []);
+  const [fileId, setFileId] = useState<string | null>(initialFileId ?? null);
 
   // columns = root, then the children of each opened folder, in order
   const columns = useMemo(() => {
