@@ -208,8 +208,10 @@ export function reduceControl(prev: ControlSessionState, frame: Record<string, u
     case "stream-error":
       return { ...prev, status: "error", error: String(frame.error ?? "stream error") };
     default:
-      // forward-compatible: an unknown event type still surfaces as a notice (no client change needed).
-      return type ? { ...prev, notices: [...prev.notices, type].slice(-NOTICE_CAP) } : prev;
+      // The agent-event firehose carries lifecycle chatter we DON'T fold (turn_start/turn_end/context/…).
+      // It is noise, not chat — DROP it rather than pile it into a log that never clears. The durable spine
+      // (messages, tools) is handled by the explicit cases above; real diagnostics ride `stderr` only.
+      return prev;
   }
 }
 
