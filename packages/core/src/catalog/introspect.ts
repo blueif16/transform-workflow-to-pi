@@ -16,12 +16,18 @@
 //
 // Pure-of-ambient-I/O via injection: `listTools` (the network seam — the actual `tools/list` fetch) and
 // `now` (the introspectedAt stamp) are injectable, so the recorded-tape test replays a real `tools/list`
-// with zero net. There is NO default `listTools` wired: the tool-bridge (packages/tool-bridge) exposes only
-// `callTool` (a `tools/call` runtime) and re-exports no `tools/list`/list-tools function, so the seam is
-// REQUIRED — calling without it throws a clear, actionable error rather than fabricating a transport client.
+// with zero net. The DEFAULT seam is the REAL `tools/list` client: when no `listTools` is passed, introspect
+// resolves a bridge config (`opts.serverConfig`, else the slice's `servers[server]`) and defaults to
+// `() => listServerTools(server, config)` (packages/tool-bridge) — connecting through the real MCP client.
+// It throws a clear, actionable error ONLY when there is NEITHER a seam NOR any resolvable config (never a
+// fabricated transport).
 
 import fssync from 'node:fs';
 import path from 'node:path';
+// Type-only import (erased at compile) — core stays statically bridge-free; the real client is loaded
+// LAZILY (dynamic import below) ONLY when the default introspection path actually connects, so importing
+// `@piflow/core` never eagerly pulls the MCP SDK for a consumer that doesn't introspect.
+import type { McpServerConfig } from '@piflow/tool-bridge';
 import { globalDir } from '../observe/registry.js';
 import type { ToolEntry } from '../types.js';
 import { mcpToolsToEntries, type McpToolListing } from '../tools/ingest.js';
@@ -31,10 +37,17 @@ export interface IntrospectMcpServerOpts {
   /** The MCP server name — the address namespace (`mcp.<server>:<tool>`) + the `directory` key. */
   server: string;
   /**
-   * The INJECTED network seam: fetch this server's `tools/list` listing. REQUIRED — there is no default
-   * (the tool-bridge ships no reusable list-tools fn); omitting it throws a clear error (never a stub fetch).
+   * The INJECTED network seam: fetch this server's `tools/list` listing. OPTIONAL — when omitted, introspect
+   * DEFAULTS to the real `listServerTools` bridge client against the resolved `serverConfig` (below). Pass it
+   * to replay a recorded tape with zero net.
    */
   listTools?: () => Promise<McpToolListing[]>;
+  /**
+   * The bridge connection config to introspect through when no `listTools` seam is given. Takes precedence
+   * over the slice's `servers[server]` lookup. When BOTH this and the slice lack a config (and no seam is
+   * passed), introspect throws — it never fabricates a transport.
+   */
+  serverConfig?: McpServerConfig;
   /** The global home to write under. Default `PIFLOW_HOME ?? ~/.piflow` (reuses `globalDir`, as sync.ts). */
   home?: string;
   /** RFC3339 stamp written as `directory[server].introspectedAt` (when that record exists). Default `now()`. */
@@ -76,13 +89,6 @@ function readJsonSafe(file: string): unknown {
   }
 }
 
-/** The default seam: there is NONE — a real `tools/list` client is not yet wired (see header). Throws loudly. */
-async function defaultListTools(): Promise<McpToolListing[]> {
-  throw new Error(
-    'introspectMcpServer: no default listTools — pass the listTools seam (a real MCP tools/list client is not yet wired)',
-  );
-}
-
 /**
  * Introspect ONE MCP server: fetch its `tools/list` (via the injected `listTools` seam), map the listing to
  * `ToolEntry` rows with the shared `mcpToolsToEntries`, and UPSERT them into `<home>/catalog/mcp.index.json`
@@ -94,23 +100,41 @@ async function defaultListTools(): Promise<McpToolListing[]> {
 export async function introspectMcpServer(opts: IntrospectMcpServerOpts): Promise<IntrospectResult> {
   const { server } = opts;
   const home = opts.home ?? globalDir();
-  const listTools = opts.listTools ?? defaultListTools;
   const now = opts.now ?? new Date().toISOString();
 
   const dir = path.join(home, 'catalog');
   const indexPath = path.join(dir, 'mcp.index.json');
 
-  // Fetch the listing (the ONE network call) and map it to rows via the SHARED transform — no reinvention.
-  const listings = await listTools();
-  const rows = mcpToolsToEntries(server, listings);
-
-  // Load the existing slice (tolerate absent/corrupt/bare-array → an empty envelope, as client.ts does).
+  // Load the existing slice FIRST (tolerate absent/corrupt/bare-array → an empty envelope, as client.ts does)
+  // — both to resolve a default bridge config from `servers[server]` and to upsert `entries` below.
   const slice: SliceFile = (() => {
     const raw = readJsonSafe(indexPath);
     if (Array.isArray(raw)) return { entries: raw as ToolEntry[] }; // a bare ToolEntry[] index ⇒ keep as entries.
     if (raw && typeof raw === 'object') return raw as SliceFile;
     return {};
   })();
+
+  // Resolve the listTools seam. Given one, use it. Else resolve a bridge config (the explicit `serverConfig`
+  // arg wins; else the slice's `servers[server]`) and DEFAULT to the real `listServerTools` bridge client.
+  // Throw only when there is NEITHER a seam NOR a resolvable config — never fabricate a transport.
+  const config = (opts.serverConfig ?? slice.servers?.[server]) as McpServerConfig | undefined;
+  const listTools =
+    opts.listTools ??
+    (config
+      ? async () => {
+          const { listServerTools } = await import('@piflow/tool-bridge');
+          return listServerTools(server, config);
+        }
+      : () => {
+          throw new Error(
+            `introspectMcpServer: cannot introspect ${JSON.stringify(server)} — no listTools seam and no ` +
+              `serverConfig (pass opts.serverConfig or register the server in <home>/catalog/mcp.index.json)`,
+          );
+        });
+
+  // Fetch the listing (the ONE network call) and map it to rows via the SHARED transform — no reinvention.
+  const listings = await listTools();
+  const rows = mcpToolsToEntries(server, listings);
 
   // UPSERT: drop every PRIOR row for THIS server (refresh, never duplicate), keep all others, append fresh.
   const serverPrefix = `mcp.${server}:`;

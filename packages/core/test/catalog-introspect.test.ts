@@ -17,6 +17,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { z } from 'zod';
+import { disposeBridge } from '@piflow/tool-bridge';
+import type { McpServerConfig } from '@piflow/tool-bridge';
 
 import { introspectMcpServer } from '../src/catalog/introspect.js';
 import { loadMcpCatalog, catalogForSpec } from '../src/catalog/client.js';
@@ -177,5 +183,63 @@ describe('introspectMcpServer — writes a server`s tools/list into the ~/.piflo
     expect(extraEntries).toHaveLength(0);
     const { registry } = assembleRunTools({ spec, extraEntries });
     expect(() => registry.resolve({ allow: ['mcp.everything:add'] })).toThrow(/unknown tool address/);
+  });
+});
+
+// ── INTEGRATION: the DEFAULT listTools seam — through the REAL tool-bridge to a REAL MCP server ─────────
+// No tape, no injected seam: introspect must DEFAULT to `listServerTools` (packages/tool-bridge) when given
+// a `serverConfig`, connecting through the real client → transport → server `tools/list` path. Only the
+// wire is in-memory (InMemoryTransport); the listing is fetched live, mapped, and written to the slice.
+describe('introspectMcpServer — DEFAULT path connects through the tool-bridge (no listTools seam)', () => {
+  /** A real in-process MCP server with two tools (one carrying an inputSchema). Returns the CLIENT transport. */
+  async function standUpServer(): Promise<{ clientTransport: Transport; close: () => Promise<void> }> {
+    const server = new McpServer({ name: 'everything', version: '1.0.0' });
+    server.registerTool(
+      'echo',
+      { description: 'Echo back the input.' },
+      async () => ({ content: [{ type: 'text', text: 'echo' }] }),
+    );
+    server.registerTool(
+      'add',
+      { description: 'Add two numbers.', inputSchema: { a: z.number(), b: z.number() } },
+      async ({ a, b }) => ({ content: [{ type: 'text', text: String(a + b) }] }),
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    return { clientTransport, close: () => server.close() };
+  }
+
+  afterEach(async () => {
+    await disposeBridge();
+  });
+
+  it('with ONLY a serverConfig (inMemory) and NO listTools, fetches tools/list LIVE and writes the entries', async () => {
+    const h = await standUpServer();
+    const serverConfig: McpServerConfig = { transport: 'inMemory', transportInstance: h.clientTransport };
+
+    // NO `listTools` seam — the default MUST resolve the config and connect through the bridge.
+    const res = await introspectMcpServer({ server: 'everything', serverConfig, home, now: NOW });
+
+    expect(res.toolCount).toBe(2);
+    expect(res.addresses.sort()).toEqual(['mcp.everything:add', 'mcp.everything:echo']);
+
+    const { entries } = loadMcpCatalog(home);
+    const byAddr = new Map(entries.map((e) => [e.address, e]));
+    expect(byAddr.get('mcp.everything:echo')?.piName).toBe('everything_echo');
+
+    const add = byAddr.get('mcp.everything:add');
+    expect(add).toBeDefined();
+    // The inputSchema came back from the LIVE server (JSON Schema with a/b number props) — not a tape.
+    expect(add!.parameters).toMatchObject({
+      type: 'object',
+      properties: { a: { type: 'number' }, b: { type: 'number' } },
+    });
+
+    await h.close();
+  });
+
+  it('throws a clear error when there is NEITHER a listTools seam NOR a resolvable config', async () => {
+    // No seam, no serverConfig, and no `servers[server]` in the (absent) slice → introspect cannot connect.
+    await expect(introspectMcpServer({ server: 'nope', home, now: NOW })).rejects.toThrow();
   });
 });
