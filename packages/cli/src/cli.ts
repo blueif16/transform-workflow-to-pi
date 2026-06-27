@@ -19,6 +19,7 @@ import { runWatchCli } from './watch.js';
 import { runExtractCli } from './extract.js';
 import { runRunCli } from './run.js';
 import { runInspectCli } from './inspect.js';
+import { runTelemetryCli } from './telemetry.js';
 import { runGuiCli } from './gui.js';
 
 const HELP = `piflowctl — drive + observe a pi-flow run over the .pi/ run layout
@@ -29,6 +30,9 @@ USAGE
   piflowctl extract <templateDir>           free DAG preview (node count + parallel lanes; no model)
   piflowctl status  <rundir> [--every <s>]  per-node table + stage/rollup (verified on disk)
   piflowctl watch   <rundir> [--notify]     silent sentinel — one line on done / fail / dead-stall
+  piflowctl telemetry <rundir> [nodeId] [--watch] [--verbose] [--json]  agent-facing digest:
+                                            verdicts · cost spine · loop signals · anomaly worklist ·
+                                            failure-onset root cause. --watch = live stream then record.
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
 
@@ -69,6 +73,13 @@ WATCH
   --poll <s>    file-source poll interval (default 20).
   --dead-stall <s>  declare a DEAD stall after the run-status stops advancing this long (default 600).
 
+TELEMETRY
+  <rundir>      a run dir holding .pi/run.json. Default '.'.
+  [nodeId]      scope to one node's full digest; omit for the run rollup + per-node table.
+  --watch / -w  live stream (run-start · node-open · anomaly · node-close · run-end), then the record.
+  --verbose / -v  also stream per chat/tool call lines (full span tree); default = anomalies + verdicts.
+  --json        emit the raw RunDigest (or one node's NodeDigest) for an agent to consume.
+
 LOGS (from @piflow/core)
   -f --follow · --node <id> · --summary · --raw · --poll <ms>   (see 'piflowctl logs --help' semantics)
 
@@ -94,6 +105,9 @@ async function main(): Promise<void> {
       break;
     case 'watch':
       await runWatchCli(rest);
+      break;
+    case 'telemetry':
+      await runTelemetryCli(rest);
       break;
     case 'logs':
       await runLogsCli(rest);
