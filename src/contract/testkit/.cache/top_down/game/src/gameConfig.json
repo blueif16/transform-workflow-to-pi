@@ -1,0 +1,95 @@
+{
+  "screenSize": {
+    "width": {
+      "value": 432,
+      "type": "number",
+      "description": "VIEWPORT design width in pixels (the browser frame, NOT the world). 9:16 PORTRAIT (432x768) so Scale.FIT FILLS a portrait phone and LETTERBOXES centered on a landscape laptop — one fixed canvas plays on both mobile and desktop. The WORLD a level occupies is the level scene's mapWidth/mapHeight (TopDownLevelData.bounds), which may be LARGER than the viewport — the camera follows the player so the viewport stays full at every scroll position; for a single-screen arena mapWidth/mapHeight == this viewport size. OWNED BY core/gameConfig.json (the infra groups) — a module MUST mirror core's screenSize, never diverge (template-contract §4)."
+    },
+    "height": {
+      "value": 768,
+      "type": "number",
+      "description": "VIEWPORT design height in pixels. 9:16 portrait (432x768) — see width. OWNED BY core (template-contract §4)."
+    }
+  },
+  "debugConfig": {
+    "debug": {
+      "value": false,
+      "type": "boolean",
+      "description": "Enable physics debug rendering"
+    }
+  },
+  "renderConfig": {
+    "pixelArt": {
+      "value": true,
+      "type": "boolean",
+      "description": "Enable pixel-art (nearest-neighbour) rendering"
+    }
+  },
+  "playerConfig": {
+    "maxHealth": {
+      "value": 100,
+      "type": "number",
+      "description": "Player maximum health"
+    },
+    "walkSpeed": {
+      "value": 200,
+      "type": "number",
+      "description": "Player 8-direction walk speed (px/s)"
+    },
+    "attackDamage": {
+      "value": 25,
+      "type": "number",
+      "description": "Player melee/ranged attack damage"
+    },
+    "dashSpeed": {
+      "value": 500,
+      "type": "number",
+      "description": "Dash speed (px/s)"
+    },
+    "dashDuration": {
+      "value": 200,
+      "type": "number",
+      "description": "Dash duration (ms)"
+    },
+    "dashCooldown": {
+      "value": 1000,
+      "type": "number",
+      "description": "Dash cooldown between uses (ms)"
+    },
+    "hurtingDuration": {
+      "value": 100,
+      "type": "number",
+      "description": "Hurt-state duration in ms"
+    },
+    "invulnerableTime": {
+      "value": 1000,
+      "type": "number",
+      "description": "Invulnerability window after taking damage (ms)"
+    },
+    "timeLimit": {
+      "value": 60,
+      "type": "number",
+      "description": "Level countdown length in SECONDS for the failModel:'time' family (inert unless failModel === 'time'). Parity with platformer/core."
+    }
+  },
+  "enemyConfig": {
+    "maxHealth": {
+      "value": 50,
+      "type": "number",
+      "description": "Default enemy max health"
+    },
+    "walkSpeed": {
+      "value": 80,
+      "type": "number",
+      "description": "Default enemy movement speed (px/s)"
+    },
+    "damage": {
+      "value": 15,
+      "type": "number",
+      "description": "Default enemy contact damage"
+    }
+  },
+  "controlsHelp": [],
+  "failModel": "health",
+  "objective": ""
+}

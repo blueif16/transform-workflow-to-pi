@@ -1,0 +1,85 @@
+{
+  "screenSize": {
+    "width": {
+      "value": 432,
+      "type": "number",
+      "description": "VIEWPORT design width in pixels (the browser frame). 9:16 PORTRAIT (432x768) so Scale.FIT FILLS a portrait phone and LETTERBOXES centered on a landscape laptop — one fixed canvas plays on both mobile and desktop. A fixed-axis shooter is a single-screen arena: the WORLD == this viewport (bounds.width/height match). OWNED BY core/gameConfig.json (the infra groups) — a module MUST mirror core's screenSize, never diverge (template-contract §4)."
+    },
+    "height": {
+      "value": 768,
+      "type": "number",
+      "description": "VIEWPORT design height in pixels. 9:16 portrait (432x768) — see width. OWNED BY core (template-contract §4)."
+    }
+  },
+  "debugConfig": {
+    "debug": {
+      "value": false,
+      "type": "boolean",
+      "description": "Enable physics debug rendering"
+    }
+  },
+  "renderConfig": {
+    "pixelArt": {
+      "value": true,
+      "type": "boolean",
+      "description": "Enable pixel-art (nearest-neighbour) rendering"
+    }
+  },
+  "playerConfig": {
+    "maxHealth": {
+      "value": 3,
+      "type": "number",
+      "description": "Player cannon hit points (a gallery shooter is typically a few lives/hits)"
+    },
+    "moveSpeed": {
+      "value": 260,
+      "type": "number",
+      "description": "Cannon slide speed along its free axis (px/s) — tunes AxisConstrainedMovement"
+    },
+    "invulnerableTime": {
+      "value": 800,
+      "type": "number",
+      "description": "Invulnerability window after taking a hit (ms)"
+    },
+    "fireCooldownMs": {
+      "value": 280,
+      "type": "number",
+      "description": "Minimum ms between shots — tunes ProjectilePool.cooldownMs (the cannon's rate of fire)"
+    },
+    "bulletSpeed": {
+      "value": 520,
+      "type": "number",
+      "description": "Upward player-bullet speed (px/s) — tunes ProjectilePool.bulletSpeed"
+    },
+    "timeLimit": {
+      "value": 60,
+      "type": "number",
+      "description": "Level countdown length in SECONDS for the failModel:'time' family (inert unless failModel === 'time'). Parity with core."
+    }
+  },
+  "enemyConfig": {
+    "maxHealth": {
+      "value": 1,
+      "type": "number",
+      "description": "Default formation-member health (1 = one-shot, the classic)"
+    },
+    "points": {
+      "value": 10,
+      "type": "number",
+      "description": "Default points awarded per formation member killed"
+    },
+    "baseStepMs": {
+      "value": 600,
+      "type": "number",
+      "description": "Formation inter-step interval at FULL alive count (ms) — tunes FormationMarch; the rack accelerates below this as ranks thin"
+    },
+    "floorStepMs": {
+      "value": 60,
+      "type": "number",
+      "description": "The fastest the formation ever steps (the last enemy; ms) — tunes FormationMarch.floorMs"
+    }
+  },
+  "controlsHelp": [],
+  "failModel": "lives",
+  "objective": ""
+}

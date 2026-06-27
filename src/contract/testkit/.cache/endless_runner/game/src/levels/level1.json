@@ -1,0 +1,41 @@
+{
+  "$comment": "COMMITTED GENERIC DEFAULT runner level (KEEP — names NO game). W2 OVERWRITES this with the materialized blueprint.layout + capability bindings per-game; the construction path is unchanged. Every value here is a neutral default that yields a playable gravity-flap run: a fixed-x avatar, the procedural-obstacle stream (the scroller), score-on-pass (the scorer), and the one-button flap scheme. No theme/art is encoded — slots are absent so the run renders placeholder rects.",
+  "scene": "Level1Scene",
+  "bounds": { "width": 432, "height": 768 },
+  "backgroundColor": "#5ec0e8",
+  "controlScheme": "gravity-flap-1btn",
+  "avatar": {
+    "id": "avatar",
+    "x": 120,
+    "y": 320,
+    "width": 34,
+    "height": 34,
+    "behaviors": [
+      { "ref": "GravityFlapMovement", "params": { "gravity": 1400, "flapImpulse": 420, "maxFallSpeed": 520 } }
+    ]
+  },
+  "obstacles": {
+    "scrollSpeed": 150,
+    "spawnEveryPx": 240,
+    "gapHeight": 210,
+    "gapMargin": 90,
+    "obstacleWidth": 64,
+    "seed": 1,
+    "floorY": 744
+  },
+  "systems": [
+    {
+      "ref": "ObstacleScrollSystem",
+      "params": {
+        "scrollSpeed": 150,
+        "spawnEveryPx": 240,
+        "gapHeight": 210,
+        "gapMargin": 90,
+        "obstacleWidth": 64,
+        "seed": 1,
+        "floorY": 744
+      }
+    },
+    { "ref": "ScoreOnPassSystem", "params": { "valuePerPass": 1 } }
+  ]
+}

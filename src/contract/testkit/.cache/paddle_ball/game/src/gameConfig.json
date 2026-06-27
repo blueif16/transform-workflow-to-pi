@@ -1,0 +1,58 @@
+{
+  "screenSize": {
+    "width": {
+      "value": 432,
+      "type": "number",
+      "description": "VIEWPORT design width in pixels (the browser frame). 9:16 PORTRAIT (432x768) so Scale.FIT FILLS a portrait phone and LETTERBOXES centered on a landscape laptop — one fixed canvas plays on both mobile and desktop. OWNED BY core/gameConfig.json (the infra groups) — a module MUST mirror core's screenSize, never diverge (template-contract §4)."
+    },
+    "height": {
+      "value": 768,
+      "type": "number",
+      "description": "VIEWPORT design height in pixels. 9:16 portrait (432x768) — see width. OWNED BY core (template-contract §4)."
+    }
+  },
+  "debugConfig": {
+    "debug": {
+      "value": false,
+      "type": "boolean",
+      "description": "Enable physics debug rendering"
+    }
+  },
+  "renderConfig": {
+    "pixelArt": {
+      "value": true,
+      "type": "boolean",
+      "description": "Enable pixel-art (nearest-neighbour) rendering"
+    }
+  },
+  "paddleConfig": {
+    "paddleSpeed": {
+      "value": 520,
+      "type": "number",
+      "description": "Paddle slide speed (px/s) for the keys control scheme — tunes PaddleController."
+    },
+    "ballSpeed": {
+      "value": 320,
+      "type": "number",
+      "description": "Ball launch speed (px/s). CONSTANT — a paddle bounce changes the ANGLE, not the speed (RB §1). The sub-step count scales with this so a fast ball never tunnels (RB §2.2)."
+    },
+    "lives": {
+      "value": 3,
+      "type": "number",
+      "description": "Starting lives. A ball below the paddle costs EXACTLY one (RB §2.4); 0 lives = lose."
+    },
+    "brickPoints": {
+      "value": 10,
+      "type": "number",
+      "description": "Default score awarded per cleared breakable brick (BrickGrid)."
+    },
+    "paddleWidth": {
+      "value": 96,
+      "type": "number",
+      "description": "Paddle display width (px). The contact-point steering uses the half-width — a wider paddle is more forgiving but steers less sharply at the same offset (RB §2.1)."
+    }
+  },
+  "controlsHelp": [],
+  "failModel": "lives",
+  "objective": ""
+}

@@ -1,0 +1,44 @@
+{
+  "$comment": "COMMITTED GENERIC DEFAULT runtime level for the gallery_shooter module — names NO game. The shape is ShooterLevelData (scenes/shooter-data.ts). It exists so the EMPTY module builds + runs standalone (a placeholder cannon on its bottom track, a 3x6 placeholder formation, two bunkers, bound to the three base systems). W2 OVERWRITES this file with the materialized per-game level from blueprint.layout + the capability bindings; the construction path is unchanged. Every coordinate is in the 432x768 portrait viewport.",
+  "scene": "Level1Scene",
+  "bounds": { "width": 432, "height": 768 },
+  "backgroundColor": "#0b1026",
+  "controlScheme": "fixed-axis",
+  "playerSpawn": { "x": 216, "y": 712 },
+  "player": {
+    "id": "player",
+    "displayWidth": 44,
+    "displayHeight": 26,
+    "behaviors": [
+      { "ref": "AxisConstrainedMovement", "params": { "moveSpeed": 260, "axis": "x", "min": 24, "max": 408 } }
+    ]
+  },
+  "formation": {
+    "rows": 3,
+    "cols": 6,
+    "colSpacing": 56,
+    "rowSpacing": 48,
+    "originX": 76,
+    "originY": 120,
+    "memberWidth": 32,
+    "memberHeight": 24,
+    "points": 10,
+    "rows_template": [
+      { "points": 30 },
+      { "points": 20 },
+      { "points": 10 }
+    ]
+  },
+  "bunkers": [
+    { "id": "bunker_l", "x": 120, "y": 612, "width": 72, "height": 36, "health": 8 },
+    { "id": "bunker_r", "x": 312, "y": 612, "width": 72, "height": 36, "health": 8 }
+  ],
+  "effects": [
+    { "on": "enemy.died", "play": "shakeLight" }
+  ],
+  "systems": [
+    { "ref": "FormationMarch", "params": { "baseStepMs": 600, "floorMs": 60, "stepPx": 14, "dropPx": 24, "edgeMargin": 8 } },
+    { "ref": "ProjectilePool", "params": { "poolSize": 8, "bulletSpeed": 520, "cooldownMs": 280, "damage": 1 } },
+    { "ref": "WaveLoop", "params": { "maxWaves": 1 } }
+  ]
+}

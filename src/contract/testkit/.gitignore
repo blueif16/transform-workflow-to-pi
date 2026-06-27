@@ -1,3 +1,0 @@
-# Build output: the assembled merged-src + esbuild bundle, content-hashed per
-# archetype. Regenerated on demand by bundle.mjs — never committed.
-.cache/

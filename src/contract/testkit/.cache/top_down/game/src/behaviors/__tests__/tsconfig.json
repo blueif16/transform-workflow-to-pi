@@ -1,0 +1,9 @@
+{
+  "comment": "Test-only path map so tsx resolves the `@contract/*` value imports the SUT carries (addScore from @contract/score, EventBus from @contract/component-surface) to the real shared core-contract source — the same mapping templates/core/tsconfig.json declares for the build. Resolution config ONLY; it touches no component, surface, or harness logic.",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@contract/*": ["../../../../../core-contract/src/*"]
+    }
+  }
+}

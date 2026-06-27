@@ -1,0 +1,68 @@
+{
+  "screenSize": {
+    "width": {
+      "value": 432,
+      "type": "number",
+      "description": "VIEWPORT design width in pixels (the browser frame). 9:16 PORTRAIT (432x768) so Scale.FIT FILLS a portrait phone and LETTERBOXES centered on a landscape laptop — one fixed canvas plays on both mobile and desktop. A grid_logic board is camera-FIXED (no scroll): the board is centered in this viewport via the gridMap origin. OWNED BY core/gameConfig.json (the infra groups) — a module MUST mirror core's screenSize, never diverge (template-contract §4)."
+    },
+    "height": {
+      "value": 768,
+      "type": "number",
+      "description": "VIEWPORT design height in pixels. 9:16 portrait (432x768) — see width. OWNED BY core (template-contract §4)."
+    }
+  },
+  "debugConfig": {
+    "debug": {
+      "value": false,
+      "type": "boolean",
+      "description": "Enable physics debug rendering (inert for grid_logic — no physics; kept for core parity)."
+    }
+  },
+  "renderConfig": {
+    "pixelArt": {
+      "value": false,
+      "type": "boolean",
+      "description": "Enable pixel-art (nearest-neighbour) rendering. Off by default — grid tiles + numerals read cleaner with smoothing."
+    }
+  },
+  "gridConfig": {
+    "boardRows": {
+      "value": 4,
+      "type": "number",
+      "description": "Number of board ROWS (the board DELTA — 4 = classic 2048, 5/6 for a bigger board). The level data's grid.rows mirrors this; the scene reads grid.rows."
+    },
+    "boardCols": {
+      "value": 4,
+      "type": "number",
+      "description": "Number of board COLUMNS (the board DELTA). The level data's grid.cols mirrors this."
+    },
+    "cellSize": {
+      "value": 96,
+      "type": "number",
+      "description": "Cell edge length in world px (the rendered tile size). The board (cols*cellSize x rows*cellSize) is centered in the viewport via the gridMap origin."
+    },
+    "winTarget": {
+      "value": 2048,
+      "type": "number",
+      "description": "The win-target tile value (INV-4 — win when any tile reaches this). The merge-slide DELTA: 1024 = a shorter game, 4096 = longer."
+    },
+    "spawnTwoWeight": {
+      "value": 0.9,
+      "type": "number",
+      "description": "Relative probability weight of spawning a 2 on a changed move (INV-3 DELTA; the classic 90% split)."
+    },
+    "spawnFourWeight": {
+      "value": 0.1,
+      "type": "number",
+      "description": "Relative probability weight of spawning a 4 on a changed move (INV-3 DELTA; the classic 10% split)."
+    },
+    "moveLimit": {
+      "value": 0,
+      "type": "number",
+      "description": "Optional max moves for a failModel:'moves' family (0 = unlimited — the default; the win/lose owner ignores it). Parity hook for a move-budget puzzle variant."
+    }
+  },
+  "controlsHelp": [],
+  "failModel": "none",
+  "objective": ""
+}

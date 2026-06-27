@@ -1,0 +1,26 @@
+{
+  "scene": "Level1Scene",
+  "bounds": {
+    "width": 432,
+    "height": 768
+  },
+  "backgroundColor": "#1b1b2f",
+  "grid": {
+    "rows": 4,
+    "cols": 4,
+    "cellSize": 96,
+    "winTarget": 2048,
+    "spawn": [
+      { "value": 2, "weight": 0.9 },
+      { "value": 4, "weight": 0.1 }
+    ]
+  },
+  "tiles": [
+    { "row": 1, "col": 1, "value": 2 },
+    { "row": 2, "col": 2, "value": 2 }
+  ],
+  "controlScheme": "grid-4way",
+  "systems": [
+    { "ref": "MergeSlideGoal", "params": { "winTarget": 2048 } }
+  ]
+}

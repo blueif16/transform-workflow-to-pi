@@ -1,0 +1,77 @@
+{
+  "screenSize": {
+    "width": {
+      "value": 432,
+      "type": "number",
+      "description": "VIEWPORT design width in pixels (the browser frame). 9:16 PORTRAIT (432x768) — the renderer's internal resolution; the canvas is CSS-scaled to FIT. MIRRORS core's fixed-portrait invariant — a module MUST mirror it, never diverge."
+    },
+    "height": {
+      "value": 768,
+      "type": "number",
+      "description": "VIEWPORT design height in pixels. 9:16 portrait (432x768) — see width."
+    }
+  },
+  "debugConfig": {
+    "debug": {
+      "value": false,
+      "type": "boolean",
+      "description": "Enable Phaser arcade-physics debug overlays."
+    }
+  },
+  "renderConfig": {
+    "pixelArt": {
+      "value": false,
+      "type": "boolean",
+      "description": "Render textures with nearest-neighbour scaling (pixel-art look)."
+    }
+  },
+  "runnerConfig": {
+    "gravity": {
+      "value": 1400,
+      "type": "number",
+      "description": "Downward acceleration (px/s^2) applied to the avatar's vertical velocity each frame. GravityFlapMovement consumes it. Strong enough for constant pressure, not so strong recovery is impossible (RB §1)."
+    },
+    "flapImpulse": {
+      "value": 420,
+      "type": "number",
+      "description": "The FIXED upward velocity (px/s, positive magnitude) a flap SETS the avatar's vy to — deterministic, every flap reaches the same height (RB §1)."
+    },
+    "maxFallSpeed": {
+      "value": 520,
+      "type": "number",
+      "description": "Terminal fall-speed cap (px/s). Without it the avatar drops so fast lower obstacles become unavoidable — the fairness clamp (RB §4)."
+    },
+    "scrollSpeed": {
+      "value": 150,
+      "type": "number",
+      "description": "Speed (px/s) the world scrolls left past the fixed-x avatar. ObstacleScrollSystem consumes it (~2s reaction window across the canvas)."
+    },
+    "gapHeight": {
+      "value": 210,
+      "type": "number",
+      "description": "The FIXED vertical gap height (px) between an obstacle pair. MUST be >= avatar height + margin so the avatar always fits (INV-PASSABLE, RB §3)."
+    },
+    "gapMargin": {
+      "value": 90,
+      "type": "number",
+      "description": "Margin (px) the gap CENTER keeps from the ceiling and the floor band, so no obstacle gap spawns at an unreachable edge (INV-PASSABLE)."
+    },
+    "spawnEveryPx": {
+      "value": 240,
+      "type": "number",
+      "description": "Horizontal spacing (px) between successive obstacle pairs. Consistent spacing is what makes the procedural stream learnable, not random (RB §1)."
+    },
+    "seed": {
+      "value": 1,
+      "type": "number",
+      "description": "The deterministic PRNG seed for the gap-center stream. Same seed => the identical obstacle sequence (reproducible, replayable — INV-DETERMINISTIC, RB §3)."
+    }
+  },
+  "controlsHelp": [
+    "Space / tap = flap",
+    "Thread the gaps",
+    "Touching a pipe, the ground, or the ceiling = game over"
+  ],
+  "failModel": "none",
+  "objective": "Flap to thread the gaps and survive as long as you can; your score is the pipes you pass."
+}

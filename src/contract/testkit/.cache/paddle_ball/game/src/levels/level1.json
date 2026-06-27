@@ -1,0 +1,23 @@
+{
+  "scene": "Level1Scene",
+  "bounds": { "width": 432, "height": 768 },
+  "backgroundColor": "#10121e",
+  "lives": 3,
+  "controlScheme": "paddle-keys",
+  "paddle": { "id": "paddle", "x": 216, "y": 712, "width": 96, "height": 18, "axis": "x" },
+  "ball": { "id": "ball", "x": 216, "y": 690, "size": 14, "speed": 320, "angleDeg": -60 },
+  "brickGrid": {
+    "rows": 5,
+    "cols": 6,
+    "brickWidth": 60,
+    "brickHeight": 22,
+    "gapX": 6,
+    "gapY": 8,
+    "originX": 30,
+    "originY": 90,
+    "hp": 1,
+    "points": 10
+  },
+  "systems": [{ "ref": "BrickGrid", "params": { "brickPoints": 10 } }],
+  "effects": []
+}

@@ -1,0 +1,59 @@
+{
+  "scene": "Level1Scene",
+  "bounds": {
+    "width": 432,
+    "height": 768
+  },
+  "backgroundColor": "#16202e",
+  "playerSpawn": {
+    "x": 216,
+    "y": 384
+  },
+  "player": {
+    "id": "player",
+    "displayHeight": 48,
+    "behaviors": [
+      {
+        "ref": "EightWayMovement",
+        "params": {
+          "walkSpeed": 200,
+          "friction": 1
+        }
+      }
+    ]
+  },
+  "walls": [
+    {
+      "id": "wall_top",
+      "x": 0,
+      "y": 0,
+      "width": 432,
+      "height": 16
+    },
+    {
+      "id": "wall_bottom",
+      "x": 0,
+      "y": 752,
+      "width": 432,
+      "height": 16
+    },
+    {
+      "id": "wall_left",
+      "x": 0,
+      "y": 0,
+      "width": 16,
+      "height": 768
+    },
+    {
+      "id": "wall_right",
+      "x": 416,
+      "y": 0,
+      "width": 16,
+      "height": 768
+    }
+  ],
+  "rewards": [],
+  "threats": [],
+  "effects": [],
+  "systems": []
+}
