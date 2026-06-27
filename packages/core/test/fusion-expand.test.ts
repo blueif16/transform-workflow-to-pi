@@ -126,6 +126,34 @@ describe('expandFusion — obligations pre-node', () => {
   });
 });
 
+describe('expandFusion — op[] post-processing carry (D4 / U5)', () => {
+  // A fusion-activated node authored DIRECTLY in op[] (the unified rep), NOT in hooks/ops. Its post-
+  // processing (a promote derive) belongs to the RESULT, which the judge produces — so the judge clone
+  // MUST carry x.op forward. Authored in op[] (not ops) so the test FAILS without the x.op carry: once
+  // node.ops is retired (U6) a fusion node's derives survive ONLY via this op[] carriage.
+  function specWithOp(op: NodeIntent['op']): WorkflowSpec {
+    const synth: NodeIntent = {
+      label: 'synth',
+      prompt: 'ORIGINAL TASK: write the answer.',
+      tools: { allow: ['fs:read', 'fs:write'] },
+      model: 'base-model',
+      io: { reads: [], produces: ['out/answer.md'], artifacts: [{ path: 'out/answer.md' }] },
+      sandbox: { read: ['src'], write: ['out/**'] },
+      op,
+      fusion: { mode: 'moa', panel: ['model-a', 'model-b'] },
+    };
+    return { meta: { name: 't', description: 'd' }, nodes: [synth] };
+  }
+
+  it('carries x.op onto the JUDGE clone so an op[]-authored derive survives the expansion', () => {
+    const op: NodeIntent['op'] = [
+      { when: 'post', transform: { kind: 'promote', from: '@return:x', to: 'X' } },
+    ];
+    const judge = find(expandFusion(specWithOp(op)), 'synth');
+    expect(judge.op).toEqual(op); // the post-processing belongs to the result the judge produces
+  });
+});
+
 describe('expandFusion — passthrough + loud failure', () => {
   it('returns the SAME spec object when no node activates fusion', () => {
     const spec = specWith(undefined);

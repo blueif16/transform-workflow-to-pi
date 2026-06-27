@@ -16,21 +16,22 @@
 //   promote          → { from, to, merge: transform.reducer }  ← the NAME FLIP reducer→merge   (promote.ts:69)
 //                      (lower.ts:109 — the load-bearing flip the helper unit test pins RED if dropped)
 //
-// D6 verdict (the `project` rich-vocabulary round-trip) — opt-B, recorded in the parity test header +
-// appended to plan §2.4 D6: the rich copy/assemble/union/merge project op-vocabulary is NEVER authored
-// in a `hooks.project` shape (the ONLY shipped `hooks.project` is the bare `{to,from}` in
-// packages/core/test/fixtures/template-min/nodes/w2b-assets/node.json; the rich vocab lives exclusively in
-// registry-record `projections` maps consumed via `projectRegistry`/`runProjection`). So `derivesFromOp`'s
-// project adapter reproduces ONLY the bare `{to: writes[0], from}` obj — byte-identical to `opsToNodeOps`
-// (lower.ts:104-105) and to what the `node.ops.project[]` site consumes. The rich `project` case is
-// out of the op[]-only scope for now (it never entered op[] via `hooks.project`).
+// D6 verdict — opt-A (CORRECTED from opt-B at U1e). A RICH project op (`copy`/`assemble`/`union`/`merge`
+// subtree-drill) IS authored on a literal NodeSpec via `ops.project` (runner.test.ts "runs project BEFORE
+// merge BEFORE promote") — the opt-B grep checked only `node.json` TEMPLATES and missed this literal-spec
+// path. Dropping the rich fields would silently lose a real `applyProjectionOp` capability (violating the
+// additive invariant), so the project adapter carries the rich loose op objs VERBATIM via `transform.ops`
+// (which `TransformBody.project.ops` reserves for exactly this, types.ts:145). The bare `hooks.project` form
+// (no `ops`) still reconstructs `{to: writes[0], from}` (lower.ts:104-105). Both reach `applyProjectionOp`
+// byte-identically to the legacy `node.ops.project[]` site.
 
 import type { OpSpec, Reducer } from '../types.js';
 import type { Seed } from '../workflow/ops/seed.js';
 import type { MergeSpec } from '../workflow/ops/merge.js';
 
-/** A loose project op obj — the shape `applyProjectionOp` consumes (project.ts:73). */
-export type ProjectOp = { to: string; from: string | string[] };
+/** A loose project op obj — the shape `applyProjectionOp` consumes (project.ts:73). Bare = `{to,from}`
+ *  (a `hooks.project`); RICH = `{to, source/copy/assemble/union/…}` (D6/opt-A, carried via `transform.ops`). */
+export type ProjectOp = { to: string; from?: string | string[] } & Record<string, unknown>;
 
 /** A resolved registry-projection marker — the shape `runProjection` consumes (project.ts:261). */
 export type RegistryProject = { source: string; mapRef: string; key: string };
@@ -62,7 +63,15 @@ export function derivesFromOp(op: OpSpec[] | undefined): DerivedExecInputs {
     if (t.kind === 'seed') {
       out.seeds.push({ to: (o.writes ?? [])[0], from: t.from });
     } else if (t.kind === 'project') {
-      out.projects.push({ to: (o.writes ?? [])[0], from: t.from as string | string[] });
+      // (D6/opt-A) A RICH project op (copy/assemble/union/merge subtree-drill) rides `transform.ops` as the
+      // loose op objs `applyProjectionOp` consumes — carried VERBATIM (each already has its own `to`). The
+      // bare `hooks.project` form (no `ops`) reconstructs `{to: writes[0], from}` (lower.ts:104). Either way
+      // the runner's project site (`for rawOp of derived.projects → applyProjectionOp`) gets the exact op obj.
+      if (t.ops?.length) {
+        for (const p of t.ops) out.projects.push(p as ProjectOp);
+      } else {
+        out.projects.push({ to: (o.writes ?? [])[0], from: t.from as string | string[] });
+      }
     } else if (t.kind === 'merge') {
       out.merges.push({ ops: t.ops });
     } else if (t.kind === 'promote') {

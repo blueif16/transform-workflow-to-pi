@@ -161,27 +161,21 @@ per-transform adapter the switched dispatch must construct from an `OpSpec`:
   switching site #3/#4; if opt-A widens the lowering, that is an ADDITIVE change to `lower.ts` gated by the
   parity oracle, not a silent behavior shift.
 
-  - **D6 — RESOLVED in U0 (2026-06-27): opt-B** (the conservative, smaller-surface choice). The rich
-    `project` case is EXPLICITLY OUT OF op[]-only scope for now; the `project` dispatch reproduces ONLY the
-    bare `{to: writes[0], from}` obj (byte-identical to `opsToNodeOps`, `lower.ts:104-105`).
-    EVIDENCE (grepped over the whole repo):
-    - the ONLY shipped `hooks.project` author shape is the BARE `{to, from}` form
-      (`packages/core/test/fixtures/template-min/nodes/w2b-assets/node.json`) — `grep -rln '"(copy|assemble|union)"'`
-      over every `node.json` returns ZERO. No rich `copy`/`assemble`/`union`/`merge` project op-vocabulary is
-      authored in ANY shipped `hooks.project`.
-    - the rich `applyProjectionOp` vocabulary (`project.ts:84-228`) is reached EXCLUSIVELY through a
-      registry-record `projections` map via `projectRegistry`/`runProjection` (`union-projection.test.ts`),
-      NEVER through `hooks.project`. `lower.ts:61-64` lowers `hooks.project` to `{kind:'project', from}` only.
-    - a bare `{to, from}` project op carries no `copy/assemble/merge/union` key, so `applyProjectionOp` hits
-      its "no recognized op" fall-through (`project.ts:230`) — the inline `hooks.project` derive is itself a
-      graceful executor-level NO-OP today (reads the source, writes nothing).
-    CONSEQUENCE: the rich `project` case was never lossy through `op[]` because it never ENTERED `op[]` via
-    `hooks.project`. opt-A (widen the lowering to carry the rich op set into `transform.ops`) is UNNECESSARY
-    — there is no rich `hooks.project` author shape to carry. U1b's `project` site (#3/#4) switches the bare
-    `{to,from}` case to `derivesFromOp(node.op).projects` with NO lowering change. If a rich `hooks.project`
-    author shape is EVER introduced, reopen D6 and re-evaluate opt-A.
-    Pinned by the U0 oracle: `op-derive-ops-parity.test.ts` (header comment + the `derivesFromOp` project-adapter
-    assertion + the runtime-parity `project` family riding the byte-identical run).
+  - **D6 — FINAL (CORRECTED at U1e, 2026-06-27): opt-A.** U0 first resolved opt-B by grepping the rich
+    `copy`/`assemble`/`union` vocabulary over `node.json` TEMPLATES only — which is true (no rich
+    `hooks.project` author shape ships) but INCOMPLETE: the rich project is also authored on a LITERAL
+    `NodeSpec` via `ops.project` (`runner.test.ts` "runs project BEFORE merge BEFORE promote" authors
+    `{to:'spec/derived.json', source:'spec/source.json', copy:'payload'}`). When U1e migrated that literal
+    `ops`→`op[]`, opt-B's bare `{to,from}` reconstruction DROPPED `copy`/`source` → the project no-op'd →
+    `spec/derived.json` never written → the test ENOENT'd. Dropping a real `applyProjectionOp` capability
+    violates the additive invariant, so opt-B is wrong.
+    **opt-A implemented:** `derivesFromOp`'s project adapter carries the rich loose op objs VERBATIM via
+    `transform.ops` (`op-dispatch.ts`; `TransformBody.project.ops` reserves exactly this, `types.ts:145`).
+    The bare `hooks.project` form (no `ops`) still reconstructs `{to: writes[0], from}` (`lower.ts:104-105`).
+    NO `lower.ts` widening was needed (no rich `hooks.project` exists; the rich form is authored directly in
+    `op[]` via `transform.ops`). Pinned by the U0 runtime-parity oracle (bare project) + the migrated
+    `runner.test.ts` ordering test (rich `copy` project via `transform.ops`). The full `packages/core` suite
+    is green (726 passed) with the rich-project executor REACHED.
 
 ---
 
@@ -306,6 +300,29 @@ GREEN after. Every unit preserves the invariant by gating on the §5 GOLDEN pari
   one lane → typecheck fails / a parity case goes RED → confirms the suite actually pins the absence.
 - depends-on: U1a, U1b, U1c, U1d, U5 (every read switched first).
 - parallel-safe-with: NONE — terminal unit.
+
+**U1e · Migrate the literal-`ops` TEST authorings to `op[]` (the plan missed it).**
+- why: U1a/U1b switched the runner's derive dispatch to read `node.op` (`derivesFromOp`), so tests that
+  construct LITERAL `NodeSpec`s with `ops:{…}` (bypassing the loader → `node.op` undefined) now SILENTLY
+  derive nothing. Migrate each literal `ops:{…}` field to the equivalent `op:[…]` per the §2.4 table
+  (incl. the promote `merge→reducer` NAME FLIP). ADDITIVE-to-behavior: only the authoring rep changes; no
+  assertion/fixture touched. Cluster: `packages/core/test/runner.test.ts` (1 seed, 5 promote, 1 merge-produce,
+  3 merge nodes migrated cleanly).
+- scope: `packages/core/test/**` literal `ops:{…}` authorings (NOT `merge:{ops:[…]}` inner arrays, NOT
+  `opFailures`). No `src`.
+- depends-on: U1a, U1b (the dispatch must already read `op[]`).
+- oracle: full `packages/core` suite green (modulo the gated-live-pi env fail).
+- ⚠ U1e FINDING — D6 evidence was INCOMPLETE: a RICH `project` op IS authored in a test literal.
+  `runner.test.ts:1769` (`runs project BEFORE merge BEFORE promote`) authors
+  `ops.project = [{to, source, copy:'payload'}]` — a `copy` subtree-drill, NOT the bare `{to,from}`. The D6
+  grep ("ZERO rich `hooks.project` anywhere") scanned `node.json` TEMPLATES only, missing this literal.
+  Under opt-B, `derivesFromOp` reproduces project as ONLY `{to: writes[0], from}` (op-dispatch.ts:64-65) —
+  it DROPS `copy`/`source`, so the op[] form is a graceful executor NO-OP and `spec/derived.json` is never
+  written. This ONE node has NO faithful op[] migration without either (opt-A) widening `derivesFromOp`/the
+  lowering to carry the rich op set into `transform.ops` (a `src` change — out of U1e scope), or rewriting
+  the test's derive mechanism (changes fixtures/derive-execution — forbidden by the byte-identical bar). It
+  is left on legacy `ops` and stays RED pending a D6 re-decision by the owner. DECISION NEEDED before U6
+  (which deletes `NodeSpec.ops` — that would make this test un-loadable, not just RED).
 
 ### 4.1 Dependency graph (text)
 

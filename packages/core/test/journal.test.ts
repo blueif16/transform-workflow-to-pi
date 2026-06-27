@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { compile } from '../src/index.js';
+import { compile, loadTemplate } from '../src/index.js';
 import type { NodeIntent, WorkflowSpec, NodeSpec, Workflow } from '../src/index.js';
 import { runWorkflow, defaultExecRunner, type ExecRunner } from '../src/runner/index.js';
 import { piDir, stateFile } from '../src/runner/layout.js';
@@ -85,6 +85,67 @@ describe('envelopeHash — the per-node identity', () => {
   it('flips when the return contract (returnSchema/returnMode) changes', () => {
     const tightened: NodeSpec = { ...node, io: { ...node.io, returnMode: 'required' } };
     expect(envelopeHash(tightened, resolved, 'm1')).not.toBe(envelopeHash(node, resolved, 'm1'));
+  });
+});
+
+// ── 1b. PURE: envelopeHash tracks the UNIFIED op[] (U1d · ⚠ D3) ───────────────────────────────────
+// The envelope must hash the canonical `op[]` (a node's side-effect derives), NOT the legacy `node.ops`.
+// An `op[]`-only node (authored directly in `op[]`, the post-U6 reality) carries `node.ops === undefined`,
+// so hashing `node.ops` collapses EVERY such node's derives to `ops:null` → two nodes whose ONLY difference
+// is their `op[]` derive content collide on one hash → a stale REUSE that silently skips the changed derive.
+// RED MUTATION (the current pre-fix code IS the mutation): `journal.ts` hashes `ops: node.ops ?? null` →
+// the two-different-derives assertion below collides → RED. The fix hashes `op: node.op ?? null` → GREEN.
+describe('envelopeHash — hashes the unified op[] (so a derive edit re-runs)', () => {
+  const resolved = { piTools: ['read', 'write'] };
+
+  // Two `op[]`-only nodes (node.ops undefined — the post-U6 shape) whose ONLY difference is the derive
+  // BODY. `compile` carries `intent.op` → `NodeSpec.op` verbatim (dag.ts `materialize`), leaving `node.ops`
+  // undefined — exactly the silent-collision case D3 cures.
+  const opNode = (promoteTo: string): NodeSpec =>
+    compile(wf([n('A', [], ['a.txt'], {
+      op: [{ when: 'post', transform: { kind: 'promote', from: 'out/report.json', to: promoteTo, reducer: 'append' } }],
+    })])).nodes.a;
+
+  it('two op[]-only nodes that differ ONLY in op[] derive content hash DIFFERENTLY', () => {
+    const a = opNode('summaryA');
+    const b = opNode('summaryB');
+    // Sanity: these ARE op[]-only (the collision precondition) — node.ops is the retired rep.
+    expect(a.ops).toBeUndefined();
+    expect(b.ops).toBeUndefined();
+    expect(a.op).not.toEqual(b.op); // the only difference is the derive body
+    // THE load-bearing assertion: a changed derive must flip the envelope (else the next resume REUSEs a
+    // node whose side-effect changed). RED when journal.ts hashes node.ops (both → ops:null → collide).
+    expect(envelopeHash(a, resolved, 'm1')).not.toBe(envelopeHash(b, resolved, 'm1'));
+  });
+
+  // The PARITY half: a `hooks`-authored twin and an `op[]`-authored twin of the SAME derive lower (via the
+  // template loader's `lowerToOps`) to the SAME `op[]` → the SAME envelope hash. Authored ON DISK so the
+  // real lowering runs (the in-memory `compile` does NOT lower `hooks` → `op`; only `loadTemplate` does).
+  async function templateWith(def: Record<string, unknown>): Promise<NodeSpec> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-journal-op-'));
+    await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ id: 't', name: 't', description: 'd', phases: ['build'] }));
+    const ndir = path.join(dir, 'nodes', String(def.id));
+    await fs.mkdir(ndir, { recursive: true });
+    await fs.writeFile(path.join(ndir, 'node.json'), JSON.stringify(def));
+    await fs.writeFile(path.join(ndir, 'prompt.md'), 'do the thing');
+    const spec = await loadTemplate(dir);
+    await fs.rm(dir, { recursive: true, force: true });
+    return compile(spec).nodes[String(def.id)];
+  }
+
+  it('a hooks-twin and an op[]-twin of the SAME derives produce the SAME hash (both lower to op[])', async () => {
+    const contract = { artifacts: ['out/report.json'], owns: ['out/**'], readScope: ['{{RUN}}'] };
+    const hooksTwin = await templateWith({
+      id: 'd', phase: 'build', deps: [], programmatic: true, contract,
+      hooks: { promote: [{ from: 'out/report.json', to: 'summary', merge: 'append' }] },
+    });
+    const opTwin = await templateWith({
+      id: 'd', phase: 'build', deps: [], programmatic: true, contract,
+      op: [{ when: 'post', transform: { kind: 'promote', from: 'out/report.json', to: 'summary', reducer: 'append' } }],
+    });
+    // Both lower to the SAME op[] (the additive invariant) — so the same hashed field → the same hash.
+    expect(hooksTwin.op).toEqual(opTwin.op);
+    expect(envelopeHash(hooksTwin, resolved, 'm1')).toBe(envelopeHash(opTwin, resolved, 'm1'));
   });
 });
 

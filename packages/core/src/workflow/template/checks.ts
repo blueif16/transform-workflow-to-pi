@@ -12,6 +12,7 @@ import path from 'node:path';
 import type { SchemaValidator } from '../../runner/schema.js';
 import type { LoadedNode } from './types.js';
 import { isRunRooted, runRelative, stateChannels } from './tokens.js';
+import { lowerToOps } from './lower.js';
 
 /** (1) SCHEMA: every node.json + meta.json validates against the T1 schemas (the one ajv). */
 export function checkSchemas(
@@ -176,14 +177,22 @@ export function checkChannels(nodes: LoadedNode[]): string[] {
     // Collect channels this node consumes across its token-bearing surfaces.
     const consumed = new Set<string>();
     for (const r of n.def.contract?.readScope ?? []) stateChannels(r).forEach((c) => consumed.add(c));
-    for (const s of n.def.hooks?.seed ?? []) stateChannels(s.from).forEach((c) => consumed.add(c));
+    // Seeds: derive from the CANONICAL op[] (lowerToOps lowers hooks→op[] AND returns a directly-authored
+    // op[] verbatim), so an op[]-authored seed's {{state.*}} consumption is seen identically to a hooks one.
+    for (const o of lowerToOps(n.def) ?? [])
+      if (o.transform?.kind === 'seed') stateChannels(o.transform.from).forEach((c) => consumed.add(c));
     for (const c of stateChannels(n.prose)) consumed.add(c);
     if (!consumed.size) continue;
     const upstream = upstreamOf(n.def.id, byId);
     // The channels any upstream node promotes.
     const available = new Set<string>();
     for (const up of upstream) {
-      for (const p of byId.get(up)?.def.hooks?.promote ?? []) available.add(p.to);
+      const upNode = byId.get(up);
+      if (!upNode) continue;
+      // Producers: derive promotes from the CANONICAL op[] so an op[]-authored promote registers as a
+      // channel producer exactly like a hooks-authored one (lowerToOps covers BOTH authorings).
+      for (const o of lowerToOps(upNode.def) ?? [])
+        if (o.transform?.kind === 'promote') available.add(o.transform.to);
     }
     for (const ch of consumed) {
       if (!available.has(ch)) {

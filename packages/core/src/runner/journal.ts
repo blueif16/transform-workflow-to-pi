@@ -51,8 +51,15 @@ export interface Journal {
 }
 
 /** The journal schema version. Bumped when the envelope-hash inputs change (G1/G6 fold-in) — bumped to 2
- *  for G5: the envelope now folds a node's `checkpoint` question and `JournalNode` carries `checkpointReply`. */
-export const JOURNAL_VERSION = 2;
+ *  for G5: the envelope now folds a node's `checkpoint` question and `JournalNode` carries `checkpointReply`.
+ *  Bumped to 3 (op⊖ops unification, ⚠ D3): the envelope now hashes the UNIFIED `op[]` (`node.op`) instead
+ *  of the legacy `node.ops`. `op[]` is the superset rep (`node.ops` is being retired in U6, leaving it
+ *  `undefined` for every derive node → the old `ops:null` hash would flip silently); hashing `op[]` is the
+ *  correct, superset-tracking choice. The bump forces a ONE-TIME re-run on the first resume after upgrade
+ *  (a stale version-2 journal's per-node hashes no longer match the new `op[]`-envelope → `decideResume`
+ *  re-runs every node, then writes a clean version-3 journal) — the designed mechanism, exactly as the
+ *  G1/G6 fold-in comment below describes. */
+export const JOURNAL_VERSION = 3;
 
 // ── layout helpers ───────────────────────────────────────────────────────────────────────────────
 
@@ -85,7 +92,8 @@ function sha256(data: string | Uint8Array): string {
  *  - model: the run-level model pin (ctx.model) TODAY.
  *  - returnSchema / returnMode: the structured-return contract.
  *  - artifacts / checks / policy / fillSentinel: the artifact contract (a tightening must re-verify).
- *  - ops: seed/project/merge/promote/registryProject (derive-from-input behavior).
+ *  - op: the unified `op[]` derive envelope (seed/project/merge/promote/projectRegistry + gates) — the
+ *        canonical rep (⚠ D3; replaces the legacy `ops`, which U6 retires).
  *
  * EXTENSION POINT (G1/G6): once per-node `node.model`/`node.tier` (G1) and a resolved `agentType`
  * definition (G6) land, fold the RESOLVED per-node model + agentType def into `envelope` below (and bump
@@ -108,7 +116,11 @@ export function envelopeHash(node: NodeSpec, resolved: EnvelopeResolve, model: s
     checks: node.io.checks ?? null,
     policy: node.io.policy ?? null,
     fillSentinel: node.io.fillSentinel ?? null,
-    ops: node.ops ?? null,
+    // (⚠ D3) Hash the UNIFIED `op[]` (the canonical derive rep), NOT the legacy `node.ops`. `node.ops` is
+    // being retired (U6) → it is `undefined` for every `op[]`-authored derive node, so hashing it would
+    // collapse all their derives to `ops:null` (a silent collision → a stale REUSE that skips a changed
+    // derive). `op[]` is the superset; an `op[]` edit MUST flip the envelope. See JOURNAL_VERSION (bumped).
+    op: node.op ?? null,
     // (G5) Fold the checkpoint QUESTION (kind/prompt/choices/default/headless) into the envelope so an
     // edited question re-prompts on resume (the journaled reply no longer matches the new identity).
     checkpoint: node.checkpoint ?? null,

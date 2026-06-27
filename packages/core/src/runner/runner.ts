@@ -59,6 +59,7 @@ import { runMerge, applyMergeOp } from '../workflow/ops/merge.js';
 import { applyProjectionOp, runProjection } from '../workflow/ops/project.js';
 import { readJsonSafe, absUnder } from '../workflow/ops/util.js';
 import { parsePromote, extractPromoteValue, barrierMerge, type NodeUpdate, type ResolvedPromote } from '../workflow/ops/promote.js';
+import { derivesFromOp } from './op-dispatch.js';
 import { loadState, persistState } from '../workflow/state.js';
 import { createLimiter, normalizeConcurrent, type Limiter } from './limit.js';
 import {
@@ -991,12 +992,17 @@ async function runProgrammatic(ctx: RunContext, srcNode: NodeSpec): Promise<Node
     return finishNode(ctx, srcNode, rec, t0, 'error', `io token resolution failed: ${(e as Error).message}`, [], [(e as Error).message]);
   }
 
+  // (U1a/U1b) The derive DISPATCH now reads the canonical `op[]` (via `derivesFromOp`), NOT `node.ops`.
+  // One reconstruction per node; each derive site below iterates the matching family list. The resolution +
+  // executor calls are byte-identical to the legacy `node.ops?.{…}` sites — only the SOURCE changed.
+  const derived = derivesFromOp(node.op);
+
   try {
     // PRE SEED ops (S2): stage each declared starting artifact onto the host run dir (= `{{RUN}}`). No
     // sandbox mirror (a programmatic node spawns no pi). A `{{state.*}}` naming a not-yet-promoted channel
     // throws → fail loudly (a real wiring error), never a silent skip.
     try {
-      for (const seed of node.ops?.seed ?? []) {
+      for (const seed of derived.seeds) {
         await stageSeed(seed, resolveCtx, ctx.outDir);
       }
     } catch (e) {
@@ -1045,30 +1051,23 @@ async function runProgrammatic(ctx: RunContext, srcNode: NodeSpec): Promise<Node
     // the status ladder below.
     const opFailures: { detail: string; onFailure: OnFailure }[] = [];
     // project: derive from a FROZEN source JSON read once (graceful no-op on an authoring-only spec).
-    for (const rawOp of node.ops?.project ?? []) {
+    for (const rawOp of derived.projects) {
       const op = resolveDeep(rawOp as Record<string, unknown>, resolveCtx);
       const srcRel = (op.source as string) ?? (Array.isArray(op.from) ? (op.from[0] as string) : (op.from as string));
       const spec = srcRel ? await readJsonSafe(absUnder(ctx.outDir, srcRel)) : undefined;
       const name = String(op.op ?? Object.keys(op).find((k) => k === 'copy' || k === 'assemble' || k === 'merge') ?? 'project');
       await applyProjectionOp(name, op, spec, ctx.outDir);
     }
-    // registryProject: the op-map lives in the registry record (mapRef), resolved by `key`.
-    if (node.ops?.registryProject) {
-      const pg = resolveDeep(node.ops.registryProject as unknown as Record<string, unknown>, resolveCtx) as { source: string; mapRef: string; key: string };
+    // registryProject: the op-map lives in the registry record (mapRef), resolved by `key`. The single
+    // `derived.registryProjects` loop covers BOTH hooks- and op[]-authored nodes (the legacy `if` arm folded in).
+    for (const rp of derived.registryProjects) {
+      const pg = resolveDeep({ source: rp.source, mapRef: rp.mapRef, key: rp.key }, resolveCtx) as { source: string; mapRef: string; key: string };
       await runProjection({ source: pg.source, mapRef: pg.mapRef, key: pg.key }, ctx.outDir);
-    } else {
-      for (const o of node.op ?? []) {
-        const t = o.transform;
-        if (t?.kind !== 'projectRegistry') continue;
-        if (o.when && o.when !== 'post' && o.when !== 'always' && o.when !== 'on-success') continue;
-        const pg = resolveDeep({ source: t.source, mapRef: t.mapRef, key: t.key }, resolveCtx) as { source: string; mapRef: string; key: string };
-        await runProjection({ source: pg.source, mapRef: pg.mapRef, key: pg.key }, ctx.outDir);
-      }
     }
     // merge: the `{ ops:[...] }` MergeSpec (fold|concat|reconcile|run) — incl. a gen-hook `run` op.
-    if (node.ops?.merge) {
+    for (const m of derived.merges) {
       const mergeOnFailure = ((node.op ?? []).find((o) => o.transform?.kind === 'merge')?.onFailure ?? 'block') as OnFailure;
-      const merged = await runMerge(resolveDeep(node.ops.merge, resolveCtx), ctx.outDir);
+      const merged = await runMerge(resolveDeep(m, resolveCtx), ctx.outDir);
       for (const r of merged?.ops ?? []) {
         if (r.failed) opFailures.push({ detail: `merge ${r.op} failed${r.exit != null ? ` (exit ${r.exit})` : ''}${r.stderr ? `: ${r.stderr}` : ''}`, onFailure: mergeOnFailure });
       }
@@ -1158,10 +1157,10 @@ async function runProgrammatic(ctx: RunContext, srcNode: NodeSpec): Promise<Node
     // PROMOTE POST op (S3): on an OK node, LIFT each declared output into a RunState channel (the driver
     // merges it at the stage barrier). A programmatic node has no parsed return, so an `@return:` source has
     // no value to drill — an artifact source reads under `{{RUN}}`. A promote of nothing throws → error.
-    if (st === 'ok' && node.ops?.promote?.length) {
+    if (st === 'ok' && derived.promotes.length) {
       try {
         const promotes: ResolvedPromote[] = [];
-        for (const raw of node.ops.promote) {
+        for (const raw of derived.promotes) {
           const spec = parsePromote(raw);
           const value = await extractPromoteValue(spec, { run: ctx.outDir, returnValue: undefined });
           promotes.push({ to: spec.to, value, merge: spec.merge });
@@ -1339,6 +1338,11 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     return finishNode(ctx, node, rec, t0, 'error', `sandbox create failed: ${(e as Error).message}`, []);
   }
 
+  // (U1a/U1b) The derive DISPATCH now reads the canonical `op[]` (via `derivesFromOp`), NOT `node.ops`.
+  // One reconstruction per node; each derive site below iterates the matching family list. The resolution +
+  // executor calls are byte-identical to the legacy `node.ops?.{…}` sites — only the SOURCE changed.
+  const derived = derivesFromOp(node.op);
+
   try {
     // STAGE io.reads from the host run dir INTO the sandbox at the same relative path (filesystem-as-
     // contract across sandboxes). A missing read is left to the node's own contract check downstream.
@@ -1353,7 +1357,7 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     // already-filled dest is not re-staged (idempotent). A `{{state.*}}` naming a not-yet-promoted channel
     // throws → fail the node loudly (a real wiring error), never a silent skip.
     try {
-      for (const seed of node.ops?.seed ?? []) {
+      for (const seed of derived.seeds) {
         const res = await stageSeed(seed, resolveCtx, ctx.outDir);
         if (res.staged) await stageHostPathIntoSandbox(sandbox, ctx.outDir, seed.to);
       }
@@ -1534,36 +1538,26 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     const opFailures: { detail: string; onFailure: OnFailure }[] = [];
     if (killed === null && result.code === 0) {
       // project: derive from a FROZEN source JSON read once (graceful no-op on an authoring-only spec).
-      for (const rawOp of node.ops?.project ?? []) {
+      for (const rawOp of derived.projects) {
         const op = resolveDeep(rawOp as Record<string, unknown>, resolveCtx);
         const srcRel = (op.source as string) ?? (Array.isArray(op.from) ? (op.from[0] as string) : (op.from as string));
         const spec = srcRel ? await readJsonSafe(absUnder(ctx.outDir, srcRel)) : undefined;
         const name = String(op.op ?? Object.keys(op).find((k) => k === 'copy' || k === 'assemble' || k === 'merge') ?? 'project');
         await applyProjectionOp(name, op, spec, ctx.outDir);
       }
-      // registryProject: the op-map lives in the registry record (mapRef), resolved by `key`.
-      if (node.ops?.registryProject) {
-        const pg = resolveDeep(node.ops.registryProject as unknown as Record<string, unknown>, resolveCtx) as { source: string; mapRef: string; key: string };
+      // registryProject: the op-map lives in the registry record (mapRef), resolved by `key`. The single
+      // `derived.registryProjects` loop covers BOTH hooks- and op[]-authored nodes (the legacy `if` arm folded
+      // into the `else` op[] dispatch — #12, project.ts:184: without this the built `union` path / `index.json`
+      // was silently dropped for an op[]-authored node).
+      for (const rp of derived.registryProjects) {
+        const pg = resolveDeep({ source: rp.source, mapRef: rp.mapRef, key: rp.key }, resolveCtx) as { source: string; mapRef: string; key: string };
         await runProjection({ source: pg.source, mapRef: pg.mapRef, key: pg.key }, ctx.outDir);
-      } else {
-        // (M6 · #12) A node authored in the unified `op[]` grammar carries its registry projection on
-        // `transform:{kind:'projectRegistry'}`, NOT on the legacy `node.ops.registryProject` (the loader
-        // lowers `hooks` INTO `op[]`, never back). Without this dispatch the built `union` path
-        // (project.ts:184) was silently DROPPED for an op[]-authored node — `index.json` never written.
-        // Guarded on the ELSE so a legacy node (which carries BOTH `ops` and `op`) never double-runs.
-        for (const o of node.op ?? []) {
-          const t = o.transform;
-          if (t?.kind !== 'projectRegistry') continue;
-          if (o.when && o.when !== 'post' && o.when !== 'always' && o.when !== 'on-success') continue;
-          const pg = resolveDeep({ source: t.source, mapRef: t.mapRef, key: t.key }, resolveCtx) as { source: string; mapRef: string; key: string };
-          await runProjection({ source: pg.source, mapRef: pg.mapRef, key: pg.key }, ctx.outDir);
-        }
       }
       // merge: the `{ ops:[...] }` MergeSpec (fold|concat|reconcile|run) — incl. the gen-hook `run` op. The
       // merge transform's lowered `op` carries the onFailure that a failing `run` sub-op now routes through.
-      if (node.ops?.merge) {
+      for (const m of derived.merges) {
         const mergeOnFailure = ((node.op ?? []).find((o) => o.transform?.kind === 'merge')?.onFailure ?? 'block') as OnFailure;
-        const merged = await runMerge(resolveDeep(node.ops.merge, resolveCtx), ctx.outDir);
+        const merged = await runMerge(resolveDeep(m, resolveCtx), ctx.outDir);
         for (const r of merged?.ops ?? []) {
           if (r.failed) opFailures.push({ detail: `merge ${r.op} failed${r.exit != null ? ` (exit ${r.exit})` : ''}${r.stderr ? `: ${r.stderr}` : ''}`, onFailure: mergeOnFailure });
         }
@@ -1792,10 +1786,10 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     // An artifact source reads under `{{RUN}}` (= outDir); an `@return:<field>` source drills the parsed
     // structured return (lastJsonBlock, widened). A promote of nothing throws → downgrade the node to error
     // (a real wiring breach, surfaced loudly), and emit no update.
-    if (st === 'ok' && node.ops?.promote?.length) {
+    if (st === 'ok' && derived.promotes.length) {
       try {
         const promotes: ResolvedPromote[] = [];
-        for (const raw of node.ops.promote) {
+        for (const raw of derived.promotes) {
           const spec = parsePromote(raw);
           const value = await extractPromoteValue(spec, { run: ctx.outDir, returnValue: parsed ?? undefined });
           promotes.push({ to: spec.to, value, merge: spec.merge });
