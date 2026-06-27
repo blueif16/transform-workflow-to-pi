@@ -96,8 +96,24 @@ function resultText(result: unknown): string | undefined {
   return text.length > PREVIEW_CAP ? text.slice(0, PREVIEW_CAP) : text;
 }
 
+/** The live, NON-DESTRUCTIVE per-node read the telemetry stream polls mid-run (no open-span side effect). */
+export interface LiveMetrics {
+  model: string | null;
+  provider: string | null;
+  modelCalls: number;
+  toolCalls: number;
+  maxToolRepeat: number;
+  repeatedTool: string | null;
+  retries: number;
+  stopReason: string | null;
+  truncated: boolean;
+  tokens: RichTokens;
+}
+
 export interface NodeAccumulator {
   push(e: PiEvent): void;
+  /** Current counters WITHOUT closing open tool spans — safe to call any number of times mid-run. */
+  metrics(): LiveMetrics;
   finalize(statusRec?: NodeStatusRecordLike): { rich: RichNode; io: LeanIo };
 }
 
@@ -221,6 +237,15 @@ export function createNodeAccumulator(): NodeAccumulator {
         }
         default: break;
       }
+    },
+
+    metrics(): LiveMetrics {
+      return {
+        model, provider,
+        modelCalls, toolCalls, maxToolRepeat, repeatedTool, retries, stopReason,
+        truncated: stopReason === 'max_tokens' || stopReason === 'length',
+        tokens: { ...tok, billable: tok.input + tok.output },
+      };
     },
 
     finalize(statusRec: NodeStatusRecordLike = {}) {

@@ -292,6 +292,12 @@ export type {
 export { buildRunView } from './observe/index.js';
 export type { RunView, RunViewNode, RunViewStage, RunViewEdge, RunTokens } from './observe/index.js';
 
+// The TELEMETRY tier — the agent-facing PROJECTION over the run-view (a lens, not a second collector).
+// `projectRunDigest` = the one-shot record; `telemetryStream` = edge-triggered live deltas over `watchRun`;
+// `toGenAiAttributes` = the OTel gen_ai.* bridge. Drives `piflowctl telemetry` and node self-debug.
+export { projectRunDigest, telemetryStream, toGenAiAttributes, DEFAULT_THRESHOLDS } from './observe/index.js';
+export type { RunDigest, NodeDigest, Anomaly, AnomalyKind, RootCause, TelemetryEvent, Verbosity, StreamOpts, TelemetryThresholds } from './observe/index.js';
+
 // The FLEET tier of the observe surface — ONE registry + ONE discovery + ONE snapshot the CLI, the TUI, and
 // the GUI all share, so every view is exposed to the SAME registered repos. `registerProductRoot` is the
 // write side a run calls at start (runFromTemplate) so discovery needs no manual `--root`. See observe/discover.ts.

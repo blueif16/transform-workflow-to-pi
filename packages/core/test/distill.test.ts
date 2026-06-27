@@ -198,6 +198,27 @@ describe('createNodeAccumulator — loop signals (modelCalls, maxToolRepeat)', (
   });
 });
 
+// metrics() is the NON-DESTRUCTIVE live read the telemetry stream uses mid-run — unlike finalize() it
+// must NOT close still-open tool spans (calling it repeatedly can't corrupt later state).
+describe('createNodeAccumulator — metrics() (live, non-destructive)', () => {
+  it('reflects current counters without consuming open spans', () => {
+    const acc = createNodeAccumulator();
+    acc.push({ type: 'message_end', message: { role: 'assistant', usage: { input: 5, output: 2, totalTokens: 40 } } });
+    acc.push({ type: 'tool_execution_start', toolName: 'bash', toolCallId: 'x', args: { command: 'ls' }, _t: 0 });
+    // tool 'x' is still OPEN here — metrics() must read live state without finalizing it.
+    const m1 = acc.metrics();
+    expect(m1.modelCalls).toBe(1);
+    expect(m1.toolCalls).toBe(1);
+    expect(m1.tokens.input).toBe(5);
+    expect(m1.tokens.contextPeak).toBe(40);
+    // a second metrics() call returns the same live view (no double-close side effect)…
+    expect(acc.metrics().toolCalls).toBe(1);
+    // …and finalize() afterward still produces exactly ONE timeline span for the open call.
+    const rich = acc.finalize().rich;
+    expect(rich.timeline).toHaveLength(1);
+  });
+});
+
 describe('createNodeAccumulator — thinking chars', () => {
   it('sums thinking_delta string lengths ⇒ "ab"+"cde" = 5', () => {
     const rich = reduce([

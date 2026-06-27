@@ -17,6 +17,12 @@ export type { RunView, RunViewNode, RunViewStage, RunViewEdge, RunTokens, ScopeB
 export { loadModelCatalog, contextWindowFor, DEFAULT_CONTEXT_WINDOW } from './models.js';
 export type { ModelCaps, ModelCatalog } from './models.js';
 
+// TELEMETRY tier — the agent-facing PROJECTION over the run-view (a lens, not a second collector). RECORD
+// (`projectRunDigest`) is the one-shot RunDigest; STREAM (`telemetryStream`) folds a `watchRun` stream into
+// edge-triggered TelemetryEvent deltas. Field names track OTel gen_ai.* (`toGenAiAttributes` exports them).
+export { projectRunDigest, telemetryStream, toGenAiAttributes, DEFAULT_THRESHOLDS } from './telemetry.js';
+export type { RunDigest, NodeDigest, Anomaly, AnomalyKind, RootCause, TelemetryEvent, Verbosity, StreamOpts, TelemetryThresholds } from './telemetry.js';
+
 // FLEET tier — the per-fleet counterpart to the per-run readers above: the global product REGISTRY
 // (`~/.piflow/products.json`) + the §D9 run-home DISCOVERY + the unified SNAPSHOT builder + the shared
 // thread-row `summarizeRun`. The CLI, the TUI's fleet picker, and the GUI middleware all build the SAME
