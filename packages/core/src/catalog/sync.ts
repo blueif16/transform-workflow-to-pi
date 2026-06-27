@@ -105,8 +105,10 @@ function readJsonSafe(file: string): unknown {
 
 /**
  * Derive a bridge run-config from a `server.json`: a streamable-http remote → `{transport:'http',url}`; else
- * an npm package → `{command:'npx',args:['-y','<id>[@<ver>]']}`; else a pypi package → `{command:'uvx',args:['<id>']}`.
- * Returns undefined when nothing runnable is declared (recorded in `directory` only — not in `servers`).
+ * an npm package → `{transport:'stdio',command:'npx',args:['-y','<id>[@<ver>]']}`; else a pypi package →
+ * `{transport:'stdio',command:'uvx',args:['<id>']}`. The `transport` discriminant is REQUIRED — without it the
+ * config fails the bridge's `McpServerConfig` union and `makeTransport` throws. Returns undefined when nothing
+ * runnable is declared (recorded in `directory` only — not in `servers`).
  */
 function bridgeConfigFor(server: RegistryServer): Record<string, unknown> | undefined {
   const remote = server.remotes?.find((r) => r.type === 'streamable-http' && r.url);
@@ -116,10 +118,10 @@ function bridgeConfigFor(server: RegistryServer): Record<string, unknown> | unde
   if (pkg?.identifier) {
     if (pkg.registryType === 'npm') {
       const id = pkg.version ? `${pkg.identifier}@${pkg.version}` : pkg.identifier;
-      return { command: 'npx', args: ['-y', id] };
+      return { transport: 'stdio', command: 'npx', args: ['-y', id] };
     }
     if (pkg.registryType === 'pypi') {
-      return { command: 'uvx', args: [pkg.identifier] };
+      return { transport: 'stdio', command: 'uvx', args: [pkg.identifier] };
     }
   }
   return undefined;

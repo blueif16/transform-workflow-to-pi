@@ -115,8 +115,13 @@ describe('syncMcpCatalog — mirrors the MCP Official Registry into the ~/.piflo
     const index = readCatalog('mcp.index.json');
     // streamable-http remote → an http bridge config.
     expect(index.servers['ac.example/mcp']).toEqual({ transport: 'http', url: 'https://a.example/mcp' });
-    // npm package → an `npx -y <id>@<ver>` stdio bridge config.
-    expect(index.servers['io.github.acme/tool']).toEqual({ command: 'npx', args: ['-y', '@acme/mcp-tool@2.1.0'] });
+    // npm package → an `npx -y <id>@<ver>` stdio bridge config, carrying the `transport:'stdio'` discriminant
+    // (without it the config FAILS the bridge's McpServerConfig union and `makeTransport` throws).
+    expect(index.servers['io.github.acme/tool']).toEqual({
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', '@acme/mcp-tool@2.1.0'],
+    });
   });
 
   it('removes a tombstoned (status:deleted) server from the slice', async () => {
