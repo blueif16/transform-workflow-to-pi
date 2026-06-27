@@ -8,6 +8,9 @@ export default defineConfig({
       'packages/*/test/**/*.test.ts',
       'packages/*/test/**/*.test.mjs',
       'tui/test/**/*.test.mjs',
+      // gui pure-lib tests (the control-session framing contract) — written as real vitest, unlike the
+      // older node-runnable gui/src checks, so they ride the repo `npm test` gate.
+      'gui/scripts/lib/**/*.test.mjs',
     ],
     environment: 'node',
     watch: false,
