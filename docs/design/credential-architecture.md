@@ -107,11 +107,20 @@ provider-credential parity gap). M1 closes it, matching §3:
 2. **Thread a cloud `SecretResolver`** from the CLI into `runFromTemplate` (`RunOptions.secretResolver`
    `runner.ts:242`, already spread through `entry.ts`), defaulting to `process.env` read host-side.
 3. **Forward the provider gateway credential into the VM** — extend the cloud env additions so the selected
-   provider's required env var(s) join the same allowlist `mcpEnvAdditions` forwards (V1: a declared
-   provider-cred var name; the resolver mints/reads it host-side). Determine whether the VM's pi also needs the
-   matching `models.json` provider entry staged (custom gateways are defined there) — if a full in-VM
-   model-config staging proves to need its own design, HALT and report rather than over-build.
-4. **Gates:** a unit test (no creds) proving the `daytona` branch builds the provider AND the cloud additions
-   include the forwarded provider var (must FAIL if either is absent); a credential-gated e2e
-   (`skipIf(!DAYTONA_API_KEY)`) running ONE node in a real VM that asserts the node produced its artifact via a
-   real model call.
+   provider's required env var(s) join the same allowlist `mcpEnvAdditions` forwards. **SHIPPED:** a declared
+   `cloudSecrets: string[]` (`RunOptions`/`RunContext`) is resolved by `cloudCredEnvAdditions` (`runner.ts`)
+   through the SAME `SecretResolver` and folded into the cloud `CreateOpts.env`; the CLI derives the var from
+   `--provider` (or `--cloud-secret NAME`).
+4. **Custom-gateway config staging — SHIPPED (M1b).** A BUILT-IN provider reads `<PROVIDER>_API_KEY` directly,
+   so M1's key forwarding alone suffices. A CUSTOM gateway (`nebius`/`mmgw`/`tokenrouter`) is defined ONLY in
+   the host's `~/.pi/agent/models.json` (the official `docs/models.md` shape: `{providers:{<name>:{baseUrl,api,
+   apiKey:"$VAR",models[]}}}`) which the M0 image bakes none of — so pi in the VM can't resolve `--provider`
+   without it. The CLI's `parsePiProvider` (pure) scopes that file to the selected provider + extracts its
+   `$VAR` cred refs (the authoritative allowlist); `DaytonaSandboxProvider.stageHome` writes the scoped
+   `{providers:{[name]:entry}}` into the VM at `<home>/.pi/agent/models.json` BEFORE any node. The staged config
+   carries `$VAR` REFERENCES only — never a resolved secret (the key still crosses via the cred allowlist).
+5. **Gates:** unit (no creds) — the `daytona` branch builds the provider, the cloud additions forward exactly
+   the declared var (allowlist invariant), `parsePiProvider` scopes + extracts `$VAR`s, and `stageHome` writes
+   the config into the VM (each must FAIL when its code is broken — mutation-checked); a credential-gated e2e
+   (`skipIf`) running ONE node in a real VM asserting a real model call. **OPEN:** a usable `DAYTONA_IMAGE` ref
+   must be supplied (M0 built via the declarative builder; promote to a named snapshot); the e2e is unrun.

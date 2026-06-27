@@ -500,8 +500,33 @@ export class DaytonaSandboxProvider implements SandboxProvider {
       autoStopInterval?: number;
       /** In-VM home the run dir nests under (Daytona's default user home). */
       homeDir?: string;
+      /**
+       * (M1b) Run-level files staged into the VM home BEFORE any node runs, keyed by home-relative path →
+       * content. The load-bearing case is `'.pi/agent/models.json'`: a CUSTOM gateway (`--provider nebius`/
+       * `mmgw`) is defined ONLY in the host's `~/.pi/agent/models.json` (baseUrl/api/models), which the image
+       * does NOT bake — so pi in the VM cannot resolve `--provider <gw>` without it. The staged config carries
+       * `$VAR` apiKey REFERENCES (pi's official value syntax), never literal secrets; the actual key crosses
+       * separately via the cloud cred allowlist (`runner.ts` `cloudCredEnvAdditions`). Built-in providers
+       * (anthropic/…) need no entry, so this is omitted for them.
+       */
+      stageHome?: Record<string, string>;
     } = {},
   ) {}
+
+  /**
+   * (M1b) Write each run-level home file into the booted VM at `<home>/<relPath>` (mkdir -p the parent).
+   * Idempotent-safe (uploadFile overwrites). No-op when nothing is declared.
+   */
+  private async stageHomeFiles(vm: DaytonaVm, home: string): Promise<void> {
+    const files = this.vmDefaults.stageHome;
+    if (!files) return;
+    for (const [rel, content] of Object.entries(files)) {
+      const target = path.posix.join(home, rel);
+      const dir = path.posix.dirname(target);
+      if (dir && dir !== '.' && dir !== '/') await vm.fs.createFolder(dir);
+      await vm.fs.uploadFile(toBytes(content), target);
+    }
+  }
 
   /** Boot ONE VM for the whole run and return a scope whose per-node views live inside it. */
   async openRun(opts: OpenRunOpts): Promise<RunScope> {
@@ -522,6 +547,9 @@ export class DaytonaSandboxProvider implements SandboxProvider {
     const rootDir = path.posix.join(home, 'pi', opts.run);
     // createFolder the run root once so every node's create() nests cleanly.
     await vm.fs.createFolder(rootDir);
+    // (M1b) Stage run-level home files (e.g. the pi provider config) ONCE, before any node — so a custom
+    // gateway resolves for every node in this VM.
+    await this.stageHomeFiles(vm, home);
     return new DaytonaRunScope(this.sdk, vm, opts, rootDir);
   }
 
@@ -539,6 +567,8 @@ export class DaytonaSandboxProvider implements SandboxProvider {
       envVars: opts.env,
     });
     const home = this.vmDefaults.homeDir ?? '/home/daytona';
+    // (M1b) Stage run-level home files into the throwaway VM too (parity with the openRun path).
+    await this.stageHomeFiles(vm, home);
     return DaytonaSandbox.open(this.sdk, vm, opts, home, /* ownsVm */ true);
   }
 }

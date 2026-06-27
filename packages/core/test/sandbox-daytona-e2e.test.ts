@@ -64,20 +64,21 @@ const optedIn =
 
 describe('daytona cloud e2e — ONE node makes a REAL model call in a REAL VM (gated)', () => {
   if (!optedIn) {
-    // NEXT-MILESTONE: a CUSTOM gateway (--provider cp/nebius/tokenrouter) ALSO needs its ~/.pi/agent/models.json
-    // provider entry staged INSIDE the VM (the M0 image bakes NO models.json; credential-architecture §1). M1
-    // forwards only the KEY, which is sufficient for a BUILT-IN provider (anthropic/deepseek/…) that reads
-    // <PROVIDER>_API_KEY directly. Staging models.json in-VM for custom gateways is a SEPARATE milestone
-    // (daytona-cloud-integration §"determine whether the VM's pi also needs the models.json entry") — do NOT
-    // over-build it here. This e2e is therefore written against a BUILT-IN provider and stays SKIPPED until the
-    // operator supplies DAYTONA_API_KEY + DAYTONA_IMAGE + a built-in provider key + PIFLOW_E2E=1.
+    // A CUSTOM gateway (--provider cp/nebius/tokenrouter) ALSO needs its ~/.pi/agent/models.json provider entry
+    // staged INSIDE the VM (the M0 image bakes NO models.json; credential-architecture §1). M1 forwards only the
+    // KEY — sufficient for a BUILT-IN provider (anthropic/deepseek/…) that reads <PROVIDER>_API_KEY directly.
+    // M1b NOW BUILDS that staging (DaytonaSandboxProvider.stageHome + the CLI's parsePiProvider/loadPiProviderConfig
+    // writing {providers:{[name]:entry}} → <home>/.pi/agent/models.json; see cloud-provider-stage.test.ts +
+    // parse-pi-provider.test.ts), so a custom gateway resolves in the VM too. This e2e exercises the BUILT-IN
+    // path for simplicity and stays SKIPPED until the operator supplies DAYTONA_API_KEY + DAYTONA_IMAGE + a
+    // built-in provider key + PIFLOW_E2E=1.
     const missing = [
       !DAYTONA_KEY && 'DAYTONA_API_KEY',
       !E2E_IMAGE && 'DAYTONA_IMAGE',
       !process.env[E2E_CRED_VAR] && E2E_CRED_VAR,
       !process.env.PIFLOW_E2E && 'PIFLOW_E2E=1',
     ].filter(Boolean).join(', ');
-    it.skip(`SKIPPED — needs ${missing} (real VM + real model tokens; built-in provider only — custom gateways await in-VM models.json staging)`, () => {});
+    it.skip(`SKIPPED — needs ${missing} (real VM + real model tokens; built-in provider here, custom gateways supported via M1b stageHome)`, () => {});
   }
 
   it.skipIf(!optedIn)(

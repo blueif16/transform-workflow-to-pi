@@ -155,6 +155,11 @@ export interface CreateDaytonaProviderOpts {
   autoStopInterval?: number;
   /** In-VM home the run dir nests under (default `/home/daytona`). */
   homeDir?: string;
+  /**
+   * (M1b) Files staged into the VM home before any node, keyed by home-relative path → content. The host
+   * (CLI) passes `{ '.pi/agent/models.json': <provider config> }` so a CUSTOM gateway resolves in the VM.
+   */
+  stageHome?: Record<string, string>;
 }
 
 /**
@@ -173,5 +178,6 @@ export function createDaytonaProvider(opts: CreateDaytonaProviderOpts = {}): Day
     resources: opts.resources,
     autoStopInterval: opts.autoStopInterval,
     homeDir: opts.homeDir,
+    stageHome: opts.stageHome,
   });
 }
