@@ -12,6 +12,7 @@ import type { NodeSpec, Check, ReturnMode, Policy } from '../../types.js';
 import { markersFromNode, emitMarkers } from '../../contract.js';
 import type { TemplateNode } from './types.js';
 import { lowerToOps } from './lower.js';
+import { gatesFromOp } from '../../runner/op-dispatch.js';
 
 /** Strip a leading `{{RUN}}/` so an injected forced-read renders as a RUN-relative path in the fold. */
 const runRel = (p: string): string => p.replace(/^\{\{RUN\}\}\//, '');
@@ -24,6 +25,12 @@ export function collectChecks(def: TemplateNode): Check[] | undefined {
     param: c.param,
     severity: c.severity,
   })) as Check[];
+  // (A-fix) A node authored DIRECTLY in `op[]` expresses a post-check as a `{when:'post', gate}` op, but the
+  // runner's gate reader fires only PRE gates — so those post-gates were a DEAD rep. Fold them into `io.checks`
+  // (THE post-check engine, the deliberate two-layer design) so they are enforced. Read from the AUTHORED
+  // `def.op`: a hooks-authored node has none (its `checks` alias is flattened above + lowered separately), so
+  // this adds nothing for it — no double-count. Pre gates are excluded (they run via the pre-gate reader).
+  all.push(...gatesFromOp(def.op).post);
   return all.length ? all : undefined;
 }
 
