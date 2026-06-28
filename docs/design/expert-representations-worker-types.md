@@ -217,13 +217,25 @@ follow** (resolved from the catalog); a **loadout = a set of skills (+ any extra
 **name tag** is the loadout label. Three things, one spine: *pick skills → tools come along →
 label it.*
 
-This is a **confirmed adopted standard, not an invention**: Anthropic's SKILL.md YAML carries an
-**`allowed-tools`** field (e.g. `Bash(python:*) Bash(npm:*) WebFetch`), and picking a skill
-implicitly determines the MCP servers it coordinates (layering-validation doc, §skill→tool). So:
-**adopt `allowed-tools` as the field, declared ON THE SKILL OBJECT itself** (portable across
-workers, self-documenting), resolved through our catalog. The work is real on our side —
-`resolveSkillStage` (`ops/skill.ts`) just copies the dir today and reads no manifest — but the
-*shape* is settled by the published convention.
+**Two fields, dual constraints — `requires` (floor) ≠ `allowed` (ceiling).** "Tools a skill needs"
+is NOT "tools a skill may use." A skill carries both:
+- **`requires`** — the dependency FLOOR: tools / MCP servers / capabilities that MUST be bound or
+  the skill can't run. Drives (a) **auto-wiring** the loadout (pick a skill → its required tools
+  attach from the catalog) and (b) a **preflight fail-fast** at init (abort before spending a pi if
+  a required capability is missing). *This is the signal the self-wiring market actually runs on.*
+- **`allowed`** — the permission CEILING: what the running agent MAY touch (Anthropic's SKILL.md
+  `allowed-tools`, e.g. `Bash(python:*) WebFetch`). Scopes/restricts; does **not** provision.
+
+Compiler invariant: `requires ⊆ bound ⊆ allowed ⊆ catalog`. Node-level effective sets union over the
+node's skills (+ node extras). Both live ON THE SKILL OBJECT (portable, self-documenting);
+`resolveSkillStage` (`ops/skill.ts`) reads neither today.
+
+External check (layering-validation doc §requires): `allowed` is the adopted agent convention, but a
+machine-readable `requires` floor is **novel-for-agents / standard-in-plugins** — VS Code
+`extensionDependencies` (install-block = our preflight), RPM `Requires:`, npm `dependencies`,
+Semantic Kernel `apiDependencies`, Agent Packaging Standard `required:true`. Adopt the name
+**`requires`** (strongest prior art), listing tool/MCP/capability ids matched against the live
+capability registry at node-init. We'd be slightly ahead of agent platforms, on a well-trodden path.
 
 ## Market reality (what exists)
 
@@ -273,9 +285,12 @@ doc §"three different nodes."
 3. **Author-time expansion — keep.** Posture (tier/sandbox/gate) expands into
    `tier`/`contract`/`op[]`/`hook` at author time, like tools/skills today; the runner stays
    preset-agnostic.
-4. **Skill→tool manifest — RESOLVED.** Adopt **`allowed-tools`** on the skill frontmatter (the
-   published Anthropic convention), declared on the *skill object* (portable), resolved through the
-   catalog. Remaining: the resolver impl (`resolveSkillStage` reads no manifest today).
+4. **Skill→tool manifest — RESOLVED as TWO fields (not one).** `allowed` (ceiling, the Anthropic
+   `allowed-tools` convention) scopes a *running* agent; **`requires`** (floor — tools/MCP/capabilities
+   that MUST be bound) drives **auto-wiring + preflight fail-fast**. Invariant `requires ⊆ allowed`.
+   The `requires` floor is novel-for-agents / standard-in-plugins (VS Code `extensionDependencies`,
+   RPM `Requires:`, Semantic Kernel `apiDependencies`); adopt the name `requires`, matched against the
+   live capability registry at node-init. Remaining: the resolver impl (`resolveSkillStage` reads neither).
 5. **Seed the tier vocabulary.** `init` must write a default `~/.piflow/model-tiers.json` (3 tiers)
    so postures' tiers aren't inert. Name the three tiers (model classes, not worker names).
 6. **Designer expansion ergonomics + full spec.** A judgment gate = producer + judge + reroute

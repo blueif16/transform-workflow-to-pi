@@ -55,15 +55,43 @@ LLM-as-judge → human spot-check — which maps almost directly onto our execut
 
 ## Implications folded into the design
 
-1. `allowed-tools` is the skill→tool manifest field (open decision #4 resolved — adopt the
-   published convention; resolve it through our catalog).
+1. The skill→tool manifest is **TWO dual fields**: `allowed` (ceiling, the `allowed-tools`
+   convention — what a running agent may use) and `requires` (floor — what must be bound; drives
+   auto-wiring + preflight). See the follow-up sweep below.
 2. Posture gains a **two-level capability gate** (availability vs permission) + an **autonomy/approval
    axis** — both of which piflow already has primitives for (`checkpoint`/G5, `rerouteGate`/G12).
 3. The **designer posture needs a first-class spec** (judge-model field + rubric + retry budget +
    threshold) because we're inventing a named abstraction the market only assembles ad hoc.
 
+## Required tools — the dependency FLOOR (follow-up sweep)
+
+Follow-up: `allowed-tools` is a *ceiling* (what an agent MAY use); does anyone declare a *floor*
+(what a skill REQUIRES to run)? Finding: a machine-readable `requires` floor is **novel for agent
+platforms but standard in plugin ecosystems.**
+
+| Ecosystem | Floor? | Field | Drives |
+|---|---|---|---|
+| Claude Code `plugin.json` | Y — plugin↔plugin only | `dependencies` | install-time presence of other plugins (NOT tools/MCP) |
+| Claude Code `SKILL.md` / agents | N — ceiling only | `allowed-tools`/`disallowedTools` | allowlist/denylist; no mandatory-tool floor |
+| MCP `server.json` | Partial — env only | `environmentVariables[].isRequired` | start-time env floor for one server |
+| Semantic Kernel | Y — API deps | `apiDependencies` | required HTTP APIs + auth (closest agent analog) |
+| LangGraph `langgraph.json` | Y — packages | `dependencies` | deploy-time package install (not tool bindings) |
+| Agent Packaging Standard v0.1 | Y — nascent | `dependencies.models[].required` | provisioning + preflight (community draft) |
+| CrewAI / AutoGen / GPT Actions / Agentforce | N | — | runtime assignment / auth only; no floor |
+| **npm / VS Code / RPM-Debian** | **Y — mature** | `dependencies` · `extensionDependencies` · `Requires:` | **install-time hard block = our preflight** |
+
+Verdict: NOVEL-FOR-AGENTS, STANDARD-IN-PLUGINS. No agent platform has "this skill requires MCP
+server X or it can't run" driving both auto-wire + preflight. Closest: VS Code `extensionDependencies`
+(install block) + Semantic Kernel `apiDependencies`. **Adopt the name `requires`** (RPM `Requires:`,
+APS `required:true`, package.json) listing tool/MCP/capability ids matched against the live capability
+registry at node-init — NOT `dependencies` (reads as install-time packages).
+
 ## Sources
 
+Required-floor sweep: code.claude.com/docs/en/plugins-reference · github.com/modelcontextprotocol/registry (server.json) ·
+devblogs.microsoft.com/agent-framework/introducing-api-manifest-plugins-for-semantic-kernel-2 ·
+docs.langchain.com/oss/python/langgraph/application-structure · agentpackaging.org/specs/APS-v0.1 ·
+code.visualstudio.com/api/references/extension-manifest (extensionDependencies). Layering sweep —
 Anthropic Skills launch + engineering (anthropic.com/news/skills · claude.com/blog/building-agents-with-skills
 · claude.com/blog/extending-claude-capabilities-with-skills-mcp-servers · resources.anthropic.com/.../The-Complete-Guide-to-Building-Skill-for-Claude.pdf
 · code.claude.com/docs/en/agent-sdk/custom-tools · anthropic.com/engineering/demystifying-evals-for-ai-agents) ·
