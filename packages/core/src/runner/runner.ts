@@ -95,30 +95,15 @@ import {
   journalCheckpoint,
 } from './checkpoint.js';
 
-/** How the runner spawns the agent command — the kill-seam-bearing exec primitive (injectable). */
-export interface ExecRunner {
-  /**
-   * Run `cmd` in `sandbox` under a node-timeout + silent-stall watchdog. Resolves with the buffered
-   * result AND how it ended (`killed`). The DEFAULT races `sandbox.exec` against the timeout and, on
-   * a watchdog trip, calls `killSeam` (SIGTERM→SIGKILL semantics live there) then abandons the wait —
-   * so a hung exec can never hang the run. A test can inject its own to drive the watchdog offline.
-   */
-  (
-    sandbox: Sandbox,
-    cmd: string,
-    opts: ExecWatchdogOpts,
-  ): Promise<{ result: ExecResult; killed: null | 'timeout' | 'stall' }>;
-}
-
-/** Watchdog knobs handed to the exec runner. */
-export interface ExecWatchdogOpts {
-  /** Hard wall-clock cap for the node; on exceed → kill + `error` (killedTimeout). */
-  nodeTimeoutMs: number;
-  /** No stdout/stderr event for this long (0 = off) → kill + `error` (killedStall). */
-  stallMs: number;
-  /** ms to wait after SIGTERM before SIGKILL (the kill grace). */
-  killGraceMs: number;
-}
+// ── exec/checkpoint primitives + seam types — moved to ./exec-runner.ts ──────────────────────────────
+// `defaultExecRunner`/`defaultCheckpointWait` + the `ExecRunner`/`ExecWatchdogOpts`/`CheckpointWaiter`
+// seam interfaces now live in ./exec-runner.ts (cluster B + the A-subset seam types). Imported here for
+// the runner's own use (RunOptions/RunContext reference them) AND re-exported so the barrel + the
+// internal-importing tests (self-correction-l1 / warm-resume-l1) keep resolving these from runner.ts.
+import { defaultExecRunner, defaultCheckpointWait } from './exec-runner.js';
+import type { ExecRunner, ExecWatchdogOpts, CheckpointWaiter } from './exec-runner.js';
+export { defaultExecRunner, defaultCheckpointWait } from './exec-runner.js';
+export type { ExecRunner, ExecWatchdogOpts, CheckpointWaiter } from './exec-runner.js';
 
 /** Options for `runWorkflow`. Everything below the workflow is defaulted to a live-free, offline run. */
 export interface RunOptions {
@@ -283,95 +268,14 @@ export interface RunOptions {
   checkpointWait?: CheckpointWaiter;
 }
 
-/** The checkpoint wait seam — polls for a reply until `accept` passes or the deadline elapses (G5). */
-export interface CheckpointWaiter {
-  (args: {
-    run: string;
-    nodeId: string;
-    /** Epoch-ms deadline; `Infinity` ⇒ wait indefinitely (an attended, untimed checkpoint). */
-    deadline: number;
-    /** Read the current reply file (or null when absent/torn). */
-    read: () => Promise<CheckpointReply | null>;
-    /** True iff this reply is a VALID resolution for the marker (the runner's authority). */
-    accept: (reply: CheckpointReply) => boolean;
-    /** Abort promptly when the run is torn down (none today; reserved). */
-    signal?: AbortSignal;
-  }): Promise<CheckpointReply | null>;
-}
-
 /** The result of a run: the final status record + the host run dir it was written to. */
 export interface RunResult {
   status: RunStatus;
   outDir: string;
 }
 
-// ── the default exec runner: race sandbox.exec against the watchdogs, kill on a trip ──────────────
-
-/**
- * The default exec primitive. Races `sandbox.exec` against (a) a node-timeout and (b) a silent-stall
- * detector that fires when no stdout/stderr chunk arrives for `stallMs`. On a trip it ABORTS the
- * exec's `AbortSignal` — a signal-honoring provider (incl. InMemorySandbox) kills the child's process
- * group, so exec resolves (no orphan) and we report it as `killed`. A `killGraceMs` liveness fallback
- * settles anyway if a provider ignores the signal, so a hung exec can never hang the run.
- */
-export const defaultExecRunner: ExecRunner = (sandbox, cmd, opts) =>
-  new Promise((resolve) => {
-    let settled = false;
-    let trippedAs: null | 'timeout' | 'stall' = null;
-    let lastEventAt = Date.now();
-    const ac = new AbortController();
-    let graceTimer: NodeJS.Timeout | undefined;
-    const settle = (result: ExecResult): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      clearInterval(stallTimer);
-      if (graceTimer) clearTimeout(graceTimer);
-      resolve({ result, killed: trippedAs });
-    };
-    const trip = (kind: 'timeout' | 'stall'): void => {
-      if (settled || trippedAs) return;
-      trippedAs = kind;
-      try { ac.abort(); } catch { /* no-op */ } // real kill: a signal-honoring provider reaps the group
-      // Liveness fallback: if a provider ignores the signal, settle after the kill grace anyway so a
-      // hung exec never hangs the run (that path can orphan; a compliant provider's exec resolves first).
-      graceTimer = setTimeout(() => settle({ stdout: '', stderr: `killed: ${kind}`, code: 124 }), opts.killGraceMs);
-      graceTimer.unref?.();
-    };
-    const timeoutTimer = setTimeout(() => trip('timeout'), opts.nodeTimeoutMs);
-    const stallTimer = opts.stallMs > 0
-      ? setInterval(() => { if (Date.now() - lastEventAt > opts.stallMs) trip('stall'); }, Math.max(25, Math.floor(opts.stallMs / 4)))
-      : (setInterval(() => {}, 1 << 30) as NodeJS.Timeout); // inert sentinel cleared in settle()
-    const touch = (): void => { lastEventAt = Date.now(); };
-    sandbox
-      .exec(cmd, { signal: ac.signal, onStdout: touch, onStderr: touch })
-      .then((result) => settle(result))
-      .catch((err) => settle({ stdout: '', stderr: String(err), code: 1 }));
-  });
-
-// ── (G5) the default checkpoint waiter: poll the reply file on the watchRun cadence until valid/deadline ──
-
-/**
- * The default checkpoint wait seam. Polls `read()` on the `watchRun` cadence (700ms) and resolves with the
- * first reply that `accept`s; resolves `null` when the deadline elapses. This is the ONLY place that sleeps
- * on real wall-clock — tests inject a fast/zero-sleep poller via `RunOptions.checkpointWait`, so the suite
- * is deterministic. A torn/missing file simply makes `read()` return null and the wait persists.
- */
-export const defaultCheckpointWait: CheckpointWaiter = async ({ deadline, read, accept, signal }) => {
-  const pollMs = 700;
-  for (;;) {
-    if (signal?.aborted) return null;
-    const reply = await read();
-    if (reply && accept(reply)) return reply;
-    if (Date.now() >= deadline) return null;
-    const remaining = deadline === Infinity ? pollMs : Math.min(pollMs, deadline - Date.now());
-    await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, Math.max(0, remaining));
-      t.unref?.();
-      signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
-    });
-  }
-};
+// (the default exec runner + the default checkpoint waiter now live in ./exec-runner.ts — see the import
+//  + re-export block above; their seam types travel with them.)
 
 // ── forgiving return-parse (run.mjs lastJsonBlock 670–698) — moved to ./return-parse.ts ──────────────
 // `lastJsonBlock` + the `NodeReturn` type now live in ./return-parse.ts (cluster C split). Imported for
