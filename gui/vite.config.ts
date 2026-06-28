@@ -570,6 +570,133 @@ function piflowAgents(): Plugin {
 }
 
 /**
+ * (SA-E) GUI WRITE-BACK — the drag-to-compose editor's spine. Config is the SINGLE SOURCE OF TRUTH:
+ * every GUI edit is a mutation to the per-repo TEMPLATE `node.json` the run reads, NOT GUI-local state
+ * and NEVER the GUI bundle or a `~/.piflow` snapshot (the data-boundary rule). Two endpoints, mirroring
+ * the existing idioms:
+ *   - `GET  /__piflow/node-config/<run>?node=<id>` → the node's AUTHORED config from the TEMPLATE
+ *     `node.json` (the badge's gate-pipeline/tier/loadout source — the run-view distillation does NOT
+ *     carry the template `op[]`, so the badge reads the authored file directly). Read path the write
+ *     path mirrors.
+ *   - `POST /__piflow/node-edit/<run>`  `{ nodeId, chip, target? }` → drop a GATE chip onto a node:
+ *     appends its gate to the node's `op[]` lane (or the G5 `checkpoint` field for a human gate), VALIDATES
+ *     the result against core's `nodeSchema` (the SAME gate `loadTemplate` runs), then ATOMICALLY writes
+ *     `<wf>/template/nodes/<id>/node.json`. A malformed edit is rejected (400) and NOTHING is written.
+ *
+ * `target` (default `"template"`) selects the durable TEMPLATE write (implemented). `target:"run"` (the
+ * ephemeral per-run edit) is a CLEARLY-MARKED STUB (501) — and live mid-run mutation is DEFERRED entirely
+ * (worker-types.md §"Edit target"). The run dir → template dir resolution is `<wf>/runs/<id>` ⇒
+ * `<wf>/template`, the SAME canonical-sibling layout `/preview` + `/save-run` use. The op[]-mutation logic
+ * is the PURE, unit-tested host lib (gui/scripts/lib/node-writeback.mjs) — this plugin is a thin courier
+ * (route match, run resolution, body read), like `piflowCheckpointReply`. The lib is loaded by ABSOLUTE
+ * path (esbuild never bundles it into this config), and core's `nodeSchema` + ajv validator are injected
+ * from the built dist — the exact pair `loadTemplate` validates with. Dev + preview only.
+ */
+function piflowNodeWriteback(): Plugin {
+  const readBody = (req: IncomingMessage): Promise<string> =>
+    new Promise((resolve, reject) => {
+      let data = "";
+      let tooBig = false;
+      req.on("data", (c) => {
+        data += c;
+        if (data.length > 1_000_000) { tooBig = true; req.destroy(); } // 1 MB cap — a node edit is tiny
+      });
+      req.on("end", () => (tooBig ? reject(new Error("body too large")) : resolve(data)));
+      req.on("error", reject);
+    });
+
+  // Resolve the TEMPLATE dir for a run (the canonical sibling: runDir = <wf>/runs/<id> ⇒ <wf>/template).
+  type TemplateResolution = { ok: true; templateDir: string } | { ok: false; status: number; error: string };
+  const templateDirFor = async (run: string): Promise<TemplateResolution> => {
+    const resolved = await resolveRunDir(run);
+    if (!resolved) return { ok: false, status: 404, error: `no run "${run}" found — is its repo registered?` };
+    const templateDir = join(resolved.runDir, "..", "..", "template");
+    if (!existsSync(templateDir)) return { ok: false, status: 404, error: `no template for "${run}" at ${templateDir} (write-back needs the canonical <wf>/template layout)` };
+    return { ok: true, templateDir };
+  };
+
+  // Load the pure host lib (op[] mutation + safety) ONCE, injecting core's real nodeSchema so the
+  // write-back validates with the exact gate loadTemplate uses. Memoized across requests.
+  let _lib: { mod: Record<string, unknown>; validate: ((s: object, d: unknown) => { ok: boolean; errors: string[] }) | null } | null = null;
+  const loadLib = async () => {
+    if (_lib) return _lib;
+    const libPath = findUp("scripts/lib/node-writeback.mjs");
+    const schemaPath = findUp("packages/core/dist/workflow/template/schema/node.schema.js");
+    const valPath = findUp("packages/core/dist/runner/schema.js");
+    if (!libPath) throw new Error("node-writeback lib not found — is this the piflow gui?");
+    if (!schemaPath || !valPath) throw new Error("@piflow/core dist not found — run: npm run build (at repo root)");
+    const mod = await import(pathToFileURL(libPath).href);
+    const { nodeSchema } = await import(pathToFileURL(schemaPath).href);
+    const { defaultSchemaValidator } = await import(pathToFileURL(valPath).href);
+    (mod.setNodeSchema as (s: unknown) => void)(nodeSchema);
+    _lib = { mod, validate: await defaultSchemaValidator() };
+    return _lib;
+  };
+
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    // ---- GET /node-config/<run>?node=<id> : the badge's authored-config read ----
+    const mGet = req.url?.match(/^\/__piflow\/node-config\/([^/?]+)/);
+    if (mGet) {
+      const run = decodeURIComponent(mGet[1]);
+      const nodeId = new URL(req.url!, "http://localhost").searchParams.get("node");
+      if (!nodeId) return sendJson(res, 400, { error: "missing ?node=<id>" });
+      const tpl = await templateDirFor(run);
+      if (!tpl.ok) return sendJson(res, tpl.status, { error: tpl.error });
+      try {
+        const { mod } = await loadLib();
+        const node = await (mod.readNodeConfig as (d: string, id: string) => Promise<unknown>)(tpl.templateDir, nodeId);
+        return sendJson(res, 200, { node });
+      } catch (e) {
+        // readNodeConfig throws WritebackError for a missing/unparseable node.json → 404.
+        return sendJson(res, 404, { error: String((e as Error)?.message ?? e) });
+      }
+    }
+
+    // ---- POST /node-edit/<run> : drop a gate chip → mutate the template node.json ----
+    const mPost = req.url?.match(/^\/__piflow\/node-edit\/([^/?]+)/);
+    if (!mPost) return next();
+    if ((req.method || "GET").toUpperCase() !== "POST") return sendJson(res, 405, { error: "use POST to edit a node" });
+    const run = decodeURIComponent(mPost[1]);
+
+    let body: { nodeId?: unknown; chip?: unknown; target?: unknown };
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      return sendJson(res, 400, { error: "body must be JSON { nodeId, chip, target? }" });
+    }
+    const nodeId = typeof body.nodeId === "string" ? body.nodeId : "";
+    const target = body.target === "run" ? "run" : "template";
+
+    // run-target (ephemeral per-run edit) is a CLEARLY-MARKED STUB; live mid-run mutation is DEFERRED.
+    if (target === "run") {
+      return sendJson(res, 501, { error: "run-instance (ephemeral) edits are not implemented yet — only template edits are durable; live mid-run mutation is deferred", stub: true });
+    }
+
+    const tpl = await templateDirFor(run);
+    if (!tpl.ok) return sendJson(res, tpl.status, { error: tpl.error });
+
+    try {
+      const { mod, validate } = await loadLib();
+      const out = await (mod.writeNodeEdit as (d: string, id: string, e: unknown, v: unknown) => Promise<{ status: number; body: unknown }>)(
+        tpl.templateDir,
+        nodeId,
+        { chip: body.chip },
+        validate,
+      );
+      return sendJson(res, out.status, out.body);
+    } catch (e) {
+      return sendJson(res, 500, { error: `node edit failed (${String(e)})` });
+    }
+  };
+
+  return {
+    name: "piflow-node-writeback",
+    configureServer(server) { server.middlewares.use(handler); },
+    configurePreviewServer(server) { server.middlewares.use(handler); },
+  };
+}
+
+/**
  * CONTROL SESSION — the ONE two-way channel: talk to an interactive `pi` about a run. Endpoints mirror the
  * existing idioms, all SEPARATE from the one-way DAG telemetry (`/__piflow/stream/<run>`, which is unchanged)
  * so that feed stays pure one-way:
@@ -741,6 +868,6 @@ function piflowControlSession(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowPreview(), piflowSaveRun(), piflowFile(), piflowTree(), piflowCheckpointReply(), piflowAgents(), piflowControlSession()],
+  plugins: [react(), piflowGlobalIndex(), piflowRunStream(), piflowRunView(), piflowPreview(), piflowSaveRun(), piflowFile(), piflowTree(), piflowCheckpointReply(), piflowAgents(), piflowNodeWriteback(), piflowControlSession()],
   server: { port: 5173, host: true },
 });

@@ -19,6 +19,7 @@ import { useExpand } from "./ExpandContext";
 import { useViewMode } from "./ViewModeContext";
 import { NodeModeStrip } from "./NodeModeStrip";
 import { NodeFusionToggle } from "./NodeFusionToggle";
+import { NodeGateChips } from "./NodeGateChips";
 import { ProgressBar } from "./ProgressBar";
 import type { FieldTone } from "./FieldBlock";
 import type { RunViewNode } from "../data/runView";
@@ -219,7 +220,15 @@ export function WorkflowNode({ id, data, selected }: NodeProps<FlowNode>) {
 
       <Handle type="source" position={Position.Right} className="ds-handle" />
 
-      {mode === "fusion" ? <NodeFusionToggle nodeId={id} agentType={data.rv?.agentType} /> : mode && <NodeModeStrip mode={mode} data={data} />}
+      {mode === "fusion" ? (
+        <NodeFusionToggle nodeId={id} agentType={data.rv?.agentType} />
+      ) : mode === "compose" ? (
+        // (SA-E) Compose mode: the node becomes a gate drop-target + surfaces its gate pipeline + tier
+        // (the badge widen) — read from the authored TEMPLATE config via ComposeContext, not the run-view.
+        <NodeGateChips nodeId={id} />
+      ) : (
+        mode && <NodeModeStrip mode={mode} data={data} />
+      )}
     </motion.div>
   );
 }

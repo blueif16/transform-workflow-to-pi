@@ -11,7 +11,7 @@
  */
 import { createContext, useContext } from "react";
 
-export type ViewMode = "status" | "model" | "artifacts" | "basis" | "fusion";
+export type ViewMode = "status" | "model" | "artifacts" | "basis" | "fusion" | "compose";
 
 export interface ViewModeApi {
   mode: ViewMode | null;
@@ -39,4 +39,7 @@ export const VIEW_MODES: ReadonlyArray<{ mode: ViewMode; key: string; label: str
   // Fusion is the one INTERACTIVE mode: each node gets a moa / best-of-n toggle that re-expands the DAG
   // live (via the SDK's expandFusion through /__piflow/preview), rather than painting a passive info strip.
   { mode: "fusion", key: "f", label: "Fusion" },
+  // Compose (SA-E) is the EDITOR mode: a gate-chip palette appears + each node becomes a drop-target; a
+  // dropped chip mutates that node's TEMPLATE node.json op[] lane (config is the single source of truth).
+  { mode: "compose", key: "c", label: "Compose" },
 ];
