@@ -39,6 +39,14 @@ export interface JournalNode {
    * a normal (non-checkpoint) node.
    */
   checkpointReply?: unknown;
+  /**
+   * (warm-resume) The MINTED per-node pi session id (= the node id) and its `--session-dir`, recorded so a
+   * future `node <run> <id> --resume` finds the session WITHOUT re-deriving. Purely descriptive metadata —
+   * NOT part of the envelope hash (a session id never changes the work identity), so no JOURNAL_VERSION bump.
+   * Absent on a cold (inmemory/cloud) or no-session node.
+   */
+  sessionId?: string;
+  sessionDir?: string;
 }
 
 /** The whole `${RUN}/.pi/journal.json` document. */

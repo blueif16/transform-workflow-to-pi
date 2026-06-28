@@ -78,6 +78,13 @@ export interface NodeStatusRecord {
   repairAttempts?: number;
   /** (G8 fold) The repair budget was spent and the output STILL failed its schema — terminal `blocked`. */
   repairExhausted?: boolean;
+  /**
+   * (warm-resume) The MINTED per-node pi session id (= the node id) and its `--session-dir`, recorded when a
+   * warm-eligible (in-place/local) node ran with a persisted session. A future `node <run> <id> --resume`
+   * reads these to warm-resume without re-deriving. Absent on a cold (inmemory/cloud) or no-session node.
+   */
+  sessionId?: string;
+  sessionDir?: string;
 }
 
 /** Run-level rollup at completion. */

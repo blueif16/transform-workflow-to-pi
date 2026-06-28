@@ -711,6 +711,16 @@ export interface PiCommandOptions {
   thinking?: string | boolean;
   /** Extra `-e <path>` extensions, emitted BEFORE `ctx.extensionFile` (order is load-bearing). */
   extraExtensions?: string[];
+  /**
+   * Per-node SESSION wiring (warm-resume foundation, warm-resume-pi-surfaces.md §4a). When PRESENT, the
+   * builder DROPS `--no-session` and emits `--session-dir <dir>` plus EITHER `--session-id <id>` (create —
+   * the first attempt, caller-minted id) OR `--session <id>` (resume an existing session). When ABSENT, the
+   * builder keeps today's `--no-session` (ephemeral) default, byte-identical to before.
+   *   - `dir`    : the in-sandbox `--session-dir` (a dedicated subdir, NEVER pi's `.pi/` journal tree).
+   *   - `id`     : the exact session id (the node id) — `--session-id` on create, `--session` on resume.
+   *   - `resume` : `true` ⇒ emit `--session <id>` (resume); falsy/absent ⇒ `--session-id <id>` (create).
+   */
+  session?: { dir: string; id: string; resume?: boolean };
 }
 
 /** The catalog: register tools, resolve a selection to pi flags, search, and enumerate. */

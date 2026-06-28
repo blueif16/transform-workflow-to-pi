@@ -52,8 +52,9 @@ function q(s: string): string {
 /**
  * The PRODUCTION default: build the headless `pi` command for one node.
  *
- * Headless invariants (provider-and-headless.md): `-p --mode json -a --no-session` (print mode, JSON
- * event stream, auto-approve tools, ephemeral), `--offline` (suppress pi's startup network chatter;
+ * Headless invariants (provider-and-headless.md): `-p --mode json -a` (print mode, JSON event stream,
+ * auto-approve tools) + `--no-session` (ephemeral — DROPPED when `opts.session` requests a persisted
+ * per-node session; see the session block below), `--offline` (suppress pi's startup network chatter;
  * the model call still works), `--no-extensions` (+ explicit `-e` still loads), `--no-context-files`
  * (a node runs on ONLY the driver's prompt — no repo AGENTS.md/CLAUDE.md leak), `--provider cp`,
  * `--model` only when pinned, `--tools <resolved.piTools joined by ,>`, `--exclude-tools
@@ -67,8 +68,16 @@ function q(s: string): string {
  */
 export const defaultPiCommand: CommandBuilder = (node, resolved, ctx, opts = {}) => {
   const provider = ctx.provider ?? 'cp';
+  // SESSION wiring (warm-resume §4a): `--no-session` (ephemeral) and a persisted session dir are mutually
+  // exclusive. With session opts present, persist+locate the session under `--session-dir` and address it by
+  // id — `--session-id <id>` CREATES it (first attempt, caller-minted id), `--session <id>` RESUMES it (warm
+  // L1 retry). Absent ⇒ keep `--no-session` (today's default — a no-session node stays BYTE-IDENTICAL: the
+  // flag stays in its original slot right after `-a`).
+  const sessionFlags = opts.session
+    ? ['--session-dir', q(opts.session.dir), opts.session.resume ? '--session' : '--session-id', q(opts.session.id)]
+    : ['--no-session'];
   const parts: string[] = [
-    'pi', '-p', '--mode', 'json', '-a', '--no-session',
+    'pi', '-p', '--mode', 'json', '-a', ...sessionFlags,
     '--offline', '--no-extensions', '--no-context-files',
     '--provider', provider,
   ];

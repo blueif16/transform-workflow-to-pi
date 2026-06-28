@@ -923,10 +923,13 @@ async function runNodeWithRetries(ctx: RunContext, node: NodeSpec, scope: RunSco
         // L2 NOTE: if retryAction.scope === 'fix', the fix memory lookup would happen HERE before
         // invoking runNode — patch the node's prompt/tool-wiring, then call runNode with the patched
         // node. The stub falls through to feedback (same cold re-invocation, same evidence prefix).
-        // TODO[warm-resume]: when pi session-resume infra is available, replace the runNode call below
-        // with: persist sessionId from the first attempt's event stream, then invoke pi with
-        // `--resume <sessionId>` and the feedback appended as a NEW message (not a fresh @prompt file).
-        rec = await runNode(ctx, node, scope, { promptPrefix: consultPreamble(sig) });
+        // (warm-resume) WARM the SAME-MODEL L1 retry: resume the per-node session (id = the node id) so the
+        // producer continues its OWN conversation, with the feedback delivered as the next turn (NOT a cold
+        // re-run). `resumeSessionId` makes `runNode` emit `--session <id>` + a FEEDBACK-ONLY prompt. The warm
+        // path is HONORED only where the session dir persists across attempts (in-place/local); on every other
+        // provider `runNode` ignores it and stays cold (`--no-session`) — so this is safe to set unconditionally.
+        // Escalation (the branch below) NEVER sets it, so a model swap stays cold (§4d).
+        rec = await runNode(ctx, node, scope, { promptPrefix: consultPreamble(sig), resumeSessionId: node.id });
       } else {
         // Same-model retry: a FRESH attempt (re-seed + re-exec), no consult prefix, the node's own model.
         rec = await runNode(ctx, node, scope);
@@ -1261,6 +1264,15 @@ interface AttemptOverride {
   promptPrefix?: string;
   model?: string;
   provider?: string;
+  /**
+   * (warm-resume) When set, this attempt RESUMES the per-node pi session of `resumeSessionId` (= the node
+   * id) instead of running cold: the command builder emits `--session <id>` (not `--session-id`), and the
+   * staged prompt is FEEDBACK-ONLY (`promptPrefix` alone — the original prompt + markers already live in the
+   * resumed session tree, §4c). Set ONLY on a SAME-MODEL L1 retry over a warm-eligible (local) provider; an
+   * ESCALATION (model swap) leaves this absent and stays cold (§4d). Honored only where the session dir
+   * persists across attempts (in-place/local); ignored elsewhere so cloud/inmemory stay cold.
+   */
+  resumeSessionId?: string;
 }
 
 async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: AttemptOverride = {}): Promise<NodeStatusRecord> {
@@ -1454,12 +1466,31 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
       return finishNode(ctx, node, rec, t0, 'error', `prompt token resolution failed: ${(e as Error).message}`, [], [(e as Error).message]);
     }
 
+    // (warm-resume §4) PER-NODE SESSION: mint a stable session id = the node id, persisted under a DEDICATED
+    // `.pi-sessions` dir (a sibling of `.pi/`, NEVER inside the engine journal/state tree — §4d). Scoped to
+    // IN-PLACE (local) providers, the only kind where the session `.jsonl` survives between attempts — on an
+    // inmemory/cloud sandbox each attempt gets a fresh root, so the session would not persist; those stay COLD
+    // (`--no-session`, today's default) by leaving `session` undefined. A SAME-MODEL L1 retry sets
+    // `over.resumeSessionId` (= the node id) ⇒ this attempt RESUMES (`--session <id>`) and the prompt is
+    // FEEDBACK-ONLY; the first attempt CREATES (`--session-id <id>`). An escalation never sets it (stays cold).
+    const warmEligible = IN_PLACE_KINDS.has(ctx.providerKind);
+    const isResume = warmEligible && over.resumeSessionId !== undefined;
+    const session = warmEligible
+      ? { dir: path.posix.join(node.sandbox.workspace || '.', '.pi-sessions'), id: node.id, resume: isResume }
+      : undefined;
+    if (session) { rec.sessionId = session.id; rec.sessionDir = session.dir; }
+
     // The prompt carries the machine-readable contract markers (artifacts/owns/read-scope/tools) so a
     // future node-contract extension can self-gate; we append them exactly as run.mjs does. An escalation
     // attempt PREPENDS the verified-evidence consult prefix (M4 — runNodeWithEscalation's promptPrefix).
+    // A WARM RESUME attempt writes ONLY the feedback (`promptPrefix`): the original prompt + markers already
+    // live in the resumed session tree, so re-feeding them would duplicate the turn (§4c).
     const markers = emitMarkers(markersFromNode(node, resolved));
     const promptFile = path.posix.join(nodeStage, 'prompt.md');
-    await sandbox.writeFile(promptFile, (over.promptPrefix ?? '') + resolvedPrompt + (markers ? `\n\n${markers}` : ''));
+    const promptBody = isResume
+      ? (over.promptPrefix ?? '')
+      : (over.promptPrefix ?? '') + resolvedPrompt + (markers ? `\n\n${markers}` : '');
+    await sandbox.writeFile(promptFile, promptBody);
 
     // Stage the generated tool `-e` extension (binds the node's declared sdk/mcp tools) and pass its
     // in-sandbox path to the command builder. Absent when the node selected only builtins.
@@ -1521,7 +1552,9 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
     const effModel = over.model ?? eff.model;
     const effProvider = over.provider ?? eff.provider;
     rec.model = effModel ?? null; // record the effective model (null ⇒ pi's provider default)
-    const cmd = ctx.buildCommand(node, resolved, { promptFile, model: effModel, provider: effProvider, extensionFile, skillPath }, ctx.commandOpts);
+    // (warm-resume) Merge the per-node `session` into the builder opts (DROPs `--no-session`, emits
+    // `--session-dir` + `--session-id`/`--session`). `undefined` ⇒ no merge ⇒ today's `--no-session` default.
+    const cmd = ctx.buildCommand(node, resolved, { promptFile, model: effModel, provider: effProvider, extensionFile, skillPath }, session ? { ...ctx.commandOpts, session } : ctx.commandOpts);
     rec.command = cmd;
 
     // `nodeTimeoutMs` is resolved ONCE above (shared with the cloud per-command cap at scope.create).
@@ -1936,6 +1969,10 @@ async function finishNode(
       outputHashes,
       status: 'ok',
       producedAt: nowISO(),
+      // (warm-resume C) Record the minted per-node session id/dir (when a warm-eligible node ran with one) so
+      // a future `node <run> <id> --resume` finds it without re-deriving. Absent on a cold/no-session node.
+      ...(rec.sessionId ? { sessionId: rec.sessionId } : {}),
+      ...(rec.sessionDir ? { sessionDir: rec.sessionDir } : {}),
     });
   }
   return rec;
