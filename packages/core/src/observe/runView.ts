@@ -17,7 +17,8 @@ import path from 'node:path';
 import { createNodeAccumulator } from './distill.js';
 import { loadModelCatalog, contextWindowFor, type ModelCatalog } from './models.js';
 import { checkpointViewFrom, type CheckpointMarker, type CheckpointJournalSlot } from '../runner/checkpoint.js';
-import type { Workflow } from '../types.js';
+import type { NodeConfig } from '../runner/status.js';
+import type { SandboxProviderKind, Workflow } from '../types.js';
 
 export type ScopeKind = 'run' | 'skill' | 'template' | 'package' | 'repo';
 export interface ScopeBucket { kind: ScopeKind; label: string; count: number; paths: string[] }
@@ -34,6 +35,8 @@ export interface RunViewNode {
   phase: string | null;
   /** (G6) The agent-PRESET label (branding) — the GUI maps it to {icon,label,color} from ~/.piflow/agents/. */
   agentType?: string;
+  /** (SKIN channel) The curated per-node config slice (model/tools/scoping/programmatic) — verbatim from the record. */
+  config?: NodeConfig;
   status: string;
   startedAt?: string;
   endedAt?: string;
@@ -96,6 +99,8 @@ export interface RunView {
   source?: string;
   provider?: string;
   model?: string | null;
+  /** (SKIN channel) The run's effective sandbox BACKEND (from `run.json` `sandbox`) — drives the GUI node skin. */
+  sandbox?: SandboxProviderKind;
   startedAt?: string;
   updatedAt?: string;
   durationMs?: number | null;
@@ -191,9 +196,11 @@ interface RunJsonNode {
   startedAt?: string; endedAt?: string; durationMs?: number;
   artifacts?: { path: string; exists?: boolean; bytes?: number }[];
   summary?: string; issues?: string[];
+  config?: NodeConfig;
 }
 interface RunJson {
   run: string; source?: string; provider?: string; model?: string | null;
+  sandbox?: SandboxProviderKind;
   startedAt?: string; updatedAt?: string; durationMs?: number | null;
   done?: boolean; ok?: boolean | null; totals?: { nodes: number; ok: number; failed: number };
   nodes: Record<string, RunJsonNode>;
@@ -282,6 +289,7 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
     nodes.push({
       id, label: rec.label || id, phase, status,
       ...(rec.agentType ? { agentType: rec.agentType } : {}), // (G6) verbatim passthrough → GUI icon
+      ...(rec.config ? { config: rec.config } : {}), // (SKIN) curated config slice → GUI cloud skin
       startedAt: rec.startedAt, endedAt: rec.endedAt, durationMs: rec.durationMs,
       expectedMs: expected[id] ?? rec.durationMs ?? null, priorSamples: samples[id] ?? 0,
       model: rich.model, provider: rich.provider, api: rich.api,
@@ -409,6 +417,7 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
 
   const view: RunView = {
     run: rj.run, source: rj.source, provider: rj.provider, model: rj.model,
+    ...(rj.sandbox ? { sandbox: rj.sandbox } : {}), // (SKIN) the run's effective backend → GUI node skin
     startedAt: rj.startedAt, updatedAt: rj.updatedAt, durationMs: rj.durationMs,
     done: rj.done, ok: rj.ok, totals: rj.totals, tokenTotal,
     stages, edges, nodes,
@@ -461,6 +470,8 @@ export function previewView(wf: Workflow, opts: PreviewViewOpts = {}): RunView {
       label: n.label ?? n.id,
       phase: n.phase ?? null,
       ...(n.agentType ? { agentType: n.agentType } : {}),
+      // (SKIN) a preview has no run.json ⇒ `config` is omitted here and the view-level `sandbox` stays
+      // undefined (no chosen backend yet); the GUI defaults to the 'flat' skin until a real run records them.
       status: 'pending', // a preview never ran ⇒ no live status, no telemetry
       model: n.model ?? n.tier ?? null, // tier alias labels until the runner resolves tier→model
       provider: n.provider ?? null,

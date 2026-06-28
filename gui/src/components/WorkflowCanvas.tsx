@@ -43,6 +43,7 @@ import "../styles/panels.css";
 
 import { OrbField } from "./OrbField";
 import { WorkflowNode, type FlowNode } from "./WorkflowNode";
+import { ZoneNode } from "./ZoneNode";
 import { NodeExpandOverlay } from "./NodeExpandOverlay";
 import { FileExpandOverlay, openFileFor, type OpenFile } from "./FileExpandOverlay";
 import { DirectoryPanel, type DirEntry } from "./DirectoryPanel";
@@ -54,14 +55,21 @@ import { ViewModeContext, type ViewMode } from "./ViewModeContext";
 import { FusionContext, type FusionMode } from "./FusionContext";
 import { FusionSaveBar } from "./FusionSaveBar";
 import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, loadAgentCatalog } from "../data/runView";
+import { deriveZones, toZoneFlowNode, type ZoneFlowNode } from "../data/zones";
 import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
 import { useRunStream, RunStreamContext } from "../data/runStream";
 
 /* defined OUTSIDE the component — prevents node re-mounts on every render */
-const nodeTypes = { flowNode: WorkflowNode };
+const nodeTypes = { flowNode: WorkflowNode, zone: ZoneNode };
+
+/* the canvas holds real cards AND backdrop zone nodes in one flat array (zones recompute each poll). */
+type CanvasNode = FlowNode | ZoneFlowNode;
+/* a backdrop zone is non-selectable, so it never becomes the expanded node nor a file-provenance source —
+   the card-only consumers (HUD, file overlay) read this narrowed set. */
+const isFlowNode = (n: CanvasNode): n is FlowNode => n.type === "flowNode";
 
 function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [expandedId, setExpandedId] = useState<string | null>(initialExpandedId ?? null);
   // the file opened from the navigator — shown in the standalone file overlay (null = closed).
@@ -128,7 +136,10 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
         if (!alive) return;
         setLoadError(null);
         const { nodes: n, edges: e } = toFlowGraph(view, agents); // (G6) resolve preset icons by agentType
-        setNodes(n);
+        // Prepend the derived backdrop zones (fusion clusters; template frame is dormant) — they're flat
+        // nodes recomputed each poll, painted UNDER the cards via their negative zIndex. Same RunView shape
+        // for the live run AND the fusion preview, so frames appear in preview automatically.
+        setNodes([...deriveZones(view).map(toZoneFlowNode), ...n]);
         setEdges(e);
         // The navigator shows the run's FULL on-disk tree (rooted at {{RUN}}); `fileToNode` still comes
         // from the run-view so clicking a produced file opens its node. Fall back to the produced-files
@@ -199,7 +210,10 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   // Leaving Fusion mode drops every override ⇒ the canvas falls back to the live run-view.
   useEffect(() => { if (mode !== "fusion") setFusionOverrides((o) => (Object.keys(o).length ? {} : o)); }, [mode]);
 
-  const expandedData = nodes.find((n) => n.id === expandedId)?.data ?? null;
+  const expandedNode = nodes.find((n) => n.id === expandedId);
+  const expandedData = expandedNode && isFlowNode(expandedNode) ? expandedNode.data : null;
+  // card-only nodes for the file overlay's provenance (zones carry no reads/writes).
+  const flowNodes = nodes.filter(isFlowNode);
 
   return (
     <ExpandContext.Provider value={expandApi}>
@@ -267,7 +281,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
             open={openFile}
             run={activeRun}
             tree={dir.tree}
-            nodes={nodes}
+            nodes={flowNodes}
             onSelectFile={setOpenFile}
             onOpenNode={(nodeId) => { setOpenFile(null); setExpandedId(nodeId); }}
             onClose={() => setOpenFile(null)}

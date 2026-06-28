@@ -1,6 +1,7 @@
 /**
  * NodeFusionToggle — the interactive control the Fusion view-mode paints under each node: two buttons
- * (MoA / best-of-N) that activate the SDK's fusion expansion for THIS node. Clicking sets the node's
+ * (Model Fusion / best-of-N) that activate the SDK's fusion expansion for THIS node. ("Model Fusion" is
+ * the on-screen label for the `moa` mode — mixture-of-agents.) Clicking sets the node's
  * override (canvas re-fetches `/__piflow/preview` → the DAG re-expands); clicking the active mode again
  * clears it (the node collapses back to the live run-view). `stopPropagation` keeps a button click from
  * also expanding the node's HUD.
@@ -42,7 +43,7 @@ export function NodeFusionToggle({ nodeId, agentType }: { nodeId: string; agentT
 
   return (
     <div className="ds-fusiontoggle" onClick={(e) => e.stopPropagation()}>
-      <Btn mode="moa" label="MoA" />
+      <Btn mode="moa" label="Model Fusion" />
       <Btn mode="best-of-n" label="best-of-N" />
     </div>
   );

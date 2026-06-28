@@ -195,6 +195,58 @@ describe('readRunModel — the shared one-shot snapshot over a .pi/ run dir', ()
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
+// (2b) buildRunView — the SKIN channel (run-level sandbox backend + the per-node curated config slice)
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('buildRunView — the SKIN channel surfaces the run sandbox + per-node config', () => {
+  // The run records its chosen backend ONCE (`run.json` `sandbox`) and a CURATED config slice per node
+  // (`config`). Both must round-trip through buildRunView VERBATIM, or the GUI's cloud skin (which keys off
+  // the real SandboxProviderKind + the programmatic carve-out) has nothing to render. Dropping either
+  // passthrough turns this RED (the field reads undefined). Additive: a record with none → undefined.
+  it('surfaces run-level view.sandbox from run.json and node.config verbatim from a record', async () => {
+    const runDir = mkRunDir();
+    const { status, nodes } = baseFixture();
+    // (a) the run's effective backend, stamped once.
+    status.sandbox = 'daytona';
+    // (b) a curated per-node config slice on w0 (a cloud-run agent) — the values the GUI reads.
+    status.nodes.w0.config = {
+      model: 'm1',
+      provider: 'cp',
+      tier: 'fast',
+      tools: { allow: ['fs:read'], deny: ['web:search'] },
+      timeoutMs: 60_000,
+      retries: 2,
+      agentType: 'market-research',
+      sandbox: { workspace: '.', readScope: ['spec/'], owns: ['out/'] },
+    };
+    // (b') a programmatic node carries the carve-out flag in its slice.
+    status.nodes.b2.config = { programmatic: true };
+    await writeFixture(runDir, status, nodes);
+
+    const { view } = buildRunView(runDir);
+    const vById = Object.fromEntries(view.nodes.map((n) => [n.id, n]));
+
+    // (a) the run-level backend rides through.
+    expect(view.sandbox).toBe('daytona');
+
+    // (b) the config slice rides through VERBATIM (a deep round-trip, no field dropped/renamed).
+    expect(vById.w0.config).toEqual({
+      model: 'm1',
+      provider: 'cp',
+      tier: 'fast',
+      tools: { allow: ['fs:read'], deny: ['web:search'] },
+      timeoutMs: 60_000,
+      retries: 2,
+      agentType: 'market-research',
+      sandbox: { workspace: '.', readScope: ['spec/'], owns: ['out/'] },
+    });
+    expect(vById.b2.config).toEqual({ programmatic: true });
+
+    // a node with NO config slice surfaces undefined (additive).
+    expect(vById.b1.config).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
 // (3) watchRun — the single live stream
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 describe('watchRun — snapshot, then node-status / node-event / done in order', () => {
