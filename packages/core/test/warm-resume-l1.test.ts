@@ -24,6 +24,7 @@ import { compile, InMemorySandboxProvider } from '../src/index.js';
 import type { NodeIntent, WorkflowSpec, NodeSpec, ResolveResult, SandboxProvider, Sandbox, CreateOpts } from '../src/index.js';
 import { runWorkflow, defaultExecRunner } from '../src/runner/runner.js';
 import { defaultPiCommand } from '../src/runner/command.js';
+import { piSessionsDir } from '../src/runner/layout.js';
 import type { PiCommandOptions } from '../src/types.js';
 
 const wf = (nodes: NodeIntent[]): WorkflowSpec => ({ meta: { name: 't', description: 'd' }, nodes });
@@ -114,8 +115,10 @@ describe('warm-resume L1 — same-model retry resumes the per-node session', () 
     expect(attempts[0].session!.id).toBe('producer');
     expect(attempts[0].cmd).toContain("--session-id 'producer'");
     expect(attempts[0].cmd).not.toContain('--no-session');
-    // the dir is the dedicated .pi-sessions tree, NEVER pi's .pi/ journal tree.
-    expect(attempts[0].session!.dir).toContain('.pi-sessions');
+    // The session dir is the DETERMINISTIC `<runDir>/.pi-sessions` (= piSessionsDir(outDir)), the dedicated
+    // tree under the RUN dir — NEVER the sandbox workspace, NEVER pi's `.pi/` journal tree. This exact equality
+    // is the CLI contract: a future `node <run> <id> --resume` resolves the session by this path alone.
+    expect(attempts[0].session!.dir).toBe(piSessionsDir(outDir));
     expect(attempts[0].session!.dir).not.toMatch(/(^|\/)\.pi(\/|$)/);
 
     // ── attempt 2: RESUME the SAME session (--session), warm (behavior 4) ──────────────────────────
@@ -124,9 +127,12 @@ describe('warm-resume L1 — same-model retry resumes the per-node session', () 
     expect(attempts[1].session!.id).toBe('producer');
     expect(attempts[1].cmd).toContain("--session 'producer'");
     expect(attempts[1].cmd).not.toContain('--session-id');
-    // SAME id + SAME dir as attempt 1 (warm continuation of one session, not a fresh one).
+    // SAME id + SAME dir as attempt 1 (warm continuation of one session, not a fresh one) — and that dir is
+    // the SAME deterministic `<runDir>/.pi-sessions`, so the resume on attempt 2 reads the very file attempt 1
+    // wrote (and the CLI later resolves the identical path).
     expect(attempts[1].session!.id).toBe(attempts[0].session!.id);
     expect(attempts[1].session!.dir).toBe(attempts[0].session!.dir);
+    expect(attempts[1].session!.dir).toBe(piSessionsDir(outDir));
 
     // ── the resume prompt is FEEDBACK-ONLY: the critique, NOT prefix+original+markers ───────────────
     expect(attempts[0].prompt).toContain('produce the artifact');
@@ -134,9 +140,14 @@ describe('warm-resume L1 — same-model retry resumes the per-node session', () 
     // a warm resume must NOT re-feed the original prompt (it is already in the session tree).
     expect(attempts[1].prompt).not.toContain('produce the artifact');
 
-    // ── behavior 6: the journal entry records the minted session id ─────────────────────────────────
+    // ── behavior 6: the journal records the minted session id AND its deterministic dir ─────────────
+    // The recorded dir IS the CLI's lookup key, so it must equal `piSessionsDir(outDir)` exactly — that is
+    // what lets `node <run> <id> --resume` find the session without re-deriving the path.
     const journal = JSON.parse(await fs.readFile(path.join(outDir, '.pi', 'journal.json'), 'utf8'));
     expect(journal.nodes.producer.sessionId, 'journal must record the minted session id').toBe('producer');
+    expect(journal.nodes.producer.sessionDir, 'journal must record the deterministic session dir').toBe(
+      piSessionsDir(outDir),
+    );
 
     await fs.rm(outDir, { recursive: true, force: true });
   });

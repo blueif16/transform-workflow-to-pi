@@ -75,8 +75,9 @@ The control-session host is the proven, runtime-verified driver of pi's session 
 
 **Reusable by the runner (node lane):**
 - The **`--session-dir` co-location pattern** and the **anti-collision rule** (use a dedicated subdir, NOT
-  `.pi/`). For the node lane this argues for e.g. `<runDir>/.pi/nodes/<id>/session/` or a sibling
-  `<runDir>/.pi-sessions/<id>/` — never the bare `.pi/` root (see §4d conflict).
+  `.pi/`). For the node lane this resolves to the run-level sibling `<runDir>/.pi-sessions` (= `piSessionsDir(
+  run)`, `layout.ts:37`) — under the RUN dir, NEVER the bare `.pi/` root (see §4d conflict) and NEVER the
+  sandbox workspace. The per-node session id (= the node id) disambiguates files within that one dir.
 - `parseSessionHeader`'s **pure header-parse logic** (`{type:"session"} → id`) is the SAME extraction the
   node lane needs — except the node reads it off **stdout's first line** instead of a file (the file and the
   stdout header carry the same id). The lib lives in `gui/scripts/lib/` (a GUI dev-server artifact) and is
@@ -138,8 +139,11 @@ status ladder, gates, collect, or escalation logic.
 
 ### (a) `defaultPiCommand` changes (`command.ts:68`)
 - **Add `--session-dir <dir>`** on every node run (so attempt 1's session is persisted and locatable). The dir
-  must NOT be `.pi/` (collision, see 4d) — pass a per-node dir, e.g. `<inSandboxNodeStage>/session` (already
-  under `_pi/<id>/`, jail-readable by construction) or a run-level `.pi-sessions/<id>/`.
+  must NOT be `.pi/` (collision, see 4d), and must NOT be the sandbox **workspace** — it is the RUN dir's
+  `<runDir>/.pi-sessions` (= `piSessionsDir(run)`, the `layout.ts:37` helper), the runs subfolder where `.pi/`
+  lives. Living under the run dir is what makes resume **deterministically locatable**: a future `node <run>
+  <id> --resume` resolves the session by this one absolute path alone, without re-deriving a workspace. (Scoped
+  to in-place/local providers, where `<runDir>` is a real HOST path the in-sandbox pi can write — §4d.)
 - **Drop `--no-session` when a session dir is in play** (the two are mutually exclusive — §1). Keep `--mode json`
   (unchanged — the header gives the id) and `-p`. This needs CommandContext/PiCommandOptions to carry a
   `sessionDir?` and a `resumeSessionId?` (mirroring how `model`/`provider` already thread through
@@ -186,10 +190,12 @@ status ladder, gates, collect, or escalation logic.
   surface, so the envelope hash is unaffected.
 - **Sandbox prompt-file mechanism** — **No conflict.** The feedback file is just another file written under
   `_pi/<id>/` and referenced `@<file>` (`runner.ts:1461–1462`, `command.ts:84`). A resume attempt writes a
-  smaller file. The session dir, if placed under the node stage, rides into a cloud VM like every other staged
-  file; **but** cloud backends (e2b/daytona) run each attempt in a *possibly fresh* sandbox — the session
-  `.jsonl` from attempt 1 must survive into attempt 2's sandbox. On **in-place/local** (`IN_PLACE_KINDS`,
-  `runner.ts:1559`) the dir persists naturally; on **isolated/cloud** the runner would have to download the
+  smaller file. The session dir is `<runDir>/.pi-sessions` (= `piSessionsDir(run)`) — under the RUN dir, the
+  same HOST tree where `.pi/` lives, NOT the sandbox workspace; **but** cloud backends (e2b/daytona) run each
+  attempt in a *possibly fresh* sandbox — the session `.jsonl` from attempt 1 must survive into attempt 2's
+  sandbox. On **in-place/local** (`IN_PLACE_KINDS`, `runner.ts:1559`) the run dir is a real HOST path the
+  in-sandbox pi writes directly, so the session persists naturally and the future `--resume` CLI reads the same
+  absolute path; on **isolated/cloud** the runner would have to download the
   session dir after attempt 1 and re-stage it before attempt 2 (an extra collect/stage round-trip). **FLAG:
   warm-resume is straightforward on local providers; cloud providers need the session `.jsonl` shuttled between
   attempts — scope the first cut to local, or add a session-dir stage/collect for cloud.**

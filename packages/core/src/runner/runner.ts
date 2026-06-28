@@ -70,7 +70,7 @@ import {
   writeStatus,
   artifactState,
 } from './status.js';
-import { runJsonFile } from './layout.js';
+import { runJsonFile, piSessionsDir } from './layout.js';
 import {
   type Journal,
   type NodeDecision,
@@ -1466,17 +1466,23 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
       return finishNode(ctx, node, rec, t0, 'error', `prompt token resolution failed: ${(e as Error).message}`, [], [(e as Error).message]);
     }
 
-    // (warm-resume §4) PER-NODE SESSION: mint a stable session id = the node id, persisted under a DEDICATED
-    // `.pi-sessions` dir (a sibling of `.pi/`, NEVER inside the engine journal/state tree — §4d). Scoped to
-    // IN-PLACE (local) providers, the only kind where the session `.jsonl` survives between attempts — on an
-    // inmemory/cloud sandbox each attempt gets a fresh root, so the session would not persist; those stay COLD
-    // (`--no-session`, today's default) by leaving `session` undefined. A SAME-MODEL L1 retry sets
-    // `over.resumeSessionId` (= the node id) ⇒ this attempt RESUMES (`--session <id>`) and the prompt is
-    // FEEDBACK-ONLY; the first attempt CREATES (`--session-id <id>`). An escalation never sets it (stays cold).
+    // (warm-resume §4) PER-NODE SESSION: mint a stable session id = the node id, persisted under the RUN dir's
+    // DEDICATED `.pi-sessions` tree (`piSessionsDir(ctx.outDir)` = `<runDir>/.pi-sessions` — the runs subfolder
+    // where `.pi/` lives, a SIBLING of `.pi/`, NEVER inside the engine journal/state tree, NEVER the sandbox
+    // workspace — §4d). The session living UNDER THE RUN DIR is what makes resume DETERMINISTICALLY locatable: a
+    // future `piflowctl node <run> <id> --resume` resolves it by this one absolute path. `ctx.outDir` is already
+    // absolute (built via `path.resolve` in runWorkflow), but we `path.resolve` again so the in-sandbox pi and
+    // the future CLI agree on ONE absolute path even if a caller ever threads a relative outDir. Scoped to
+    // IN-PLACE (local) providers, the only kind where the session `.jsonl` survives between attempts AND the run
+    // dir is a real HOST path the in-sandbox pi can write — on an inmemory/cloud sandbox each attempt gets a
+    // fresh root, so the session would not persist; those stay COLD (`--no-session`, today's default) by leaving
+    // `session` undefined. A SAME-MODEL L1 retry sets `over.resumeSessionId` (= the node id) ⇒ this attempt
+    // RESUMES (`--session <id>`) and the prompt is FEEDBACK-ONLY; the first attempt CREATES (`--session-id <id>`).
+    // An escalation never sets it (stays cold).
     const warmEligible = IN_PLACE_KINDS.has(ctx.providerKind);
     const isResume = warmEligible && over.resumeSessionId !== undefined;
     const session = warmEligible
-      ? { dir: path.posix.join(node.sandbox.workspace || '.', '.pi-sessions'), id: node.id, resume: isResume }
+      ? { dir: piSessionsDir(path.resolve(ctx.outDir)), id: node.id, resume: isResume }
       : undefined;
     if (session) { rec.sessionId = session.id; rec.sessionDir = session.dir; }
 
