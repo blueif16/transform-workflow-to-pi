@@ -273,12 +273,19 @@ export {
   nodeToolsFile,
   nodeMcpFile,
   nodeEventsFile,
+  // (warm-resume) the per-run pi session-storage dir (sibling of `.pi/`) — the `--session-dir` a
+  // `piflowctl node <run> <id> --resume` addresses the stored per-node session under.
+  piSessionsDir,
   writeNodeIo,
   // G5 — human-checkpoint marker/reply file paths (per-run data in the RUN dir).
   checkpointsDir,
   checkpointMarkerFile,
   checkpointReplyFile,
 } from './runner/layout.js';
+// G4 journal reader — the per-node content-hash journal (`.pi/journal.json`). A `node <run> <id>
+// --resume` reads `nodes.<id>.sessionId`/`.sessionDir` from here to confirm a resumable session.
+export { loadJournal, journalFile } from './runner/journal.js';
+export type { Journal, JournalNode } from './runner/journal.js';
 
 // Docker-style run-name generation (`<bake-adjective>-<pie>`, e.g. "flaky-pecan"): the CLI mints a
 // memorable, collision-checked run name when `--run/--id` is omitted, decoupling a run's identity from

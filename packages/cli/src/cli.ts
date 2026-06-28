@@ -19,6 +19,7 @@ import { runStatusCli } from './status.js';
 import { runWatchCli } from './watch.js';
 import { runExtractCli } from './extract.js';
 import { runRunCli } from './run.js';
+import { runNodeCli } from './node.js';
 import { runInspectCli } from './inspect.js';
 import { runTelemetryCli } from './telemetry.js';
 import { runGuiCli } from './gui.js';
@@ -29,6 +30,7 @@ USAGE
   piflowctl new     <templateDir> [flags]   scaffold meta.json + the nodes/ dir (then add-node + Write prose)
   piflowctl add-node <templateDir> --id <id> [flags]  emit one schema-valid node.json (prose is yours)
   piflowctl run     <templateDir> [--run <id>] [flags]  drive a template run (real or --dry-run)
+  piflowctl node    <run> <nodeId> --resume [-m "<msg>"]  warm-resume a node's stored pi session (--stop too)
   piflowctl inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
   piflowctl extract <templateDir>           free DAG preview (node count + parallel lanes; no model)
   piflowctl status  <rundir> [--every <s>]  per-node table + stage/rollup (verified on disk)
@@ -61,6 +63,18 @@ RUN
                    ALWAYS uses its canonical .piflow/<wf>/runs/<run>/ home and IGNORES --out (a
                    canonical run is never relocated). Default: canonical home, else out/<run>.
   --from / --until <substr>  resume / truncate the stage window.
+
+NODE
+  <run>         a run id (resolved under .piflow/<wf>/runs/<id>) OR a direct path to a run dir.
+  <nodeId>      the node to operate on (= its persisted pi session id).
+  --resume      CONVERSATIONAL warm-resume of the node's stored pi session (the run persisted it under
+                <runDir>/.pi-sessions, keyed by node id). Re-opens the SAME conversation via pi's native
+                --session-dir/--session. NOT a runner re-execution (no sandbox/tools/gates re-staging).
+  -m / --message "<msg>"  send one headless message into the resumed session; omit for a LIVE session.
+                A node with no recorded session (cold inmemory/cloud, or never ran --sandbox local) errors,
+                naming the resumable nodes.
+  --stop        NOT YET SUPPORTED — stopping a live node needs per-node PID tracking that 'run --detach'
+                does not yet record; exits non-zero with what real stop requires.
 
 NEW
   <templateDir> the template dir to create (e.g. .piflow/<wf>/template). Writes meta.json + nodes/.
@@ -127,6 +141,9 @@ async function main(): Promise<void> {
       break;
     case 'run':
       await runRunCli(rest);
+      break;
+    case 'node':
+      process.exitCode = await runNodeCli(rest);
       break;
     case 'inspect':
       await runInspectCli(rest);
