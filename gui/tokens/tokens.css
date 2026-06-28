@@ -29,6 +29,17 @@
   --ds-blue-600: #0061d5;
   --ds-blue-700: #0052b3;
 
+  /* --- violet (the FRAME channel — the fusion-cluster backdrop only; NOT an action/accent color, and
+     deliberately NOT blue, which is reserved for the separate node-skin channel) --- */
+  --ds-violet-50: #f5f3ff;
+  --ds-violet-100: #ede9fe;
+  --ds-violet-200: #ddd6fe;
+  --ds-violet-300: #c4b5fd;
+  --ds-violet-400: #a78bfa;
+  --ds-violet-500: #8b5cf6;
+  --ds-violet-600: #7c3aed;
+  --ds-violet-700: #6d28d9;
+
   /* --- semantic: background --- */
   --ds-bg-canvas: var(--ds-white);
   --ds-bg-soft: var(--ds-neutral-50);
@@ -81,6 +92,11 @@
   /* --- edges --- */
   --ds-edge-default: var(--ds-neutral-400);
   --ds-edge-active: var(--ds-blue-500);
+
+  /* --- frame channel (cluster backdrops drawn BEHIND grouped nodes) --- */
+  --ds-fusion: var(--ds-violet-500);                 /* fusion-cluster stroke + label tab (dashed, accented) */
+  --ds-fusion-fill: rgba(139, 92, 246, 0.05);        /* faint inner wash — fusion only */
+  --ds-frame-ink: var(--ds-neutral-500);             /* neutral template-frame bracket (recessive ink) */
 
   /* --- glass --- */
   --ds-glass-bg: rgba(255, 255, 255, 0.72);

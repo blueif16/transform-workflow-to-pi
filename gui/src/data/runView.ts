@@ -212,12 +212,24 @@ export function contextTone(frac: number): ContextTone {
 
 const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+/** Node-placement geometry — the SINGLE source for where a node lands on the canvas. Exported so the
+ *  backdrop-zone math (`data/zones.ts`) mirrors `toFlowGraph` EXACTLY (no duplicated literals → no drift).
+ *  COL/ROW = stage-column / parallel-lane stride; NODE_W/NODE_H = the card box (= --ds-node-width /
+ *  --ds-node-min-h tokens) used to inflate a cluster's bbox from its members' top-left anchors. */
+export const COL = 300;
+export const ROW = 132;
+export const NODE_W = 220;
+export const NODE_H = 64;
+
+/** Top-left anchor of a node, given its stage/lane — the one formula `toFlowGraph` lays out by. */
+export function nodePosition(stageIndex: number | undefined, lane: number | undefined): { x: number; y: number } {
+  return { x: 40 + ((stageIndex ?? 1) - 1) * COL, y: 60 + (lane ?? 0) * ROW };
+}
+
 /** Build the React Flow graph (positions by stage column / parallel-lane row) from a run-view. The optional
  *  agent-preset `catalog` resolves a node's `agentType` → its branded icon/color/label (G6); absent ⇒ the
  *  node renders the default chip. */
 export function toFlowGraph(view: RunView, catalog: AgentCatalog = {}): { nodes: FlowNode[]; edges: Edge[] } {
-  const COL = 300;
-  const ROW = 132;
   const nodes: FlowNode[] = view.nodes.map((rv) => {
     const stageIndex = rv.stageIndex ?? 1;
     const lane = rv.lane ?? 0;
@@ -246,7 +258,7 @@ export function toFlowGraph(view: RunView, catalog: AgentCatalog = {}): { nodes:
     return {
       id: rv.id,
       type: "flowNode",
-      position: { x: 40 + (stageIndex - 1) * COL, y: 60 + lane * ROW },
+      position: nodePosition(stageIndex, lane),
       data,
     } as FlowNode;
   });
