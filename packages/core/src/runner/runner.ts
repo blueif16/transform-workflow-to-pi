@@ -64,6 +64,7 @@ import { createLimiter, normalizeConcurrent, type Limiter } from './limit.js';
 import {
   type RunStatus,
   type NodeStatusRecord,
+  type NodeConfig,
   type ArtifactState,
   nowISO,
   writeStatus,
@@ -1851,6 +1852,42 @@ async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: A
 }
 
 /** Stamp a node's terminal fields, write status, and return the record. */
+/**
+ * (SKIN channel) Build the CURATED per-node config slice from the RESOLVED NodeSpec — a stable named subset
+ * the single observe path mirrors so a viewer knows "what this node ran AS" (model/tools/scoping/programmatic).
+ * NOT the whole NodeSpec: no prompt text, no op/io envelopes. Each field is sourced from its real NodeSpec
+ * location and OMITTED when absent (no `undefined` keys, so the on-disk slice stays minimal). `sandbox` here is
+ * per-node SCOPING (workspace/readScope/owns), NOT the chosen backend — that is run-level (`status.sandbox`).
+ */
+function buildNodeConfig(node: NodeSpec): NodeConfig {
+  const cfg: NodeConfig = {};
+  if (node.model !== undefined) cfg.model = node.model;                 // types.ts: NodeSpec.model
+  if (node.provider !== undefined) cfg.provider = node.provider;        // types.ts: NodeSpec.provider
+  if (node.tier !== undefined) cfg.tier = node.tier;                    // types.ts: NodeSpec.tier
+  // `tools`/`sandbox` are TYPED required on NodeSpec but a programmatic node legitimately omits both
+  // (types.ts:94 "needs no tools"; the DAG compile fills no defaults), so guard for runtime-absent.
+  const tools = node.tools;                                            // types.ts: NodeSpec.tools
+  if (tools && (tools.allow !== undefined || tools.deny !== undefined)) {
+    cfg.tools = {};
+    if (tools.allow !== undefined) cfg.tools.allow = tools.allow;       // types.ts: ToolSelection.allow
+    if (tools.deny !== undefined) cfg.tools.deny = tools.deny;          // types.ts: ToolSelection.deny
+  }
+  const sandbox = node.sandbox;                                        // types.ts: NodeSpec.sandbox
+  if (sandbox?.timeoutMs !== undefined) cfg.timeoutMs = sandbox.timeoutMs; // types.ts: SandboxSpec.timeoutMs
+  if (node.io.retries !== undefined) cfg.retries = node.io.retries;    // types.ts: NodeIO.retries (per-node budget)
+  if (node.agentType !== undefined) cfg.agentType = node.agentType;    // types.ts: NodeSpec.agentType
+  if (node.programmatic === true) cfg.programmatic = true;             // types.ts: NodeSpec.programmatic
+  // Per-node SCOPING (the write-authority globs are SandboxSpec.write = the node's `owns`).
+  if (sandbox) {
+    const sb: NonNullable<NodeConfig['sandbox']> = {};
+    if (sandbox.workspace !== undefined) sb.workspace = sandbox.workspace; // types.ts: SandboxSpec.workspace
+    if (sandbox.read !== undefined) sb.readScope = sandbox.read;           // types.ts: SandboxSpec.read
+    if (sandbox.write !== undefined) sb.owns = sandbox.write;              // types.ts: SandboxSpec.write
+    if (Object.keys(sb).length) cfg.sandbox = sb;
+  }
+  return cfg;
+}
+
 async function finishNode(
   ctx: RunContext,
   node: NodeSpec,
@@ -1867,6 +1904,10 @@ async function finishNode(
   rec.artifacts = artifacts;
   rec.issues = issues;
   rec.summary = summary;
+  // (SKIN channel) Mirror the curated config slice from the resolved NodeSpec onto the terminal record (the
+  // SAME site that stamps the verdict — `agentType`/`model` already ride the record). Only set when non-empty.
+  const cfg = buildNodeConfig(node);
+  if (Object.keys(cfg).length) rec.config = cfg;
   // AWAIT the write (was a fire-and-forget `void`): a node's terminal record must be durable on disk
   // before its lane resolves, so the halt decision + final rollup never race an in-flight write. The
   // write is serialized + atomic (see writeStatus), so awaiting here cannot deadlock parallel lanes.
@@ -2123,6 +2164,10 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
       profile: opts.profile ?? null,
       provider: opts.providerName ?? 'cp',
       model: opts.model ?? null,
+      // (SKIN channel) Stamp the run's EFFECTIVE sandbox BACKEND ONCE — the kind of the single provider
+      // instance chosen at the CLI (`--sandbox`). Run-wide (every pi node runs in this backend); the
+      // per-node programmatic carve-out is recorded in each node's `config` slice (always host-local).
+      sandbox: provider.kind,
       startedAt: nowISO(),
       updatedAt: nowISO(),
       done: false,
