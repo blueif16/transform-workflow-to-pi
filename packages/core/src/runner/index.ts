@@ -89,8 +89,14 @@ export {
   resolveNodeModel,
   ModelRoutingError,
   loadModelTiers,
+  writeModelTiers,
   loadModelsIndex,
   defaultTiersPath,
   defaultModelsPath,
+  CANONICAL_TIERS,
+  TIER_FAST,
+  TIER_BALANCED,
+  TIER_DEEP,
+  DEFAULT_TIERS_SEED,
 } from './model-routing.js';
 export type { ModelTiers, NodeRouting, RunRouting, EffectiveModel } from './model-routing.js';

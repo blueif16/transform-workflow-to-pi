@@ -15,6 +15,7 @@ import fssync from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { DEFAULT_TIERS_SEED, writeModelTiers } from '../runner/model-routing.js';
 
 /** One registered product: a repo ROOT (paths only — no collected data ever lives here). */
 export interface ProductEntry {
@@ -37,6 +38,33 @@ export function globalDir(): string {
 /** `~/.piflow/products.json` — the registered-repos registry. */
 export function productsFile(): string {
   return path.join(globalDir(), 'products.json');
+}
+
+/** `~/.piflow/model-tiers.json` UNDER the global home (honors `PIFLOW_HOME`; unlike `defaultTiersPath`,
+ * which is pinned to `~/.piflow` for the SDK read path). The lazy bootstrap seeds THIS path. */
+export function homeTiersFile(): string {
+  return path.join(globalDir(), 'model-tiers.json');
+}
+
+/**
+ * The LAZY first-run bootstrap of `~/.piflow` (the user's "check on first run" design). Idempotent + cheap:
+ * `mkdir -p` the home, then SEED `model-tiers.json` with the three canonical keys (`fast`/`balanced`/`deep`)
+ * present and `active:false` — so `piflowctl model list` always has something to show and a node that pins a
+ * `tier` gets the EXISTING clear "set a model / set active:true" routing error until configured.
+ *
+ * NEVER clobbers a user's values: if the tiers file already exists this is a pure NO-OP (the existsSync
+ * guard). Honors `PIFLOW_HOME` (the test seam) by writing under `globalDir()`/`homeTiersFile()`, NOT the
+ * `~/.piflow`-pinned `defaultTiersPath()`. Best-effort — a write failure (no permissions) is swallowed so it
+ * can run unconditionally at the top of the CLI entry without ever failing a command.
+ */
+export function ensurePiflowHome(): void {
+  try {
+    fssync.mkdirSync(globalDir(), { recursive: true });
+    const tiers = homeTiersFile();
+    if (!fssync.existsSync(tiers)) writeModelTiers(DEFAULT_TIERS_SEED, tiers);
+  } catch {
+    /* best-effort: a non-writable home must never fail the command that triggered the bootstrap */
+  }
 }
 
 /** `~/.piflow/index.json` — the periodic on-disk snapshot artifact (the live GUI recomputes; this caches). */

@@ -211,9 +211,15 @@ export {
   resolveNodeModel,
   ModelRoutingError,
   loadModelTiers,
+  writeModelTiers,
   loadModelsIndex,
   defaultTiersPath,
   defaultModelsPath,
+  CANONICAL_TIERS,
+  TIER_FAST,
+  TIER_BALANCED,
+  TIER_DEEP,
+  DEFAULT_TIERS_SEED,
 } from './runner/index.js';
 export type { ModelTiers, NodeRouting, RunRouting, EffectiveModel } from './runner/index.js';
 // loadConfig — the env layer (D5): PI_RUNNER_* env + parsed args → the run-opts object runFromConfig
@@ -326,6 +332,8 @@ export {
   globalDir,
   productsFile,
   indexFile,
+  homeTiersFile,
+  ensurePiflowHome,
   loadRegistry,
   upsertRoot,
   saveRegistry,

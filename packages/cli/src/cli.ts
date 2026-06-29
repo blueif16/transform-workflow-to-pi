@@ -13,8 +13,9 @@
 // `status` lays out a `readRunModel` snapshot, `watch` consumes the `watchRun` live stream. They build
 // NO run model of their own — the shared reader VERIFIES artifacts on disk (verified, not trusted).
 
-import { runLogsCli } from '@piflow/core';
+import { runLogsCli, ensurePiflowHome } from '@piflow/core';
 import { runNewCli, runAddNodeCli } from './scaffold.js';
+import { runModelCli } from './model.js';
 import { runStatusCli } from './status.js';
 import { runWatchCli } from './watch.js';
 import { runExtractCli } from './extract.js';
@@ -39,6 +40,7 @@ USAGE
                                             verdicts · cost spine · loop signals · anomaly worklist ·
                                             failure-onset root cause. --watch = live stream then record.
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
+  piflowctl model   [list | set <tier> <modelId> | activate | deactivate]  the model-tier config
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
 
 RUN
@@ -123,6 +125,12 @@ TELEMETRY
   --verbose / -v  also stream per chat/tool call lines (full span tree); default = anomalies + verdicts.
   --json        emit the raw RunDigest (or one node's NodeDigest) for an agent to consume.
 
+MODEL
+  list (or bare)            print the tier map (~/.piflow/model-tiers.json) + active + the canonical keys.
+  set <tier> <modelId>      map a tier alias → a model id AND set active:true (written atomically). Canonical
+                            tiers: fast | balanced | deep; a free product name is allowed (warns, never fails).
+  activate / deactivate     flip whether tier references resolve (precedence: node.model > tier > --model).
+
 LOGS (from @piflow/core)
   -f --follow · --node <id> · --summary · --raw · --poll <ms>   (see 'piflowctl logs --help' semantics)
 
@@ -132,6 +140,10 @@ TIP
 `;
 
 async function main(): Promise<void> {
+  // Lazy first-run bootstrap of ~/.piflow (idempotent + cheap + best-effort): seeds model-tiers.json with the
+  // canonical tiers so `model list` always has something to show and tier resolution gives clear errors until
+  // configured. A no-op once the home/file exists; never clobbers user values; never fails the command.
+  ensurePiflowHome();
   const [sub, ...rest] = process.argv.slice(2);
   switch (sub) {
     case 'new':
@@ -163,6 +175,9 @@ async function main(): Promise<void> {
       break;
     case 'logs':
       await runLogsCli(rest);
+      break;
+    case 'model':
+      await runModelCli(rest);
       break;
     case 'gui':
       await runGuiCli(rest);

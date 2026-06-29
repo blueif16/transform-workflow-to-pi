@@ -15,7 +15,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs';
 
 /** The optional, activatable tier→model alias map (`~/.piflow/model-tiers.json`). Names are free product data. */
 export interface ModelTiers {
@@ -176,6 +176,24 @@ export function seedModelTiers(file: string = defaultTiersPath()): void {
   } catch {
     /* best-effort: absent write permissions → silently skip */
   }
+}
+
+/**
+ * WRITE the tier map atomically (the round-trip partner of `loadModelTiers` — same `{active,tiers}` shape,
+ * so the runner reads EXACTLY what the CLI writes). `mkdir -p` the home, write a sibling `.tmp`, then
+ * `rename` it over the target (atomic on POSIX — a reader never sees a half-written file). Unlike the
+ * write-once `seedModelTiers`, this OVERWRITES — it is the CLI's `model set`/`activate` mutation sink, so the
+ * caller (not the writer) owns the don't-clobber decision (the lazy ensure guards on `existsSync`).
+ *
+ * Additive: does NOT touch `loadModelTiers`/`resolveNodeModel`/the precedence. Pretty-printed + a trailing
+ * newline (git-friendly + matches `seedModelTiers`).
+ */
+export function writeModelTiers(tiers: ModelTiers, file: string = defaultTiersPath()): void {
+  const dir = path.dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.tmp`);
+  writeFileSync(tmp, JSON.stringify(tiers, null, 2) + '\n', 'utf8');
+  renameSync(tmp, file); // atomic publish
 }
 
 /** Build `model id → provider name` from pi's `models.json` (READ-ONLY). Absent/invalid ⇒ an empty map. */
