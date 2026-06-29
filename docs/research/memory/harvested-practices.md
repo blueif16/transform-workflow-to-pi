@@ -1,7 +1,7 @@
 # Harvested practices — memory & self-correction
 
 > Created 2026-06-28. Cross-source harvest, `file:line`-cited in the vendored repos. Framing +
-> taxonomy: `README.md`. Our resulting practice: `piflow-memory-practice.md`.
+> taxonomy: `README.md`. Our resulting practice: `piflow-memory-v1.md`.
 >
 > **Do-not-duplicate note (law 5).** The deep harvest of the **real Hermes Agent** and the **memory
 > design** already live, in richer form, inside the `hermes-skill-system` skill —

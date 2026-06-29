@@ -62,11 +62,12 @@ The new value here is **(a)** the vendor harvests those briefs don't cover (Rond
 - **`harvested-practices.md`** — the cross-source harvest: a **Hermes pointer + fresh-code delta**
   (the deep dive lives in the briefs above), the new **RondoFlow** and **ADK** harvests, the
   cross-source matrix, and the distilled lessons.
-- **`piflow-memory-practice.md`** — **piflow's v1 practice**: the `hermes-skill-system` method applied
-  to a DAG of `pi` nodes — two capped levels (per-node + whole-DAG), the per-node editable surface
-  (skill **+** `op[]` check scripts), defect→node credit assignment ("gradient descent") with
-  per-node optimizer sub-agents, DAG-level defects → architectural change between runs, and the
-  still-open questions.
+- **`piflow-memory-v1.md`** — **piflow's v1 structure**: the `hermes-skill-system` method applied to a
+  DAG of `pi` nodes, as **two legs** — *self/history* (git + per-node + template `memory.md`, mapping
+  Karpathy's three-file memory onto two write-authority surfaces) and *world/code* (`code-map.md`,
+  always OKF-standard, **Tier 0** = one slice per node / **Tier 1** = opt-in codegraph + product-global
+  OKF layer); **scope = the node's contract** (`readScope`/`owns` = the optimization blast radius); the
+  **triage → per-node fixer → reconcile** meta-DAG; and the still-open questions.
 
 ## Sources (all vendored, `.gitignore`d under `vendor/`)
 
