@@ -1,7 +1,7 @@
 // The retry/escalate FSM (cluster G) — runNodeWithRetries, the bounded retry-by-failure-class +
 // escalate-with-evidence runtime around `runNode`. Extracted verbatim from runner.ts. It imports
-// `RunContext` from the leaf ./run-context.js and `runNode` from ./runner.js (a runtime-only call,
-// temporary until step 8 repoints it at ./node-lifecycle.js). One-way import edges only (RISK 2).
+// `RunContext` from the leaf ./run-context.js and `runNode` from ./node-lifecycle.js — a one-way edge
+// into the lifecycle module (RISK 2: no import points back at runner.ts).
 
 import type { NodeSpec, RunScope, RetrySpec, FailureClass } from '../types.js';
 import type { RunContext } from './run-context.js';
@@ -9,7 +9,7 @@ import { classifyFailure, consultPreamble, legacyRetry } from '../checks.js';
 import { resolveNodeModel, type EffectiveModel } from './model-routing.js';
 import { actionsFromOp } from './op-dispatch.js';
 import type { NodeStatusRecord } from './status.js';
-import { runNode } from './runner.js';
+import { runNode } from './node-lifecycle.js';
 
 /**
  * (G12 — M4) The trigger-action runtime — the bounded retry-by-failure-class + escalate-with-evidence

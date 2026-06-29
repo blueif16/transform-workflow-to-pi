@@ -1,8 +1,8 @@
 // The three NO-PI node lanes (the §0 highest-value move) — runCheckpoint+finishCheckpoint,
 // runRerouteGate, runProgrammatic — each a self-contained `(ctx, node) → Promise<NodeStatusRecord>` that
 // spawns no `pi`. Extracted verbatim from runner.ts (the §2.1 cluster H split). They import `RunContext`
-// from the leaf ./run-context.js and `finishNode` from ./runner.js (a runtime-only call, hoisted, so the
-// momentary runner→node-lanes→runner edge is NOT a load-time cycle — see RISK 2 / Step 8 ordering).
+// from the leaf ./run-context.js and `finishNode` from ./node-lifecycle.js — a one-way edge into the
+// lifecycle module (RISK 2: finishNode lives WITH runNode so this import never points back at runner.ts).
 
 import { promises as fs, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -41,7 +41,7 @@ import {
   readCheckpointJournal,
   journalCheckpoint,
 } from './checkpoint.js';
-import { finishNode } from './runner.js';
+import { finishNode } from './node-lifecycle.js';
 
 // ── (G5) the HUMAN CHECKPOINT lane — no `pi`, no slot held while parked ──────────────────────────────
 
