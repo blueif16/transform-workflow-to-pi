@@ -1,6 +1,9 @@
 "use client";
 
 /* ============================================================
+   SECTION · Function page  ·  #agents  ·  data-section="function"
+   (Agent · Workflow · Memory — the three horizontal screens)
+   ------------------------------------------------------------
    ProductScreens — the product section as THREE screens that
    advance HORIZONTALLY one at a time: Agents → Workflow → Memory.
    The top + bottom rails stay put (the breadcrumb label + progress
@@ -213,7 +216,7 @@ export default function ProductScreens() {
   const current = PRODUCTS[active];
 
   return (
-    <section id="agents" ref={rootRef} className="relative w-full">
+    <section id="agents" ref={rootRef} data-section="function" className="relative w-full">
       <div
         ref={pinRef}
         className="relative flex h-auto w-full flex-col bg-canvas lg:h-svh"

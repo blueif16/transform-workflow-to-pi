@@ -1,6 +1,9 @@
 "use client";
 
 /* ============================================================
+   SECTION · Composition page  ·  #layers  ·  data-section="composition"
+   (the @SDK · @CLI · @Skills format cards)
+   ------------------------------------------------------------
    Formats — "@piflow is agent-native. Everything is built — not
    only for you, but for the agents that run it — as ▮." The trailing
    ▮ is a LIVE readout: click one of the three angular format cells
@@ -35,7 +38,7 @@ export default function LayerCards() {
   const current = FORMATS[active];
 
   return (
-    <section id="layers" className="relative flex min-h-svh w-full flex-col justify-center overflow-hidden bg-canvas py-20">
+    <section id="layers" data-section="composition" className="relative flex min-h-svh w-full flex-col justify-center overflow-hidden bg-canvas py-20">
       <div className="gridpaper pointer-events-none absolute inset-0" aria-hidden />
 
       <div className="relative mx-auto w-full max-w-5xl px-6">
