@@ -890,7 +890,7 @@ export interface SubworkflowSpec {
  * metadata (a display label, §5) carried through so a PROFILE predicate can select nodes by it — it
  * NEVER drives ordering/parallelism (deps + owns do).
  */
-export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentType' | 'tools' | 'model' | 'provider' | 'tier'> & {
+export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentType' | 'tools' | 'model' | 'provider' | 'tier' | 'executor'> & {
   io: NodeIO;
   /** Generic phase label (display metadata; the elision predicate may select by it). Optional/additive. */
   phase?: string;

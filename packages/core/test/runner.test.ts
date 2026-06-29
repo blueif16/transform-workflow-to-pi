@@ -456,6 +456,70 @@ describe('per-node model routing (G1)', () => {
   });
 });
 
+// ── claude-code executor: the THREE seams compose end-to-end through the runner (offline) ──────────
+//   The seam units are proven elsewhere — dispatchCommand routing (claude-command.test), the parallel
+//   `claude` tier block (model-routing.test), claudeExecutorReadPaths (claude-command.test). What was
+//   NOT covered: their COMPOSITION inside node-lifecycle when an AUTHORED claude-code node runs through
+//   `runWorkflow`. This drives the real authoring path (`compile`) + the DEFAULT builder (`dispatchCommand`,
+//   no buildCommand override) + a FAKE execRunner that emits the artifact without spawning `claude`. It
+//   is RED until `executor` survives authoring (NodeIntent + dag.materialize) — the wiring that lets a
+//   node SELECT claude-code at all.
+
+describe('runWorkflow — claude-code executor dispatch composes end-to-end (offline, no live claude)', () => {
+  it('an AUTHORED claude-code node dispatches `claude -p`, resolves the model via the parallel `claude` tier block, unions ~/.claude into readScope, and completes', async () => {
+    // Author exactly as a user would: `executor` on the intent + a `deep` tier (no explicit model).
+    const g = compile(wf([n('Fix', [], ['fix.txt'], { executor: 'claude-code', tier: 'deep' })]));
+    // The authoring glue carried `executor` onto the dense NodeSpec (else dispatch can never route to claude).
+    expect(g.nodes.fix.executor).toBe('claude-code');
+
+    const outDir = await tmpOut();
+
+    // A recording provider over InMemory: capture the `readScope` + `outputDir` the runner hands scope.create
+    // (InMemory ignores scope, but the runner still PASSES it — so we can prove the ~/.claude union fired).
+    let createReadScope: string[] | undefined;
+    let createOutputDir: string | undefined;
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        createReadScope = opts.readScope;
+        createOutputDir = opts.outputDir;
+        return base.create(opts);
+      },
+    };
+
+    // The FAKE execRunner (the offline injection point B-of-the-spike asked for): do NOT spawn `claude`.
+    // Write the node's declared artifact into the sandbox output dir and exit 0. We assert the REAL
+    // `claude -p` command on `status.command` — the default dispatchCommand built it BEFORE this ran.
+    const execRunner: ExecRunner = async (sandbox) => {
+      await sandbox.writeFile(`${createOutputDir}/fix.txt`, 'claude-wrote-this');
+      return { result: { stdout: '', stderr: '', code: 0 }, killed: null };
+    };
+
+    // The parallel `claude` tier block maps `deep` → a Claude model; the pi `tiers` value (deepseek-v3) is a
+    // DIFFERENT, pi-only id — so reading 'haiku' (not 'deepseek-v3') proves the claude branch was taken.
+    const tiers = { active: true, tiers: { deep: 'deepseek-v3' }, claude: { deep: 'haiku' } };
+    const { status } = await runWorkflow(g, {
+      run: 'cc-offline', outDir, provider, execRunner, modelRouting: { tiers, modelsIndex: new Map() },
+    });
+
+    // (1) DISPATCH — the DEFAULT builder routed to the Claude command, never pi.
+    expect(status.nodes.fix.command).toContain('claude -p');
+    expect(status.nodes.fix.command).not.toContain('pi -p');
+    // (2) MODEL — resolved through the parallel `claude` tier block (deep → haiku), NOT the pi `tiers` id.
+    expect(status.nodes.fix.model).toBe('haiku');
+    expect(status.nodes.fix.command).toContain('--model haiku');
+    // (3) READ-JAIL — ~/.claude unioned into the node's readScope at create (so `claude` can authenticate).
+    expect(createReadScope).toContain(path.join(os.homedir(), '.claude'));
+    // (4) COMPLETES — the full lifecycle (stage → exec → collect → host-stat verify) is green.
+    expect(status.nodes.fix.status).toBe('ok');
+    expect(status.ok).toBe(true);
+    expect(await fs.readFile(path.join(outDir, 'fix.txt'), 'utf8')).toBe('claude-wrote-this');
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
 // ── command builder (the production default's flag shape) ────────────────────────────────────────
 
 describe('defaultPiCommand — production headless flags', () => {
