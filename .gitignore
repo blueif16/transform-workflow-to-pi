@@ -6,6 +6,8 @@ vendors/
 
 # JS/TS build + deps (the packages/ SDK)
 node_modules/
+# worktree-local symlink to the main checkout's gui deps (a symlink isn't a dir, so `node_modules/` misses it)
+gui/node_modules
 dist/
 *.tsbuildinfo
 
@@ -33,3 +35,4 @@ gui/public/runs/*/.pi/
 # (regenerable, machine-local). Tracked .claude/skills/ stay tracked.
 .claude/worktrees/
 .claude/workflows/
+.tasks/HANDOFF-*.md
