@@ -11,18 +11,13 @@ import FluidGrid from "@/components/FluidGrid";
 
 const GITHUB_URL = "https://github.com/blueif16/PiFlow";
 
-// Brand mark — the PiFlow icon AS AUTHORED: a black tile with the white
-// π + triangle glyph. Render it straight (no invert) so the real mark
-// reads; the dark chip sits inside the white nav pill with one beveled
-// corner to match the angular system (§3 "dark logo chip").
+// Brand mark — the PiFlow glyph. Source asset is a black square with a
+// white glyph; `invert` flips it to the all-black mark on transparent, so
+// on the white nav pill only the black glyph reads (theme is white).
 function LogoMark() {
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src="/bw_icon.svg"
-      alt="PiFlow"
-      className="hud-cut-tl [--hud-bevel:7px] size-8"
-    />
+    <img src="/bw_icon.svg" alt="PiFlow" className="size-8 invert" />
   );
 }
 
