@@ -1,5 +1,5 @@
 import Hero from "./_sections/Hero";
-import Loop from "./_sections/Loop";
+import AgentsP1 from "./_sections/AgentsP1";
 import LayerCards from "./_sections/LayerCards";
 import NodeL1 from "./_sections/NodeL1";
 import ComposeL2 from "./_sections/ComposeL2";
@@ -16,7 +16,7 @@ export default function Home() {
       <div className="grain" aria-hidden />
       <main>
         <Hero />
-        <Loop />
+        <AgentsP1 />
         <LayerCards />
         <NodeL1 />
         <ComposeL2 />

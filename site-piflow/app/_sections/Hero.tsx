@@ -54,7 +54,7 @@ export default function Hero() {
               Docs
             </a>
             <a
-              href="#loop"
+              href="#agents"
               className="px-2.5 text-sm font-medium text-fg-muted transition-colors hover:text-fg"
             >
               Demo
@@ -78,29 +78,34 @@ export default function Hero() {
         {/* data-hover-anchor: HoverGrid warms cells near this box to accent */}
         <div
           data-hover-anchor
-          className="mt-auto max-w-xl pb-12 sm:pb-16 lg:pb-20"
+          className="mt-auto max-w-2xl pb-12 sm:pb-16 lg:pb-20"
         >
           <span className="hud-frame [--hud-bevel:8px] blur-in mb-5 inline-flex w-fit items-center gap-2 border border-[var(--hairline)] bg-white/70 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint backdrop-blur">
             <span className="size-1.5 rounded-full bg-accent" aria-hidden />
             Agentic workflow powered by the Pi Agents
           </span>
-          <h1
-            className="blur-in text-balance text-6xl font-semibold leading-[0.96] tracking-[-0.04em] text-fg sm:text-7xl"
-            style={{ animationDelay: "0.05s" }}
-          >
-            Pi Flow
-          </h1>
 
-          {/* primary CTA — angular ink button, GSAP-scrolls to the next section */}
-          <LearnMoreButton
-            className="hud-cut-tr [--hud-bevel:12px] blur-in mt-8 inline-flex w-fit items-center gap-2 bg-[var(--ink)] px-5 py-3 text-sm font-medium text-white shadow-[var(--shadow-sm)] transition-[background,transform] hover:bg-[var(--ink-hover)] hover:-translate-y-0.5 active:translate-y-0"
-            target="#loop"
-          >
-            Learn more
-            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M12 5v14M6 13l6 6 6-6" />
-            </svg>
-          </LearnMoreButton>
+          {/* title + CTA on one row — the button rides parallel to the
+              wordmark, bottom-aligned, and wraps under it on narrow widths */}
+          <div className="flex flex-wrap items-end gap-x-7 gap-y-4">
+            <h1
+              className="blur-in text-balance text-6xl font-semibold leading-[0.96] tracking-[-0.04em] text-fg sm:text-7xl"
+              style={{ animationDelay: "0.05s" }}
+            >
+              Pi Flow
+            </h1>
+
+            {/* primary CTA — angular ink button, GSAP-scrolls to #agents */}
+            <LearnMoreButton
+              className="hud-cut-tr [--hud-bevel:12px] blur-in mb-1.5 inline-flex w-fit items-center gap-2 bg-[var(--ink)] px-5 py-3 text-sm font-medium text-white shadow-[var(--shadow-sm)] transition-[background,transform] hover:bg-[var(--ink-hover)] hover:-translate-y-0.5 active:translate-y-0"
+              target="#agents"
+            >
+              Learn more
+              <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M12 5v14M6 13l6 6 6-6" />
+              </svg>
+            </LearnMoreButton>
+          </div>
         </div>
       </div>
     </section>

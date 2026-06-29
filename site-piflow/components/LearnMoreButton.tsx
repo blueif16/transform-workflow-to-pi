@@ -11,7 +11,7 @@ gsap.registerPlugin(ScrollToPlugin);
    next section. Falls back to an instant jump under reduced-motion.
    ============================================================ */
 export default function LearnMoreButton({
-  target = "#loop",
+  target = "#agents",
   className = "",
   children = "Learn more",
 }: {

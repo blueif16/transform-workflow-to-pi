@@ -19,7 +19,7 @@ type Tile = { title: string; href: string };
 // Agent / Workflow / Memory travel together; Observability is the separate
 // left tile that observes them. Links are placeholders into /docs for now.
 const TRIO: Tile[] = [
-  { title: "Agent", href: "/docs" },
+  { title: "Agent", href: "#agents" },
   { title: "Workflow", href: "/docs" },
   { title: "Memory", href: "/docs" },
 ];
