@@ -24,10 +24,13 @@ export default function LearnMoreButton({
       document.querySelector(target)?.scrollIntoView();
       return;
     }
+    // autoKill stays OFF (the ScrollToPlugin default): when #agents pins, its
+    // pin-spacing shifts layout mid-tween, which autoKill misreads as user
+    // interference and kills the scroll partway — so it never lands on the panel.
     gsap.to(window, {
       duration: 1.1,
       ease: "power3.inOut",
-      scrollTo: { y: target, autoKill: true },
+      scrollTo: { y: target },
     });
   }
 
