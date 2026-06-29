@@ -29,7 +29,7 @@ import { DefaultToolRegistry } from '../tools/registry.js';
 import { InMemorySandboxProvider } from '../sandbox/index.js';
 import { defaultSchemaValidator, type SchemaValidator } from './schema.js';
 import { type EventSink } from './events.js';
-import { defaultPiCommand, type CommandBuilder } from './command.js';
+import { dispatchCommand, type CommandBuilder } from './command.js';
 import { loadModelTiers, loadModelsIndex, type ModelTiers } from './model-routing.js';
 import { resolveTokens, type ResolveCtx } from '../workflow/resolver.js';
 import { barrierMerge, type NodeUpdate } from '../workflow/ops/promote.js';
@@ -323,7 +323,7 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     wf,
     outDir,
     registry: opts.registry ?? new DefaultToolRegistry(),
-    buildCommand: opts.buildCommand ?? defaultPiCommand,
+    buildCommand: opts.buildCommand ?? dispatchCommand, // per-node executor routing (pi | claude-code)
     execRunner: opts.execRunner ?? defaultExecRunner,
     providerName: opts.providerName ?? 'cp',
     model: opts.model,

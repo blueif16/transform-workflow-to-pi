@@ -7,8 +7,10 @@
 //
 // Each test asserts ONE behavior. The base case pins the FULL string (any flag drift goes red).
 
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { claudeCommand } from '../src/runner/command.js';
+import { claudeCommand, dispatchCommand, claudeExecutorReadPaths } from '../src/runner/command.js';
 import type { NodeSpec, ResolveResult } from '../src/types.js';
 
 // Like defaultPiCommand, the builder reads only resolved/ctx/opts (never `node`), so a bare stub is enough.
@@ -71,5 +73,31 @@ describe('claudeCommand — headless Claude Code builder', () => {
     expect(cmd).not.toContain('--mode json');
     expect(cmd).not.toContain('--provider');
     expect(cmd).not.toContain("@'"); // pi's `@file` prompt ref must not appear
+  });
+});
+
+describe('dispatchCommand — routes by node.executor (the default builder)', () => {
+  const resolved: ResolveResult = { piTools: ['read'] };
+  const ctx = { promptFile: 'p.md' };
+
+  it('node.executor === "claude-code" → the Claude builder (`claude -p …`)', () => {
+    const cmd = dispatchCommand({ executor: 'claude-code' } as NodeSpec, resolved, ctx);
+    expect(cmd.startsWith('claude -p ')).toBe(true);
+  });
+
+  it('absent executor → the pi builder (byte-identical default path)', () => {
+    const cmd = dispatchCommand({} as NodeSpec, resolved, ctx);
+    expect(cmd.startsWith('pi ')).toBe(true);
+  });
+
+  it('executor === "pi" → the pi builder', () => {
+    const cmd = dispatchCommand({ executor: 'pi' } as NodeSpec, resolved, ctx);
+    expect(cmd.startsWith('pi ')).toBe(true);
+  });
+});
+
+describe('claudeExecutorReadPaths — the read-jail paths a claude-code node needs to authenticate', () => {
+  it('includes ~/.claude (the local OAuth login dir) so the seatbelt jail lets `claude` read its creds', () => {
+    expect(claudeExecutorReadPaths()).toContain(path.join(os.homedir(), '.claude'));
   });
 });

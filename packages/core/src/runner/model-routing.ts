@@ -37,6 +37,8 @@ export interface NodeRouting {
   model?: string;
   provider?: string;
   tier?: string;
+  /** Which agent binary runs the node — selects which resolver `effectiveModel` uses. Absent ⇒ `'pi'`. */
+  executor?: string;
 }
 
 /** Run-level routing context: the run's default model/provider + the two resolved global configs. */
@@ -140,6 +142,19 @@ export function resolveClaudeModel(node: NodeRouting, run: RunRouting): string |
     if (fromTiers && isClaudeModel(fromTiers)) return fromTiers;
   }
   return undefined;
+}
+
+/**
+ * The executor-aware front door for model resolution: branch on `node.executor` so the runner calls ONE
+ * function. `'claude-code'` → `resolveClaudeModel` (the `claude` tier block) with NO provider gateway (Claude's
+ * model carries its own routing); absent/`'pi'` → `resolveNodeModel` (the §2 precedence, unchanged). This keeps
+ * the two tracks from getting confused — and the claude branch never throws on a pi-unresolvable tier.
+ */
+export function effectiveModel(node: NodeRouting, run: RunRouting): EffectiveModel {
+  if (node.executor === 'claude-code') {
+    return { model: resolveClaudeModel(node, run), provider: undefined };
+  }
+  return resolveNodeModel(node, run);
 }
 
 /** Default location of the tier map (global, never repo-local). */

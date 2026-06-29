@@ -19,7 +19,8 @@ import { effectiveChecks, evaluateChecks, actionForVerdict, type FileBytes } fro
 import { validateArtifactSchemas } from './schema.js';
 import { runHooks } from '../hooks/index.js';
 import { NodeRecorder, recordingSandbox } from './events.js';
-import { resolveNodeModel, type EffectiveModel } from './model-routing.js';
+import { effectiveModel, type EffectiveModel } from './model-routing.js';
+import { claudeExecutorReadPaths } from './command.js';
 import { resolveTokens, resolveAll, resolveDeep, type ResolveCtx } from '../workflow/resolver.js';
 import { stageSeed } from '../workflow/ops/seed.js';
 import { resolveSkillStage } from '../workflow/ops/skill.js';
@@ -198,7 +199,11 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
   let sandbox: Sandbox;
   try {
     sandbox = await scope.create({
-      readScope: node.sandbox.read,
+      // A claude-code node needs ~/.claude readable inside the jail to authenticate (local subscription).
+      readScope:
+        node.executor === 'claude-code'
+          ? [...node.sandbox.read, ...claudeExecutorReadPaths()]
+          : node.sandbox.read,
       writeScope: node.sandbox.write, // = contract.owns; bounds file-write* to the node's lane (darwin jail)
       outputDir: sbLoc.outputDir,
       workdir: sbLoc.workdir,
@@ -359,7 +364,7 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
     // unresolvable tier throws → fail the node cleanly (never crash the run, never silently mis-route).
     let eff: EffectiveModel;
     try {
-      eff = resolveNodeModel(node, {
+      eff = effectiveModel(node, {
         model: ctx.model,
         provider: ctx.providerName,
         tiers: ctx.modelRouting.tiers,

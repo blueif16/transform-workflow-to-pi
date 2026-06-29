@@ -10,6 +10,7 @@ import { promises as fs } from 'node:fs';
 import {
   resolveNodeModel,
   resolveClaudeModel,
+  effectiveModel,
   isClaudeModel,
   ModelRoutingError,
   loadModelTiers,
@@ -130,6 +131,31 @@ describe('resolveClaudeModel — the claude-code executor maps the SAME tiers (p
     expect(isClaudeModel('claude-opus-4-8')).toBe(true);
     expect(isClaudeModel('deepseek-v3')).toBe(false);
     expect(isClaudeModel('glm-4.6')).toBe(false);
+  });
+});
+
+describe('effectiveModel — the executor-aware front door (pi → resolveNodeModel, claude → resolveClaudeModel)', () => {
+  const both: ModelTiers = {
+    active: true,
+    tiers: { fast: 'deepseek-v3', deep: 'claude-opus-4-8' },
+    claude: { fast: 'haiku', deep: 'opus' },
+  };
+
+  it('a pi node (no executor) → resolveNodeModel result (today’s behavior)', () => {
+    expect(effectiveModel({ tier: 'deep' }, { tiers: both })).toEqual({ model: 'claude-opus-4-8', provider: undefined });
+  });
+
+  it('a claude-code node → resolveClaudeModel + NO provider gateway', () => {
+    const r = effectiveModel({ executor: 'claude-code', tier: 'deep' }, { tiers: both });
+    expect(r).toEqual({ model: 'opus', provider: undefined });
+  });
+
+  it('a claude-code node does NOT throw on a tier pi cannot resolve (the whole reason for the branch)', () => {
+    // pi `tiers` lacks `deep` (resolveNodeModel would throw 'unknown tier'); the claude block has it.
+    const claudeOnlyDeep: ModelTiers = { active: true, tiers: { fast: 'x' }, claude: { deep: 'opus' } };
+    expect(() => resolveNodeModel({ tier: 'deep' }, { tiers: claudeOnlyDeep })).toThrow(ModelRoutingError); // pi DOES throw
+    expect(() => effectiveModel({ executor: 'claude-code', tier: 'deep' }, { tiers: claudeOnlyDeep })).not.toThrow();
+    expect(effectiveModel({ executor: 'claude-code', tier: 'deep' }, { tiers: claudeOnlyDeep }).model).toBe('opus');
   });
 });
 

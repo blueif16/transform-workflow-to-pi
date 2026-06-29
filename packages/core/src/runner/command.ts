@@ -11,6 +11,8 @@
 // invariant — multi-KB wave prompts are robust as a file ref, brittle as an argv string). The
 // command is a single shell string because `Sandbox.exec(cmd)` runs it under `shell: true`.
 
+import os from 'node:os';
+import path from 'node:path';
 import type { NodeSpec, ResolveResult, PiCommandOptions } from '../types.js';
 
 /**
@@ -145,3 +147,20 @@ export const claudeCommand: CommandBuilder = (_node, resolved, ctx, opts = {}) =
   // Prompt on stdin (no `@file` in Claude `-p`).
   return `${parts.join(' ')} < ${q(ctx.promptFile)}`;
 };
+
+/**
+ * The DEFAULT per-node builder: route to the right executor's command. Absent/`'pi'` → `defaultPiCommand`
+ * (byte-identical to today); `'claude-code'` → `claudeCommand`. This keeps the single `RunOptions.buildCommand`
+ * seam — the runner calls `ctx.buildCommand(node, …)` uniformly and per-node routing happens here.
+ */
+export const dispatchCommand: CommandBuilder = (node, resolved, ctx, opts) =>
+  (node.executor === 'claude-code' ? claudeCommand : defaultPiCommand)(node, resolved, ctx, opts);
+
+/**
+ * Extra read-jail paths a `claude-code` node needs so the seatbelt/bwrap read-jail lets `claude` authenticate:
+ * `~/.claude` (the local OAuth login / credentials). The runner unions these into the node's `readScope` before
+ * sandbox create. (The binary path + the macOS keychain case are resolved in the jail-on auth spike — design §7.2.)
+ */
+export function claudeExecutorReadPaths(): string[] {
+  return [path.join(os.homedir(), '.claude')];
+}
