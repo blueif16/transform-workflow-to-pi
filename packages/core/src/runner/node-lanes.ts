@@ -18,6 +18,7 @@ import { applyProjectionOp, runProjection } from '../workflow/ops/project.js';
 import { readJsonSafe, absUnder } from '../workflow/ops/util.js';
 import { parsePromote, extractPromoteValue, type ResolvedPromote } from '../workflow/ops/promote.js';
 import { derivesFromOp, gatesFromOp, runOpsFromOp } from './op-dispatch.js';
+import { effectiveSandboxLocation } from './env-staging.js';
 import {
   type NodeStatusRecord,
   type ArtifactState,
@@ -308,7 +309,13 @@ export async function runProgrammatic(ctx: RunContext, srcNode: NodeSpec): Promi
     }
 
     // PRE hooks — deterministic plumbing; a blocking failure throws → error (mirrors runNode).
-    const hookCtx = { workspace: node.sandbox.workspace, inputs: node.io.reads, outputs: node.io.produces };
+    // In-place hooks run IN the run dir (sbLoc.workdir = outDir), so a no-pi lane's relative writes land
+    // under {{RUN}} like a pi node's; isolated kinds resolve to the same workspace as before.
+    const hookCtx = {
+      workspace: effectiveSandboxLocation(ctx.providerKind, ctx.outDir, node.sandbox).workdir,
+      inputs: node.io.reads,
+      outputs: node.io.produces,
+    };
     try {
       await runHooks(node.hooks?.pre, hookCtx, { outcome: 'success' });
     } catch (e) {

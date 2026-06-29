@@ -7,6 +7,9 @@ export type { RunOptions, RunResult, ExecRunner, ExecWatchdogOpts, CheckpointWai
 // SOLE derive rep is `op[]`). Surfaced so consumers (the CLI inspector) render derives from `op[]` instead of
 // the retired `node.ops`; gatesFromOp/runOpsFromOp unify the gate/run reads the runner inlined per lane (C2).
 export { derivesFromOp, gatesFromOp, runOpsFromOp, actionsFromOp } from './op-dispatch.js';
+// In-place exec location — the seam that anchors a `local` (in-place) node's cwd + output to the run dir
+// (so a relative artifact write lands under {{RUN}}); isolated kinds keep their throwaway workspace + out/<id>.
+export { effectiveSandboxLocation } from './env-staging.js';
 export type { DerivedExecInputs, ProjectOp, RegistryProject, PromoteInput, RunnableOp, RejectedRunOp, ActionOps } from './op-dispatch.js';
 // G5 — HUMAN CHECKPOINT (HITL): the marker/reply schemas, the question hash, and the reply validator (the
 // runner's authority). The Vite courier + the console write the reply file; observe surfaces the marker.

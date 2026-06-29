@@ -31,6 +31,27 @@ export const CLOUD_KINDS = new Set<SandboxProvider['kind']>(['daytona', 'e2b']);
 export const IN_PLACE_KINDS = new Set<SandboxProvider['kind']>(['local']);
 
 /**
+ * The effective exec LOCATION for a node, by provider kind — the ONE seam that makes an in-place provider
+ * run IN the run dir. An IN-PLACE node (no throwaway copy) must run with its cwd = the run dir (`outDir`),
+ * so a RELATIVE artifact write (`findings/survey.md`, as a real `pi` agent emits) lands at
+ * `{{RUN}}/findings/survey.md` — exactly where the contract host-stat-verifies it AND where the next node
+ * `inject`s it — and its `output` resolves to the run dir too, making the in-place `downloadDir` a true
+ * guarded-identity no-op (the premise the IN_PLACE_KINDS doc above assumes but the compile default
+ * `workspace:'.'`/`output:'out/<id>'` never satisfied → the deliverable used to land beside the LAUNCH cwd
+ * and the node blocked "artifact missing"). Every ISOLATED kind keeps the compile defaults verbatim: a
+ * throwaway `workspace` + an `out/<id>` output `downloadDir` collects back byte-for-byte. Pure (testable
+ * in isolation).
+ */
+export function effectiveSandboxLocation(
+  providerKind: SandboxProvider['kind'],
+  outDir: string,
+  sandbox: { workspace: string; output: string },
+): { workdir: string; outputDir: string } {
+  if (IN_PLACE_KINDS.has(providerKind)) return { workdir: outDir, outputDir: '.' };
+  return { workdir: sandbox.workspace, outputDir: sandbox.output };
+}
+
+/**
  * Did this node select at least one BRIDGE tool (mcp./oc.)? True iff an `mcp.<server>:<tool>` OR an
  * `oc.<plugin>:<tool>` address survives `allow` minus `deny`. Both families execute through the bridge,
  * which resolves its server config from the staged `_pi/mcp.json` — so either kind triggers staging.

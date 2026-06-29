@@ -46,6 +46,7 @@ import { lastJsonBlock } from './return-parse.js';
 import {
   CLOUD_KINDS,
   IN_PLACE_KINDS,
+  effectiveSandboxLocation,
   selectedBridgedTool,
   referencedEnvVars,
   mcpEnvAdditions,
@@ -183,13 +184,17 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
   // >60s. Local/seatbelt/worktree backends ignore CreateOpts.timeoutMs (watchdog-only). Threading the SAME
   // value into both create and the watchdog (below) keeps the two caps from diverging.
   const nodeTimeoutMs = node.sandbox.timeoutMs ?? ctx.watchdog.nodeTimeoutMs;
+  // IN-PLACE providers run IN the run dir (cwd = outDir) so a node's RELATIVE artifact write lands under
+  // {{RUN}} where the contract verifies it + the next node injects it; isolated kinds keep the throwaway
+  // workspace + out/<id>. Shared by scope.create AND the pre/post hookCtx so both agree on the node's cwd.
+  const sbLoc = effectiveSandboxLocation(ctx.providerKind, ctx.outDir, node.sandbox);
   let sandbox: Sandbox;
   try {
     sandbox = await scope.create({
       readScope: node.sandbox.read,
       writeScope: node.sandbox.write, // = contract.owns; bounds file-write* to the node's lane (darwin jail)
-      outputDir: node.sandbox.output,
-      workdir: node.sandbox.workspace,
+      outputDir: sbLoc.outputDir,
+      workdir: sbLoc.workdir,
       image: node.sandbox.image,
       // Merge the MCP env additions + the cloud provider-cred additions over the node's declared env (so
       // PIFLOW_MCP_CONFIG + the referenced MCP secrets + the pi gateway key land in the child via the
@@ -334,7 +339,9 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
     }
 
     // PRE hooks (deterministic plumbing — stage inputs / seeds). A blocking failure throws → error.
-    const hookCtx = { workspace: node.sandbox.workspace, inputs: node.io.reads, outputs: node.io.produces };
+    // `sbLoc.workdir` (not the raw `node.sandbox.workspace`) so an in-place hook's relative writes land in
+    // the run dir, matching the node's own cwd above; isolated kinds resolve to the same workspace as before.
+    const hookCtx = { workspace: sbLoc.workdir, inputs: node.io.reads, outputs: node.io.produces };
     try {
       await runHooks(node.hooks?.pre, hookCtx, { outcome: 'success' });
     } catch (e) {
