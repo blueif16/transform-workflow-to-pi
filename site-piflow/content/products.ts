@@ -1,14 +1,14 @@
 /* ============================================================
    products.ts — THE single source of truth for the product
    screens (Agents · Workflow · Memory). One file, one shape, so
-   the same entry powers BOTH the grid card face (title + keyword
-   subtitle) AND the full-screen detail view you reach by clicking
+   the same entry powers BOTH the grid card face (keyword eyebrow
+   + title) AND the full-screen detail view you reach by clicking
    into a card (`details`). Update copy here only.
 
-   Card face shows: `title` + `keywords` (the subtitle).
+   Card face shows: `keywords` (short eyebrow) + `title`.
    Detail view shows: `summary` + `details.lead` + `details.points`.
-   Presentation (HUD silhouette, grid layout) lives in the
-   component, NOT here — this file stays purely informational.
+   Presentation (HUD silhouette, grid layout, imagery) lives in
+   the component — this file stays purely informational.
    ============================================================ */
 
 export type ProductCard = {
@@ -16,7 +16,7 @@ export type ProductCard = {
   id: string;
   /** card-face heading */
   title: string;
-  /** the few keywords shown as the card subtitle */
+  /** a few short keywords — the card's eyebrow / subtitle */
   keywords: string[];
   /** one-line gist (detail-view subheading) */
   summary: string;
@@ -25,6 +25,8 @@ export type ProductCard = {
     lead: string;
     points: string[];
   };
+  /** placeholder slot — render a concise "coming soon", never hide */
+  comingSoon?: boolean;
 };
 
 export type ProductPanel = {
@@ -37,11 +39,21 @@ export type ProductPanel = {
   cards: ProductCard[];
 };
 
+// Concise placeholder for a slot whose copy hasn't landed yet.
+const soon = (id: string): ProductCard => ({
+  id,
+  title: "Coming soon",
+  keywords: [],
+  summary: "",
+  details: { lead: "", points: [] },
+  comingSoon: true,
+});
+
 const AGENTS: ProductCard[] = [
   {
     id: "node",
     title: "Node",
-    keywords: ["Full Pi agent", "Read / write scope", "Tools & skills", "MCP & OpenClaw"],
+    keywords: ["Pi agent", "Scoped"],
     summary: "A full Pi agent you scope and equip.",
     details: {
       lead: "Every node is a complete Pi agent — not a thin model call. You define exactly what it can see, touch, and do.",
@@ -56,7 +68,7 @@ const AGENTS: ProductCard[] = [
   {
     id: "hooks",
     title: "Hooks",
-    keywords: ["Pre / post checks", "Programmatic", "Gate + policy"],
+    keywords: ["Pre / post", "Gate"],
     summary: "Programmatic checks around every node.",
     details: {
       lead: "Hooks let you run programmatic checks before and after a node — the seam where the gate and policy are applied.",
@@ -70,7 +82,7 @@ const AGENTS: ProductCard[] = [
   {
     id: "sandbox",
     title: "Sandbox",
-    keywords: ["Filesystem hand-off", "Per workflow / run / node", "Git-tracked", "Local · any OS · cloud"],
+    keywords: ["Isolated", "Filesystem"],
     summary: "Isolated execution with file-based hand-off.",
     details: {
       lead: "The filesystem carries every hand-off between nodes, and each node runs isolated in a sandbox you scope at exactly the level you need.",
@@ -85,7 +97,7 @@ const AGENTS: ProductCard[] = [
   {
     id: "telemetry",
     title: "Telemetry",
-    keywords: ["Agent-native CLI", "Runtime debugging", "Tool calls & sync", "Docker-style streaming"],
+    keywords: ["Live debug", "CLI"],
     summary: "See and debug the agent's runtime, live.",
     details: {
       lead: "Agent-native CLI commands surface the pieces that matter most when debugging an agent's runtime — every tool call and every sync.",
@@ -100,7 +112,7 @@ const AGENTS: ProductCard[] = [
   {
     id: "composability",
     title: "Composability",
-    keywords: ["Base agent types", "Skills + tools", "Lego-style", "Specialist per node"],
+    keywords: ["Lego-style", "Specialist"],
     summary: "Compose specialists from base types, skills, and tools.",
     details: {
       lead: "Start from base agent types and snap on skills and their associated tools like Lego — each node grows into the specialist its task needs.",
@@ -112,19 +124,45 @@ const AGENTS: ProductCard[] = [
       ],
     },
   },
-  // The sixth slot is intentionally left out — Agents shows five.
+  // Sixth slot intentionally left out — Agents shows five.
 ];
 
-// TODO: content pending — placeholders until you dictate Workflow + Memory.
 const WORKFLOW: ProductCard[] = [
-  { id: "wf-1", title: "Pending", keywords: ["content coming"], summary: "—", details: { lead: "", points: [] } },
-  { id: "wf-2", title: "Pending", keywords: ["content coming"], summary: "—", details: { lead: "", points: [] } },
-  { id: "wf-3", title: "Pending", keywords: ["content coming"], summary: "—", details: { lead: "", points: [] } },
+  {
+    id: "adaptivity",
+    title: "Adaptivity",
+    keywords: ["Any DAG", "1-click"],
+    summary: "Flexible designs that adapt to any graph change.",
+    details: {
+      lead: "Construct flexible designs that adapt to any DAG change — copy any pre-built workflow assembled with deep skill systems, and migrate in one click.",
+      points: [
+        "Adapt to any change in the DAG.",
+        "Copy pre-built workflows assembled with massive skill systems.",
+        "One-click migration — visualize every part of a running workflow.",
+        "Each node is set up and wired with the tools that make it production-reliable.",
+        "Get the full monitoring interface — e.g. visualize a model fusion in one click to see exactly how the graph grows.",
+      ],
+    },
+  },
+  {
+    id: "cloud",
+    title: "Cloud",
+    keywords: ["Cloud promote", "Control plane"],
+    summary: "Promote any DAG or node to a cloud control plane.",
+    details: {
+      lead: "Move your entire DAG, any node, or the rest of a run to the cloud — with a click or a message to an agent. Pi Flow promotes the local runtime to a cloud VM with a Kubernetes-style control plane.",
+      points: [
+        "Move the whole DAG, a single node, or the remaining run — one click, or a message to an agent.",
+        "Auto-promote the local Pi Flow runtime to a cloud VM.",
+        "A Kubernetes-style control plane monitors every agent runtime in its sandbox.",
+        "Pushes the flow and gives remote access to monitor and control through the GUI.",
+      ],
+    },
+  },
+  soon("wf-soon"),
 ];
-const MEMORY: ProductCard[] = [
-  { id: "mem-1", title: "Pending", keywords: ["content coming"], summary: "—", details: { lead: "", points: [] } },
-  { id: "mem-2", title: "Pending", keywords: ["content coming"], summary: "—", details: { lead: "", points: [] } },
-];
+
+const MEMORY: ProductCard[] = [soon("mem-1"), soon("mem-2")];
 
 export const PRODUCTS: ProductPanel[] = [
   { key: "agents", name: "Agents", layer: "P1", cards: AGENTS },

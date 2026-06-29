@@ -98,7 +98,9 @@
 
 html {
   background: var(--canvas);
-  scroll-behavior: smooth;
+  /* NOTE: no `scroll-behavior: smooth` — it fights GSAP ScrollToPlugin /
+     ScrollTrigger (the hero CTA + the pinned product section drive their
+     own smooth scroll). CSS smooth here makes those mis-land. */
 }
 body {
   background: var(--canvas);
