@@ -48,9 +48,11 @@ export default function CTA() {
           <span className="hud-corner hud-corner--br" aria-hidden />
 
           {current.key === "gui" ? (
-            // the real flowmap GUI, running pure-frontend from /gui-demo/
+            // the real flowmap GUI, running pure-frontend from /gui-demo/. Target the
+            // index.html FILE explicitly: Next 308-redirects the bare dir `/gui-demo/`
+            // → `/gui-demo`, which has no static match and 404s (blank iframe).
             <iframe
-              src="/gui-demo/"
+              src="/gui-demo/index.html"
               title="piflow GUI — interactive demo"
               loading="lazy"
               className="h-full w-full border-0 bg-white"
