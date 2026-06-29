@@ -162,6 +162,34 @@
 .ds-basischip__mark { display: inline-flex; flex: none; }   /* tinted by the base's color (inline style) */
 .ds-basischip__label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* basis CARD — the base agent as a face-forward chip: a circular avatar (the human-face SVG slot) + the
+   posture label over the agentType id. The face glyph is a placeholder until the per-base face SVGs land. */
+.ds-basiscard {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 3px 11px 3px 4px;
+  border-radius: 999px;
+  background: var(--ds-bg-surface);
+  border: 1px solid var(--ds-border-strong);
+}
+.ds-basiscard__face {                /* the circular face slot; tinted by the base's color (inline style) */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ds-bg-base, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--ds-border-strong);
+}
+.ds-basiscard__face svg { width: 14px; height: 14px; }
+.ds-basiscard__text { display: inline-flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+.ds-basiscard__label { color: var(--ds-text-primary); font-weight: var(--ds-weight-medium); white-space: nowrap; }
+.ds-basiscard__id { color: var(--ds-text-tertiary); font-size: 0.85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* artifact rows */
 .ds-artrow { display: flex; align-items: baseline; justify-content: space-between; gap: var(--ds-space-2); }
 .ds-artrow__name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

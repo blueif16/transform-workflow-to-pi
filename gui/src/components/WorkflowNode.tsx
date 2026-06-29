@@ -160,6 +160,23 @@ export function AgentPresetIcon({ icon }: { icon?: string }) {
           <circle cx="3.3" cy="11.5" r="1" fill="currentColor" />
         </svg>
       );
+    case "scale": // verify → The Critic — balance scales (read-only judgment against a bar)
+      return (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 2.5v11M4.5 13.5h7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          <path d="M3 5h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          <path d="M3 5L1.4 8.4a1.9 1.9 0 003.2 0z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+          <path d="M13 5l-1.6 3.4a1.9 1.9 0 003.2 0z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+        </svg>
+      );
+    case "quill": // author → The Scribe — a pen nib (synthesize inputs into a polished artifact)
+      return (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M13.5 2.5c-3 .4-6 2.8-7.6 6.4L4.3 12.8l3.6-1.5c3.6-1.6 6-4.6 6.4-7.6z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+          <path d="M6 9l1.6 1.6" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+          <path d="M2.6 14l1.7-1.7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        </svg>
+      );
     default: // unknown / no icon key → the default agent glyph
       return <KindIcon kind="agent" />;
   }
