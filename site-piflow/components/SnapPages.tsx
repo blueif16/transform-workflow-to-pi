@@ -55,21 +55,20 @@ export default function SnapPages() {
           overwrite: true,
           onComplete: () => {
             animating = false;
-            lockUntil = performance.now() + 120;
+            // swallow trailing trackpad momentum so ONE flick = ONE page
+            lockUntil = performance.now() + 420;
           },
         });
       };
 
-      // TOP edge: hand back up into the pinned product section. Landing one
-      // viewport above #layers is inside the product pin → its onEnterBack
-      // re-enters on the last panel and takes the wheel back.
+      // TOP edge: hand back up into the pinned product section. Land exactly
+      // one viewport above #layers — the product pin's EXIT point (the same
+      // spot the down-handoff left from), so its onEnterBack re-enters on the
+      // last panel and up feels like the mirror of down.
       const leaveUp = () => {
         animating = true;
         obs.disable();
-        const agents = document.querySelector<HTMLElement>("#agents");
-        const y = agents
-          ? agents.offsetTop + Math.round(window.innerHeight * 0.5)
-          : els[0].offsetTop - window.innerHeight;
+        const y = Math.max(0, els[0].offsetTop - window.innerHeight);
         gsap.to(window, {
           scrollTo: y,
           duration: 0.6,

@@ -135,6 +135,8 @@ export default function ProductScreens() {
           overwrite: true,
           onComplete: () => {
             animating = false;
+            // swallow trailing trackpad momentum so ONE flick = ONE panel
+            lockUntil = performance.now() + 420;
           },
         });
       };
