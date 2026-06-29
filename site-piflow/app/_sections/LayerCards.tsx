@@ -35,10 +35,10 @@ export default function LayerCards() {
   const current = FORMATS[active];
 
   return (
-    <section id="layers" className="relative w-full overflow-hidden bg-canvas">
+    <section id="layers" className="relative flex min-h-svh w-full flex-col justify-center overflow-hidden bg-canvas py-20">
       <div className="gridpaper pointer-events-none absolute inset-0" aria-hidden />
 
-      <div className="relative mx-auto w-full max-w-4xl px-6 py-24">
+      <div className="relative mx-auto w-full max-w-5xl px-6">
         {/* ── centered sentence — @piflow boxed, plus the live ▮ readout ── */}
         <div className="reveal mb-12 text-center">
           <h2 className="text-balance text-3xl font-semibold leading-[1.2] tracking-[-0.03em] text-fg sm:text-4xl">
@@ -59,7 +59,7 @@ export default function LayerCards() {
         </div>
 
         {/* ── one row of three illustration cells — click to select ── */}
-        <div className="reveal grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="reveal grid grid-cols-1 gap-4 sm:grid-cols-3">
           {FORMATS.map((f, i) => {
             const isActive = i === active;
             return (
@@ -69,7 +69,7 @@ export default function LayerCards() {
                 onClick={() => setActive(i)}
                 aria-pressed={isActive}
                 aria-label={`${f.handle} · ${f.pkg}`}
-                className={`group relative flex min-h-[240px] flex-col ${f.cut} border bg-surface-1 p-5 text-left shadow-[var(--shadow-sm)] outline-none transition-[border-color,background,transform] hover:-translate-y-0.5 ${
+                className={`group relative flex min-h-[clamp(320px,48vh,540px)] flex-col ${f.cut} border bg-surface-1 p-7 text-left shadow-[var(--shadow-sm)] outline-none transition-[border-color,background,transform] hover:-translate-y-0.5 ${
                   isActive
                     ? "border-[var(--hairline-2)] bg-surface-2"
                     : "border-[var(--hairline)] hover:border-[var(--hairline-2)] hover:bg-surface-2"
@@ -84,7 +84,7 @@ export default function LayerCards() {
                 )}
                 {/* icon-only marker; the rest of the cell is open for the iso illo */}
                 <f.Icon
-                  className={`size-5 transition-colors ${isActive ? "text-fg" : "text-fg-muted"}`}
+                  className={`size-6 transition-colors ${isActive ? "text-fg" : "text-fg-muted"}`}
                   strokeWidth={1.6}
                   aria-hidden
                 />
