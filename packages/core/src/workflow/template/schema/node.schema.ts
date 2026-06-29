@@ -244,6 +244,34 @@ export const nodeSchema = {
       description: 'The unified node-op envelope (G13) — one ordered list; each entry has exactly one body.',
       items: { $ref: '#/$defs/op' },
     },
+    judgeGate: {
+      // (expert-representations · "Judge expansion") A JUDGE GATE authored on this PRODUCER node: a
+      // DIFFERENT model (resolved through `judgeTier`) evaluates this node's output against `rubric` and
+      // emits a pass/fail verdict. The loader MATERIALIZES it at load time into a real `<id>__judge` pi
+      // node wired AFTER the producer (SA-B `lowerGates`), and attaches a producer-side `rerouteTo` loop on
+      // judge-fail. The `JudgeGate` shape (gate-authoring.ts) MINUS its `kind` discriminator — `kind` is
+      // implied by the field name. Twin of the `fusion`/`checkpoint` activation blocks above. Omitted ⇒
+      // no judge (today's behavior). `judgeTier` MUST differ from the producer's tier (no self-judging).
+      type: 'object',
+      additionalProperties: false,
+      required: ['judgeTier', 'rubric'],
+      description: 'A judge gate on this producer (expert-representations) — materialized into a `<id>__judge` node at load. `judgeTier`+`rubric` required.',
+      properties: {
+        judgeTier: { type: 'string', minLength: 1, description: 'The tier alias the judge model resolves through. MUST differ from the producer tier.' },
+        rubric: { type: 'string', minLength: 1, description: "The rubric prompt body the judge evaluates the producer's output against." },
+        threshold: { type: 'string', minLength: 1, description: "Pass/fail bar the judge must meet (rubric-dependent; default 'pass')." },
+        policy: {
+          type: 'object',
+          additionalProperties: false,
+          description: 'On-fail consequence — `retryMax` bounds the judge-fail reroute loop back to the producer.',
+          properties: {
+            onFail: { enum: ['block', 'warn', 'stop', 'retry', 'escalate'], description: "On-fail action. Default 'block' (the reroute loop is the consequence)." },
+            retryMax: { type: 'integer', minimum: 0, description: 'Reroute budget — extra producer attempts after the first on judge-fail.' },
+            retryScope: { enum: ['feedback', 'fix'], description: "Correction scope for retries (default 'feedback')." },
+          },
+        },
+      },
+    },
     subworkflow: {
       // (G9) Opt this node into the SUB-DAG inlining: `expandSubworkflow` REPLACES the node with the
       // referenced sub-template's nodes (id-namespaced under it), before fusion + compile. `ref` is the

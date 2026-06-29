@@ -79,21 +79,24 @@ export function NodeModeStrip({ mode, data }: { mode: ViewMode; data: FlowNodeDa
   }
 
   if (mode === "basis") {
-    // (G6) the basic agent type this node INHERITS from — its `agentType` preset. `mergePreset` folds the
-    // base agent's role-prompt + base tools into the node at author-time; the `agentType` label rides through
-    // (spec → observe → here) so the map can show each node's basis. A node with no `agentType` is bespoke:
-    // authored from scratch, inheriting nothing. `agentLabel`/`agentIcon`/`agentColor` are the base's branding,
-    // resolved from the agents catalog (absent when the preset isn't in the catalog — we fall back to the id).
+    // (expert-representations) The BASE AGENT this node is built on — its `agentType` preset, one of the ~6
+    // base "postures" (Scout/Architect/Maker/Critic/Listener/Scribe). `mergePreset` folded the base's role-
+    // prompt + base tools into the node at author-time; the label/icon/color ride through (spec → observe →
+    // here), resolved from the agents catalog. A node with no `agentType` is bespoke — authored from scratch.
+    // The face is a CIRCULAR avatar: today a placeholder glyph (AgentPresetIcon keyed by display.icon); the
+    // per-base human-face SVGs swap in by that same key (purely cosmetic — never affects status/layout).
     const base = rv?.agentType;
     if (!base) return <div className="ds-nodemode ds-nodemode--muted">bespoke · no base</div>;
     return (
       <div className="ds-nodemode ds-nodemode--basis">
-        <span className="ds-basischip__tag">inherits</span>
-        <span className="ds-basischip">
-          <span className="ds-basischip__mark" style={data.agentColor ? { color: data.agentColor } : undefined}>
+        <span className="ds-basiscard" title={`base agent: ${base}`}>
+          <span className="ds-basiscard__face" style={data.agentColor ? { color: data.agentColor } : undefined}>
             <AgentPresetIcon icon={data.agentIcon} />
           </span>
-          <span className="ds-basischip__label" title={base}>{data.agentLabel ?? base}</span>
+          <span className="ds-basiscard__text">
+            <span className="ds-basiscard__label">{data.agentLabel ?? base}</span>
+            <span className="ds-basiscard__id">{base}</span>
+          </span>
         </span>
       </div>
     );

@@ -52,14 +52,6 @@ export interface NodeSpec {
   /** 4. The filesystem contract — and the source of the inferred DAG edges. */
   io: NodeIO;
   /**
-   * 5. The declarative DATA ops (template `node.json` `hooks`) the RUN LOOP executes around the node —
-   * PRE `seed` (stage a starting artifact), POST `project`/`merge` (derive outputs from frozen inputs),
-   * POST `promote` (lift an output into a RunState channel). DECLARATIVE (data, not `Hook` fns) so the
-   * runner owns the resolver-ctx threading + the stage barrier. OPTIONAL/additive: a node with no `ops`
-   * behaves exactly as before. Carried verbatim from `node.json.hooks` by the template loader.
-   */
-  ops?: NodeOps;
-  /**
    * 6. (G5 — HITL) When present, this node is a HUMAN CHECKPOINT: it spawns NO `pi` (no tools/model), it
    * WRITES a marker, PARKS its lane (without holding a G2 limiter slot) until a reply file appears or the
    * timeout elapses, VALIDATES the reply, JOURNALS it, and finishes `ok` carrying the chosen value. With
@@ -76,13 +68,15 @@ export interface NodeSpec {
   rerouteGate?: RerouteGate;
   /**
    * 8. (G13 — M5) The UNIFIED node-op envelope (design §2/§5): the ONE ordered list every deprecated
-   * authoring grammar (`hooks`/`ops`/`checks`/`policy`/`inject`) LOWERS into AT THE LOADER. The dense
-   * `NodeSpec` gains EXACTLY this one new field (the justified spine widen — `types.ts:10-11`); the named
-   * five concerns are unchanged. Each entry DETECTS (`gate`), DERIVES (`transform`), ACTS (`run`), or
-   * CONTROLS (`action`), all routing through ONE `onFailure` consequence vocabulary. The per-transform
-   * executors (`seed.ts`/`project.ts`/`merge.ts`/`promote.ts`/`checks.ts`) are reused UNCHANGED — the
-   * envelope changes only the authoring + dispatch frame. Optional/additive: a node with no `op` behaves
-   * exactly as before (the loader still carries the byte-identical `ops`/`io.checks`/`io.policy`).
+   * authoring grammar (`hooks`/`checks`/`policy`/`inject`) LOWERS into AT THE LOADER. Since U6 (op⊖ops) it
+   * is the SOLE derive rep — the legacy `ops`/`NodeOps` runtime field was retired; the runner reads derives
+   * from `op` via `derivesFromOp`. The dense `NodeSpec` gains EXACTLY this one field (the justified spine
+   * widen — `types.ts:10-11`); the named five concerns are unchanged. Each entry DETECTS (`gate`), DERIVES
+   * (`transform`), ACTS (`run`), or CONTROLS (`action`), all routing through ONE `onFailure` consequence
+   * vocabulary. The per-transform executors (`seed.ts`/`project.ts`/`merge.ts`/`promote.ts`/`checks.ts`)
+   * are reused UNCHANGED — the envelope changes only the authoring + dispatch frame. Optional/additive: a
+   * node with no `op` behaves exactly as before (the loader still carries the byte-identical
+   * `io.checks`/`io.policy`).
    */
   op?: OpSpec[];
   /**
@@ -160,7 +154,21 @@ export type GateBody = { kind: CheckKind | string; path?: string; param?: unknow
 
 /** The CONTROL body — a model-free control action (G12 owns the runtime; G13 owns the SLOT). */
 export type ActionBody =
-  | { kind: 'retry'; onVerdict?: 'fail' | 'warn'; max?: number }
+  | {
+      kind: 'retry';
+      onVerdict?: 'fail' | 'warn';
+      max?: number;
+      /**
+       * (SA-B · expert-representations) The retry correction scope.
+       * - `'feedback'` (DEFAULT, L1) — warm-resume: append the gate's critique as a new message to the
+       *   SAME pi session and re-run. This is Reflexion / Self-Refine semantics. Bounded by `max`.
+       * - `'fix'` (L2 — STUB): infer the problem, consult per-workflow fix/issue memory, patch THIS
+       *   node's prompt/tool-wiring for this run instance (ephemeral, recorded, never silently promoted
+       *   to the template). See docs/research/2026-06-28-loop-engineering-self-improving-systems.md and
+       *   the build-spec §Self-correction. Owned by SA-D + the memory system. NOT YET IMPLEMENTED.
+       */
+      scope?: 'feedback' | 'fix';
+    }
   | { kind: 'escalate'; via: string; evidence?: string[] }
   | { kind: 'notify'; channel: string; payload?: string[] }
   | { kind: 'rerouteTo'; node: string; max: number; evidence?: string[] };
@@ -193,33 +201,6 @@ export interface CheckpointSpec {
    * attended run). On elapse the `headless` policy fires. A tiny value drives the headless path in tests.
    */
   timeoutMs?: number;
-}
-
-/**
- * The authored, declarative op-specs a node carries (template `node.json` `hooks`). Each entry is DATA the
- * run loop resolves + executes; the run loop — not a closure — owns the resolver ctx, the run/workspace
- * roots, and the stage barrier. All fields optional.
- */
-export interface NodeOps {
-  /** PRE: stage a starting artifact at `to` from the (token-bearing) source `from`. */
-  seed?: { to: string; from: string }[];
-  /** POST: derive `to` from one or many frozen on-disk sources `from`. */
-  project?: { to: string; from: string | string[] }[];
-  /**
-   * POST: the DRIVER-MERGE op set (the `applyMergeOp` discriminated grammar — `{fold|concat|reconcile|run}`),
-   * carried VERBATIM from the authoring source. Shape is the executor's `MergeSpec` (`{ ops: [...] }`), so the
-   * run loop hands it straight to `runMerge`. Each op is loose DATA (the executor discriminates on the op key).
-   */
-  merge?: { ops: Record<string, unknown>[] };
-  /** POST: lift a node output (`from`) into a RunState channel (`to`) via the reducer (default 'set'). */
-  promote?: { from: string; to: string; merge?: Reducer }[];
-  /**
-   * POST DERIVE: derive a node's mechanical outputs from a frozen `source` per a registry record's
-   * `projections` map, resolved from the index at `mapRef` by `key`. Distinct from the inline `project` ops
-   * (whose op-map is authored on the node); here the op-map lives in the registry record. Handed to
-   * `runProjection`.
-   */
-  registryProject?: { source: string; mapRef: string; key: string };
 }
 
 // 1 ── SANDBOX ────────────────────────────────────────────────────────────────
@@ -546,6 +527,17 @@ export interface ExecOpts {
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
   /**
+   * SPAWN HOOK — fired ONCE, synchronously, with the child's OS pid the instant the process exists (per-
+   * node stop seam). The provider spawns the command DETACHED (its own process-group leader), so the pid
+   * doubles as the PGID — a separate CLI process can later signal the whole group via `kill(-pid)`. The
+   * runner persists this pid to `.pi/nodes/<id>/pid.json` so `piflowctl node <run> <id> --stop` can reach
+   * a specific node's live `pi`. Optional + additive: a provider that never spawns a host process (cloud)
+   * or a caller that ignores it is unchanged. NEVER fired with an undefined pid (a spawn that produced no
+   * pid skips the call). The host pid is only meaningful where the process runs on THIS host (in-place/
+   * local/inmemory); a cloud sandbox's process lives in the VM, so the runner does not persist it there.
+   */
+  onSpawn?: (pid: number) => void;
+  /**
    * Cancellation. When this aborts, the provider MUST terminate the command and any process group it
    * spawned (SIGTERM→SIGKILL) — the runner's watchdog drives this on a node-timeout/stall. A provider
    * that ignores it falls back to the runner's liveness timer (which can orphan the child).
@@ -730,6 +722,16 @@ export interface PiCommandOptions {
   thinking?: string | boolean;
   /** Extra `-e <path>` extensions, emitted BEFORE `ctx.extensionFile` (order is load-bearing). */
   extraExtensions?: string[];
+  /**
+   * Per-node SESSION wiring (warm-resume foundation, warm-resume-pi-surfaces.md §4a). When PRESENT, the
+   * builder DROPS `--no-session` and emits `--session-dir <dir>` plus EITHER `--session-id <id>` (create —
+   * the first attempt, caller-minted id) OR `--session <id>` (resume an existing session). When ABSENT, the
+   * builder keeps today's `--no-session` (ephemeral) default, byte-identical to before.
+   *   - `dir`    : the in-sandbox `--session-dir` (a dedicated subdir, NEVER pi's `.pi/` journal tree).
+   *   - `id`     : the exact session id (the node id) — `--session-id` on create, `--session` on resume.
+   *   - `resume` : `true` ⇒ emit `--session <id>` (resume); falsy/absent ⇒ `--session-id <id>` (create).
+   */
+  session?: { dir: string; id: string; resume?: boolean };
 }
 
 /** The catalog: register tools, resolve a selection to pi flags, search, and enumerate. */
@@ -739,6 +741,57 @@ export interface ToolRegistry {
   search(query: string, opts?: { source?: ToolSource; limit?: number }): ToolEntry[];
   /** All registered entries — the catalog the bind pre-check enumerates (discovery/debugging too). */
   list(): ToolEntry[];
+}
+
+// ── SA-C · AgentBase (expert-representations, decision 8) ────────────────────
+//
+// ONE schema for both presets and nodes (build-spec.md §"Final surfaces", decision 8).
+//   • A PRESET is a partial fill: loadout (skills/tools) + display + optional default tier.
+//     Sandbox and op[] are NEVER baked into a preset — they are workflow-level.
+//   • A NODE is the full fill: + sandbox + op[] (the gate pipeline).
+//
+// `AgentBase` extends `AgentPreset`'s shape WITHOUT breaking the 6 existing presets — every preset
+// field maps directly; the new fields (sandbox, op) are optional so an AgentPreset is a valid
+// partial AgentBase. The compiler (`workflow/agent-base.ts`) wires SA-A skills + SA-B gates onto it.
+
+/**
+ * The unified agent description (SA-C · expert-representations). All fields optional/defaulted.
+ *
+ * - **Preset** = partial fill: `id`, `display?`, `skills?`, `tools?`, `tier?`, `prompt?`.
+ *   Sandbox and `op` are LEFT EMPTY on a preset — they are workflow-level, not agent-level.
+ * - **Node** = full fill: + `sandbox?` + `op?` (the gate pipeline, lowered by SA-B's `lowerGates`).
+ *
+ * Invariant: `tier` is a semantic CLASS key (resolved through `~/.piflow/model-tiers.json`);
+ * NEVER a concrete model id. The three canonical tiers are 'fast' | 'balanced' | 'deep'.
+ */
+export interface AgentBase {
+  /** Stable id — the preset's catalog key or the node's authored id. */
+  id: string;
+  /** Branding: surfaced by observe → GUI for the icon / label / color chip. */
+  display?: { label?: string; icon?: string; color?: string };
+  /** Skill loadout — the skill ids this agent runs with. */
+  skills?: string[];
+  /** Extra raw tool selection beyond what the skills' `requires` auto-wire. */
+  tools?: ToolSelection;
+  /**
+   * Model CLASS (tier key) — NEVER a concrete model id. Resolved at run time through
+   * `~/.piflow/model-tiers.json` via `resolveNodeModel`. The three canonical keys:
+   * `'fast'` | `'balanced'` | `'deep'`. A preset sets a DEFAULT; a node's own `tier`/`model` wins.
+   */
+  tier?: string;
+  /** The canonical role-prompt body. A node's task is appended after (ROLE first, TASK after). */
+  prompt?: string;
+  // ── workflow-level (PRESET: leave empty; NODE: fill in) ──
+  /**
+   * Where the node runs. Workflow-level — NEVER baked into a preset (portability).
+   * Partial: the loader fills in provider/workspace/output defaults.
+   */
+  sandbox?: Partial<SandboxSpec>;
+  /**
+   * The gate pipeline (lowered by SA-B's `lowerGates`). Workflow-level — NEVER on a preset.
+   * Each entry is a post-node op: floor checks, execution gates, judge reroutes, etc.
+   */
+  op?: OpSpec[];
 }
 
 // ── L1∩L2 BOUNDARY: the flat node bag the design agent fills ──────────────────
@@ -836,7 +889,6 @@ export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentTyp
   phase?: string;
   sandbox?: Partial<SandboxSpec>;
   hooks?: NodeSpec['hooks'];
-  ops?: NodeSpec['ops'];
   /**
    * (G13 — M5) The unified op envelope — the loader LOWERS the deprecated `hooks`/`ops`/`checks`/`policy`/
    * `inject` aliases into this one ordered list and carries it verbatim onto the dense `NodeSpec`. Authoring
@@ -868,6 +920,19 @@ export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentTyp
   mcp?: { servers?: Record<string, unknown>; ref?: string };
   /** (G9) Subworkflow activation — consumed by `expandSubworkflow` BEFORE compile/fusion; never reaches the dense NodeSpec. */
   subworkflow?: SubworkflowSpec;
+  /**
+   * (expert-representations · "Judge expansion") A JUDGE GATE on this producer node. Lives ONLY on the
+   * authoring/intent layer: `materializeJudgeNodes(spec)` consumes it at LOAD time (BEFORE compile),
+   * INSERTING a real `<label>__judge` pi node wired after the producer + the producer-side `rerouteTo`
+   * judge-fail loop (the `fusion?`/`subworkflow?` precedent — never reaches the dense `NodeSpec`). The
+   * `judgeTier` MUST differ from the producer's tier, else a loud `JudgeConfigError`. Additive: no block ⇒ no change.
+   */
+  judgeGate?: {
+    judgeTier: string;
+    rubric: string;
+    threshold?: string;
+    policy?: { onFail?: 'block' | 'warn' | 'stop' | 'retry' | 'escalate'; retryMax?: number; retryScope?: 'feedback' | 'fix' };
+  };
 };
 
 /**

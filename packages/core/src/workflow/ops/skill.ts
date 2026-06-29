@@ -9,9 +9,18 @@
 // resolves `{{WORKSPACE}}`/`{{RUN}}`/`{{state.*}}` exactly as every other path does — no bespoke parser. The
 // staged dir `name` is the source's basename; pi reads the skill's REAL name from its `SKILL.md` frontmatter,
 // so the container dir name is just a stable, collision-free location (no frontmatter parsing needed here).
+//
+// SA-A (feat/expert-representations) — this module also RE-EXPORTS the skill capability-manifest surface
+// (skill-manifest.ts): `SkillManifest`, `parseSkillManifest`, `resolveSkillLoadout`, `preflightSkills`.
+// The manifest surface is ADDITIVE: the existing `resolveSkillStage` staging path is unchanged, and a skill
+// with no `requires`/`allowed` frontmatter is fully permissive (empty manifest = the prior behavior).
 
 import path from 'node:path';
 import { resolveTokens, type ResolveCtx } from '../resolver.js';
+
+// Re-export the SA-A manifest surface so consumers import from one place.
+export type { SkillManifest, SkillLoadout } from './skill-manifest.js';
+export { parseSkillManifest, resolveSkillLoadout, preflightSkills } from './skill-manifest.js';
 
 /** The resolved skill stage: where to copy FROM (host) and the dir NAME to stage it under (in `.pi/skills/`). */
 export interface SkillStage {

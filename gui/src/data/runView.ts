@@ -138,6 +138,111 @@ export async function saveRunFusion(run: string, overrides: Record<string, strin
   }
 }
 
+// ── (SA-E) Drag-to-compose write-back — config is the single source of truth ──────────────────────
+// Every GUI edit is a mutation to the per-repo TEMPLATE `node.json` the run reads (worker-types.md
+// §"GUI — drag-to-compose"). A dropped GATE chip appends its gate to the node's authored `op[]` lane
+// (or the G5 `checkpoint` field for a human gate) via the `/__piflow/node-edit` middleware; the node's
+// badge then re-reads the authored config from `/__piflow/node-config` so the edit round-trips.
+
+/** The three GATE chip kinds the palette drops (build-spec §"op[] mapping"). Skill/loadout chips are
+ *  stubbed in the palette (not yet wired to a write). */
+export type GateChipKind = "execution" | "judge" | "human" | "floor";
+
+/** A dropped-chip descriptor POSTed to the write-back endpoint. Mirrors the host lib's `chipToOps`. */
+export interface GateChip {
+  kind: GateChipKind;
+  /** execution: the command (e.g. "npm", "pytest"). */
+  cmd?: string;
+  args?: string[];
+  cwd?: string;
+  /** floor: the Check predicate kind (e.g. "non-empty", "json-parses"). */
+  check?: string;
+  path?: string;
+  advisory?: boolean;
+  /** judge: the tier the judge model resolves through; rubric + threshold + retry budget. */
+  judgeTier?: string;
+  rubric?: string;
+  threshold?: string;
+  retryMax?: number;
+  /** human: the question + interaction kind. */
+  question?: string;
+  checkpointKind?: "confirm" | "input" | "select";
+  choices?: string[];
+  /** on-fail policy (block | warn | stop). Default block. */
+  onFailure?: "block" | "warn" | "stop";
+}
+
+/** A node's AUTHORED config as the template `node.json` holds it — the badge's source of truth (the
+ *  run-view distillation does NOT carry the template `op[]`/tier/loadout). Only the fields the badge
+ *  surfaces are typed; the file carries more. DISTINCT from the run-view's `NodeConfig` (the effective
+ *  "what it ran AS" slice surfaced from the digest) — this is the EDITABLE authored template slice. */
+export interface AuthoredNodeConfig {
+  id?: string;
+  agentType?: string;
+  tier?: string;
+  prompt?: { file?: string; skill?: string };
+  /** the gate pipeline lives HERE (build-spec decision 2) — each op carries exactly one body. */
+  op?: Array<{
+    when?: string;
+    run?: { cmd?: string };
+    gate?: { kind?: string };
+    action?: { kind?: string; node?: string };
+    onFailure?: string;
+  }>;
+  /** the G5 human checkpoint (a human gate lowers here, not to op[]). */
+  checkpoint?: { kind?: string; prompt?: string };
+}
+
+/** Fetch a node's authored config from the TEMPLATE (the badge read path the write path mirrors). */
+export async function loadNodeConfig(run: string, nodeId: string): Promise<AuthoredNodeConfig | null> {
+  try {
+    const res = await fetch(`/__piflow/node-config/${encodeURIComponent(run)}?node=${encodeURIComponent(nodeId)}`);
+    if (!res.ok) return null;
+    const { node } = (await res.json()) as { node: AuthoredNodeConfig };
+    return node ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Drop a GATE chip onto a node → mutate the TEMPLATE `node.json` (append to `op[]` or set `checkpoint`).
+ *  `target` defaults to the durable TEMPLATE write; `"run"` (ephemeral) is a server-side stub (501). On
+ *  success the server returns the mutated config so the caller can re-render the badge immediately. */
+export async function dropChipOnNode(
+  run: string,
+  nodeId: string,
+  chip: GateChip,
+  target: "template" | "run" = "template",
+): Promise<{ ok: boolean; node?: AuthoredNodeConfig; error?: string; stub?: boolean }> {
+  try {
+    const res = await fetch(`/__piflow/node-edit/${encodeURIComponent(run)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nodeId, chip, target }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) return { ok: true, node: (body as { node?: AuthoredNodeConfig }).node };
+    return { ok: false, error: (body as { error?: string }).error ?? `${res.status} ${res.statusText}`, stub: (body as { stub?: boolean }).stub };
+  } catch (e) {
+    return { ok: false, error: String((e as Error)?.message ?? e) };
+  }
+}
+
+/** Distill a node's authored config into the compact badge labels the node card surfaces: the gate
+ *  pipeline (ordered chip labels) + the tier. PURE — the GUI's projection of the op[] lane onto chips. */
+export function gatePipelineLabels(cfg: AuthoredNodeConfig | null | undefined): string[] {
+  if (!cfg) return [];
+  const labels: string[] = [];
+  for (const op of cfg.op ?? []) {
+    if (op.run) labels.push("exec");
+    else if (op.gate) labels.push(`floor:${op.gate.kind ?? "?"}`);
+    else if (op.action?.kind === "rerouteTo") labels.push("judge");
+    else if (op.action?.kind) labels.push(op.action.kind);
+  }
+  if (cfg.checkpoint) labels.push("human");
+  return labels;
+}
+
 /** (G6) A preset's branding, as the catalog endpoint returns it (the node carries only `agentType`). */
 export interface AgentDisplay { label?: string; icon?: string; color?: string; }
 /** agentType id → its display branding, from `~/.piflow/agents/` via `/__piflow/agents.json`. */

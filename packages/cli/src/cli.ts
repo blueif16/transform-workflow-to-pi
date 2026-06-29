@@ -13,12 +13,14 @@
 // `status` lays out a `readRunModel` snapshot, `watch` consumes the `watchRun` live stream. They build
 // NO run model of their own — the shared reader VERIFIES artifacts on disk (verified, not trusted).
 
-import { runLogsCli } from '@piflow/core';
+import { runLogsCli, ensurePiflowHome } from '@piflow/core';
 import { runNewCli, runAddNodeCli } from './scaffold.js';
+import { runModelCli } from './model.js';
 import { runStatusCli } from './status.js';
 import { runWatchCli } from './watch.js';
 import { runExtractCli } from './extract.js';
 import { runRunCli } from './run.js';
+import { runNodeCli } from './node.js';
 import { runInspectCli } from './inspect.js';
 import { runTelemetryCli } from './telemetry.js';
 import { runGuiCli } from './gui.js';
@@ -29,6 +31,7 @@ USAGE
   piflowctl new     <templateDir> [flags]   scaffold meta.json + the nodes/ dir (then add-node + Write prose)
   piflowctl add-node <templateDir> --id <id> [flags]  emit one schema-valid node.json (prose is yours)
   piflowctl run     <templateDir> [--run <id>] [flags]  drive a template run (real or --dry-run)
+  piflowctl node    <run> <nodeId> --resume [-m "<msg>"]  warm-resume a node's stored pi session (--stop too)
   piflowctl inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
   piflowctl extract <templateDir>           free DAG preview (node count + parallel lanes; no model)
   piflowctl status  <rundir> [--every <s>]  per-node table + stage/rollup (verified on disk)
@@ -37,6 +40,7 @@ USAGE
                                             verdicts · cost spine · loop signals · anomaly worklist ·
                                             failure-onset root cause. --watch = live stream then record.
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
+  piflowctl model   [list | set <tier> <modelId> | activate | deactivate]  the model-tier config
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
 
 RUN
@@ -62,6 +66,19 @@ RUN
                    canonical run is never relocated). Default: canonical home, else out/<run>.
   --from / --until <substr>  resume / truncate the stage window.
 
+NODE
+  <run>         a run id (resolved under .piflow/<wf>/runs/<id>) OR a direct path to a run dir.
+  <nodeId>      the node to operate on (= its persisted pi session id).
+  --resume      CONVERSATIONAL warm-resume of the node's stored pi session (the run persisted it under
+                <runDir>/.pi-sessions, keyed by node id). Re-opens the SAME conversation via pi's native
+                --session-dir/--session. NOT a runner re-execution (no sandbox/tools/gates re-staging).
+  -m / --message "<msg>"  send one headless message into the resumed session; omit for a LIVE session.
+                A node with no recorded session (cold inmemory/cloud, or never ran --sandbox local) errors,
+                naming the resumable nodes.
+  --stop        STOP the run by signalling its controlling process GROUP (SIGTERM→SIGKILL grace). This is a
+                per-RUN stop, not just one node: the runner records the run controller's pid in .pi/run.json
+                and spawns each node detached in that group. A run with no recorded pid (older run) errors.
+
 NEW
   <templateDir> the template dir to create (e.g. .piflow/<wf>/template). Writes meta.json + nodes/.
   --id / --name / --description  meta fields (default id/name = the dir's workflow basename).
@@ -73,6 +90,9 @@ ADD-NODE
   Edges/contract: --dep <id> · --artifact <p> · --owns <glob> · --read <p>  (each repeatable;
                 owns defaults out/**, read defaults {{RUN}}).
   Tools/io:     --tool <t> · --deny <t> · --inject <p> · --mcp <name=url>  (each repeatable).
+  Hooks:        --seed <to=from> (PRE) · --promote <from=to[:reducer]> · --project <to=from[,from2]> ·
+                --merge-run <cmd[:args][@cwd]> · --registry-project <source=,mapRef=,key=>  (emit canonical
+                op[] derives; seed runs PRE, the rest POST in project→merge→promote order; each repeatable).
   Gates:        --check <kind[:path]> (repeatable) · --on-fail block|warn|stop · --return-mode optional|required.
   Routing:      --model · --provider · --tier · --timeout <ms> · --retries <n> · --schema <p> · --skill <p>.
   --programmatic  a no-pi node (omits prompt/tools; its declarative ops ARE the node).
@@ -105,6 +125,12 @@ TELEMETRY
   --verbose / -v  also stream per chat/tool call lines (full span tree); default = anomalies + verdicts.
   --json        emit the raw RunDigest (or one node's NodeDigest) for an agent to consume.
 
+MODEL
+  list (or bare)            print the tier map (~/.piflow/model-tiers.json) + active + the canonical keys.
+  set <tier> <modelId>      map a tier alias → a model id AND set active:true (written atomically). Canonical
+                            tiers: fast | balanced | deep; a free product name is allowed (warns, never fails).
+  activate / deactivate     flip whether tier references resolve (precedence: node.model > tier > --model).
+
 LOGS (from @piflow/core)
   -f --follow · --node <id> · --summary · --raw · --poll <ms>   (see 'piflowctl logs --help' semantics)
 
@@ -114,6 +140,10 @@ TIP
 `;
 
 async function main(): Promise<void> {
+  // Lazy first-run bootstrap of ~/.piflow (idempotent + cheap + best-effort): seeds model-tiers.json with the
+  // canonical tiers so `model list` always has something to show and tier resolution gives clear errors until
+  // configured. A no-op once the home/file exists; never clobbers user values; never fails the command.
+  ensurePiflowHome();
   const [sub, ...rest] = process.argv.slice(2);
   switch (sub) {
     case 'new':
@@ -124,6 +154,9 @@ async function main(): Promise<void> {
       break;
     case 'run':
       await runRunCli(rest);
+      break;
+    case 'node':
+      process.exitCode = await runNodeCli(rest);
       break;
     case 'inspect':
       await runInspectCli(rest);
@@ -142,6 +175,9 @@ async function main(): Promise<void> {
       break;
     case 'logs':
       await runLogsCli(rest);
+      break;
+    case 'model':
+      await runModelCli(rest);
       break;
     case 'gui':
       await runGuiCli(rest);

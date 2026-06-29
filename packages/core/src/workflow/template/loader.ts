@@ -12,12 +12,12 @@
 
 import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
-import type { WorkflowSpec, NodeIntent, NodeOps, ReturnMode, Reducer } from '../../types.js';
+import type { WorkflowSpec, NodeIntent, ReturnMode } from '../../types.js';
 import { defaultSchemaValidator, type SchemaValidator } from '../../runner/schema.js';
 import { nodeSchema, metaSchema } from './schema/index.js';
 import type { LoadedNode, TemplateNode, TemplateMeta } from './types.js';
 import { renderRealizedPrompt, collectChecks, toPolicy } from './render.js';
-import { lowerToOps, lowerActions, opsToNodeOps } from './lower.js';
+import { lowerToOps, lowerActions } from './lower.js';
 import {
   checkSchemas,
   checkDeps,
@@ -29,6 +29,7 @@ import {
   checkMcpSecrets,
 } from './checks.js';
 import { buildWorkflowJson, writeWorkflowJson } from './workflow-json.js';
+import { materializeJudgeNodes, JudgeConfigError } from '../judge/materialize.js';
 
 /** Thrown when the template does not compile. Carries EVERY §8 violation (like `WorkflowError`). */
 export class TemplateError extends Error {
@@ -85,25 +86,6 @@ async function scanNodes(dir: string): Promise<{ loaded: LoadedNode[]; raw: { id
   return { loaded, raw };
 }
 
-/**
- * Carry the authored `node.json.hooks` block onto the runtime `NodeOps` (the declarative DATA the run
- * loop executes: seed PRE · project/merge/promote POST). The `node.json` `hooks` shape IS `NodeOps`
- * (seed/project `{to,from}` · promote `{from,to,merge}` · merge the `{ops:[...]}` MergeSpec), so this is
- * a near-pass-through; only `promote.merge` is narrowed from the authored `string` to the `Reducer` union
- * (the schema gate already constrains it). Returns undefined when no hooks block is authored (so a node
- * with no ops stays op-free — additive).
- */
-function toNodeOps(h: LoadedNode['def']['hooks']): NodeOps | undefined {
-  if (!h) return undefined;
-  const ops: NodeOps = {};
-  if (h.seed) ops.seed = h.seed;
-  if (h.project) ops.project = h.project;
-  if (h.merge) ops.merge = h.merge;
-  if (h.promote) ops.promote = h.promote.map((p) => ({ from: p.from, to: p.to, merge: p.merge as Reducer }));
-  if (h.registryProject) ops.registryProject = h.registryProject;
-  return ops;
-}
-
 /** Dedup a string list, preserving first-seen order. */
 const unique = (xs: string[]): string[] => [...new Set(xs)];
 
@@ -113,10 +95,10 @@ const runRel = (p: string): string => p.replace(/^\{\{RUN\}\}\//, '');
 /** Map an authored TemplateNode → the runtime NodeIntent the existing DAG compiler consumes. */
 function toNodeIntent(n: LoadedNode): NodeIntent {
   const c = n.def.contract;
-  const ops = toNodeOps(n.def.hooks);
   // (M5 · G13) LOWER the deprecated aliases (inject/hooks/checks/policy) into the canonical op[] envelope.
-  // AT THE LOADER ONLY — the dense NodeSpec gains exactly this one field; the runtime ops/checks/policy
-  // carried below stay byte-identical so the runner's existing dispatch is unchanged (additive).
+  // AT THE LOADER ONLY — the dense NodeSpec gains exactly this one field; the runtime checks/policy carried
+  // below stay byte-identical so the runner's existing dispatch is unchanged (additive). `op[]` is now the
+  // SOLE derive rep — the legacy `node.ops` (and its back-fill) was retired in U6.
   const op = lowerToOps(n.def);
   // (M5 · G13) The CONTROL action ops lower to the canonical M3/M4 primitives (reroute/retry/escalate).
   const actions = lowerActions(op);
@@ -167,20 +149,11 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
       ...(n.def.timeoutMs ? { timeoutMs: n.def.timeoutMs } : {}),
     },
   };
-  // Additive: only attach `ops` when the node authored a hooks block (a node with none stays op-free).
-  if (ops) intent.ops = ops;
-  // (M5 · G13) Carry the lowered op[] envelope onto the intent → the dense NodeSpec (the one new field).
+  // (M5 · G13) Carry the lowered op[] envelope onto the intent → the dense NodeSpec. `op[]` is the SOLE
+  // derive rep (the legacy `node.ops` + its back-fill were retired in U6): both `hooks`-authored and
+  // directly-`op[]`-authored derives flow through this one field, which the runner reads via `derivesFromOp`.
   // Additive: a node declaring none of the lowerable surfaces stays op-free.
   if (op) intent.op = op;
-  // (G13 — M5) DERIVE `node.ops` from the op[] transforms for a node authored DIRECTLY in `op[]` (no
-  // `hooks` alias). `lowerToOps` returns a directly-authored `op[]` verbatim and never re-derives `hooks`,
-  // so without this the runner's POST-derive executors (which read `node.ops?.{seed/project/merge/promote/
-  // registryProject}`) never fire and the derive SILENTLY never runs. GUARD: only when no `hooks` block
-  // already single-sourced `node.ops` — never double-source. Additive: a gate/action/run-only op[] stays op-free.
-  if (!ops && op) {
-    const derived = opsToNodeOps(op);
-    if (derived) intent.ops = derived;
-  }
   // (G6) Carry the agent-PRESET label verbatim (the preset was already expanded into tools/prompt at init);
   // it rides to observe so the GUI renders the icon. Additive — a node with none stays label-free.
   if (n.def.agentType) intent.agentType = n.def.agentType;
@@ -189,7 +162,7 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
   if (n.def.provider) intent.provider = n.def.provider;
   if (n.def.tier) intent.tier = n.def.tier;
   // (G5) Carry a HUMAN CHECKPOINT block verbatim onto the spec (the runtime CheckpointSpec) when authored —
-  // additive, the same way `ops` is carried. A node with no checkpoint behaves exactly as before.
+  // additive, the same way `op` is carried. A node with no checkpoint behaves exactly as before.
   if (n.def.checkpoint) intent.checkpoint = n.def.checkpoint;
   // (PROGRAMMATIC NODE) Carry the no-pi marker verbatim onto the intent → the dense NodeSpec (the runner
   // dispatches it to the declarative-ops lane). Additive: a node with none spawns `pi` exactly as before.
@@ -208,6 +181,10 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
   // (G9) Carry a SUBWORKFLOW activation block verbatim onto the intent when authored — `expandSubworkflow`
   // consumes it before fusion + compile (the node is replaced by the referenced sub-template). Additive.
   if (n.def.subworkflow) intent.subworkflow = n.def.subworkflow;
+  // (expert-representations · "Judge expansion") Carry a JUDGE GATE block verbatim onto the intent when
+  // authored — `materializeJudgeNodes` consumes it at LOAD time (below), inserting a real `<id>__judge`
+  // node + the producer-side reroute loop. Twin of the `fusion`/`subworkflow` carries. Additive: no block ⇒ no change.
+  if (n.def.judgeGate) intent.judgeGate = n.def.judgeGate;
   return intent;
 }
 
@@ -258,9 +235,23 @@ export async function loadTemplate(dir: string, opts: LoadTemplateOpts = {}): Pr
   // (4) (re)write the generated workflow.json lock — always synced from the node set.
   await writeWorkflowJson(dir, buildWorkflowJson(meta as TemplateMeta, loaded));
 
-  // (5) build + return the in-memory WorkflowSpec (deterministic node order = id-sorted from scan).
+  // (5) build the in-memory WorkflowSpec (deterministic node order = id-sorted from scan).
   const m = meta as TemplateMeta;
-  const nodes = loaded.map(toNodeIntent);
+  const authoredNodes = loaded.map(toNodeIntent);
+  // (expert-representations · "Judge expansion") MATERIALIZE every authored `judgeGate` into a real
+  // `<producer>__judge` pi node + the producer-side reroute loop + the downstream-consumer rewiring. A
+  // PURE intent→intent transform (the `expandReroute`/`expandFusion` precedent) — runs BEFORE the
+  // externalInputs join below so the judge's new reads/produces participate in the edge inference. A spec
+  // with no judge gate is returned referentially unchanged. Throws `JudgeConfigError` on a same-tier judge.
+  let nodes: NodeIntent[];
+  try {
+    nodes = materializeJudgeNodes({ meta: { name: m.name, description: m.description }, nodes: authoredNodes }).nodes;
+  } catch (e) {
+    // The judge invariant (judgeTier != producer tier) is a TEMPLATE buildability failure — surface it
+    // through the SAME fail-closed `TemplateError` envelope the §8 checks use (the single compile gate).
+    if (e instanceof JudgeConfigError) throw new TemplateError([e.message]);
+    throw e;
+  }
   // (M5 · #10/#16) Now that `io.reads` folds the op/injected reads (no longer the `reads:[]` hardcode),
   // mark each read with NO producer in the spec as an externalInput — a RAW input, NOT a missing-producer
   // error (the template's `checkRefs` already proved each injected read is produced upstream or canonical).

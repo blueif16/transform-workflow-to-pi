@@ -3,6 +3,14 @@
 
 export { runWorkflow, defaultExecRunner, defaultCheckpointWait, lastJsonBlock, selectedBridgedTool } from './runner.js';
 export type { RunOptions, RunResult, ExecRunner, ExecWatchdogOpts, CheckpointWaiter } from './runner.js';
+// (op⊖ops) derivesFromOp / gatesFromOp / runOpsFromOp — the SINGLE OpSpec→executor-input adapter home (the
+// SOLE derive rep is `op[]`). Surfaced so consumers (the CLI inspector) render derives from `op[]` instead of
+// the retired `node.ops`; gatesFromOp/runOpsFromOp unify the gate/run reads the runner inlined per lane (C2).
+export { derivesFromOp, gatesFromOp, runOpsFromOp, actionsFromOp } from './op-dispatch.js';
+// In-place exec location — the seam that anchors a `local` (in-place) node's cwd + output to the run dir
+// (so a relative artifact write lands under {{RUN}}); isolated kinds keep their throwaway workspace + out/<id>.
+export { effectiveSandboxLocation } from './env-staging.js';
+export type { DerivedExecInputs, ProjectOp, RegistryProject, PromoteInput, RunnableOp, RejectedRunOp, ActionOps } from './op-dispatch.js';
 // G5 — HUMAN CHECKPOINT (HITL): the marker/reply schemas, the question hash, and the reply validator (the
 // runner's authority). The Vite courier + the console write the reply file; observe surfaces the marker.
 export {
@@ -84,8 +92,14 @@ export {
   resolveNodeModel,
   ModelRoutingError,
   loadModelTiers,
+  writeModelTiers,
   loadModelsIndex,
   defaultTiersPath,
   defaultModelsPath,
+  CANONICAL_TIERS,
+  TIER_FAST,
+  TIER_BALANCED,
+  TIER_DEEP,
+  DEFAULT_TIERS_SEED,
 } from './model-routing.js';
 export type { ModelTiers, NodeRouting, RunRouting, EffectiveModel } from './model-routing.js';

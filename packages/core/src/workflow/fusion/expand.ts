@@ -180,8 +180,10 @@ function expandNode(x: NodeIntent, opts: FusionExpandOpts): NodeIntent[] {
       ...(x.sandbox ?? {}),
       read: [...(x.sandbox?.read ?? []), ...judgeReads],
     },
-    // Post-processing belongs to the result, which the judge produces — keep X's ops/hooks/checkpoint here.
-    ...(x.ops ? { ops: x.ops } : {}),
+    // Post-processing belongs to the result, which the judge produces — keep X's op/hooks/checkpoint here.
+    // Carry the unified `op[]` rep — the SOLE derive rep — so an op[]-authored derive survives onto the
+    // judge clone (the legacy `node.ops` carry was retired with the rep in U6).
+    ...(x.op ? { op: x.op } : {}),
     ...(x.hooks ? { hooks: x.hooks } : {}),
     ...(x.checkpoint ? { checkpoint: x.checkpoint } : {}),
   });

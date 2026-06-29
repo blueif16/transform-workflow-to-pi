@@ -140,6 +140,20 @@ describe('runWorkflow — end-to-end on InMemorySandboxProvider (no live pi)', (
 
     await fs.rm(outDir, { recursive: true, force: true });
   });
+
+  // The run RECORDS the controlling process's pid into `.pi/run.json` at start, so a later
+  // `piflowctl node <run> <id> --stop` can signal the (detached) run's process group. Additive:
+  // it does NOT change run semantics; the assertion is just that the recorded pid IS this process.
+  it('records the controlling process pid into .pi/run.json so a later --stop can signal it', async () => {
+    const g = compile(wf([n('Solo', [], ['solo.txt'])]));
+    const outDir = await tmpOut();
+    await runWorkflow(g, { run: 'pid-rec', outDir, buildCommand: stubBuilder() });
+
+    const onDisk = JSON.parse(await fs.readFile(runJsonFile(outDir), 'utf8')) as RunStatus;
+    expect(onDisk.controllerPid).toBe(process.pid);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
 });
 
 // ── 1b. concurrent collect into a SHARED dest subtree (the swallowed-EEXIST footgun) ───────────────
@@ -725,7 +739,7 @@ describe('runWorkflow — seed PRE op staging (S2)', () => {
       prompt: 'fill the skeleton',
       tools: {},
       io: { reads: [], produces: ['out.txt'], artifacts: [{ path: 'out.txt' }] },
-      ops: { seed: [{ to: 'spec/skeleton.json', from: '{{WORKSPACE}}/tpl/skeleton.json' }] },
+      op: [{ when: 'pre', writes: ['spec/skeleton.json'], transform: { kind: 'seed', from: '{{WORKSPACE}}/tpl/skeleton.json' } }],
     };
 
     let cmdSawSeed = false;
@@ -786,7 +800,7 @@ describe('runWorkflow — promote + barrier-merge + state I/O (S3)', () => {
       prompt: 'classify',
       tools: {},
       io: { reads: [], produces: ['spec/classification.json'], artifacts: [{ path: 'spec/classification.json' }] },
-      ops: { promote: [{ from: 'spec/classification.json:archetype', to: 'archetype', merge: 'set' }] },
+      op: [{ when: 'post', transform: { kind: 'promote', from: 'spec/classification.json:archetype', to: 'archetype', reducer: 'set' } }],
     };
     const build: NodeIntent = {
       label: 'Build',
@@ -840,12 +854,12 @@ describe('runWorkflow — promote + barrier-merge + state I/O (S3)', () => {
     const a: NodeIntent = {
       label: 'A', prompt: 'a', tools: {},
       io: { reads: [], produces: ['a.json'], artifacts: [{ path: 'a.json' }] },
-      ops: { promote: [{ from: 'a.json:k', to: 'alpha', merge: 'set' }] },
+      op: [{ when: 'post', transform: { kind: 'promote', from: 'a.json:k', to: 'alpha', reducer: 'set' } }],
     };
     const b: NodeIntent = {
       label: 'B', prompt: 'b', tools: {},
       io: { reads: [], produces: ['b.json'], artifacts: [{ path: 'b.json' }] },
-      ops: { promote: [{ from: 'b.json:k', to: 'beta', merge: 'set' }] },
+      op: [{ when: 'post', transform: { kind: 'promote', from: 'b.json:k', to: 'beta', reducer: 'set' } }],
     };
     const outDir = await tmpOut();
     const { status } = await runWorkflow(compile(wf([a, b])), {
@@ -864,12 +878,12 @@ describe('runWorkflow — promote + barrier-merge + state I/O (S3)', () => {
     const a: NodeIntent = {
       label: 'A', prompt: 'a', tools: {},
       io: { reads: [], produces: ['a.json'], artifacts: [{ path: 'a.json' }] },
-      ops: { promote: [{ from: 'a.json:k', to: 'shared', merge: 'set' }] },
+      op: [{ when: 'post', transform: { kind: 'promote', from: 'a.json:k', to: 'shared', reducer: 'set' } }],
     };
     const b: NodeIntent = {
       label: 'B', prompt: 'b', tools: {},
       io: { reads: [], produces: ['b.json'], artifacts: [{ path: 'b.json' }] },
-      ops: { promote: [{ from: 'b.json:k', to: 'shared', merge: 'set' }] },
+      op: [{ when: 'post', transform: { kind: 'promote', from: 'b.json:k', to: 'shared', reducer: 'set' } }],
     };
     const outDir = await tmpOut();
     const { status } = await runWorkflow(compile(wf([a, b])), {
@@ -887,7 +901,7 @@ describe('runWorkflow — promote + barrier-merge + state I/O (S3)', () => {
     const gate: NodeIntent = {
       label: 'Decide', prompt: 'decide', tools: {},
       io: { reads: [], produces: ['d.txt'], artifacts: [{ path: 'd.txt' }] },
-      ops: { promote: [{ from: '@return:verdict', to: 'verdict', merge: 'set' }] },
+      op: [{ when: 'post', transform: { kind: 'promote', from: '@return:verdict', to: 'verdict', reducer: 'set' } }],
     };
     const outDir = await tmpOut();
     // The stub writes the artifact AND emits a fenced return carrying an extra `verdict` field.
@@ -941,13 +955,17 @@ describe('runWorkflow — merge run-op PRODUCES a required artifact (derive-befo
         artifacts: [{ path: 'asset-prompts.json' }, { path: 'derived/manifest.json' }],
       },
       // the gen hook: a deterministic `run` op that writes the REQUIRED manifest under {project}.
-      ops: {
-        merge: {
-          ops: [
-            { run: { cmd: 'sh', args: ['-c', 'mkdir -p {project}/derived && printf %s generated > {project}/derived/manifest.json'] } },
-          ],
+      op: [
+        {
+          when: 'post',
+          transform: {
+            kind: 'merge',
+            ops: [
+              { run: { cmd: 'sh', args: ['-c', 'mkdir -p {project}/derived && printf %s generated > {project}/derived/manifest.json'] } },
+            ],
+          },
         },
-      },
+      ],
     };
     const outDir = await tmpOut();
     // The node's OWN command writes ONLY asset-prompts.json — NOT the manifest (the merge op does that).
@@ -1670,7 +1688,7 @@ describe('runWorkflow — project/merge POST DERIVE ops (S4)', () => {
       prompt: 'author the shell fragment',
       tools: {},
       io: { reads: [], produces: ['spec/shell.fragment.json'], artifacts: [{ path: 'spec/shell.fragment.json' }] },
-      ops: { merge: { ops: [{ fold: { from: 'spec/shell.fragment.json', to: 'spec/blueprint.json', into: 'shell' } }] } },
+      op: [{ when: 'post', transform: { kind: 'merge', ops: [{ fold: { from: 'spec/shell.fragment.json', to: 'spec/blueprint.json', into: 'shell' } }] } }],
     };
     const outDir = await tmpOut();
     const { status } = await runWorkflow(compile(wf([node])), {
@@ -1696,7 +1714,7 @@ describe('runWorkflow — project/merge POST DERIVE ops (S4)', () => {
       prompt: 'write memory fragments',
       tools: {},
       io: { reads: [], produces: ['MEMORY.a.md', 'MEMORY.b.md'], artifacts: [{ path: 'MEMORY.a.md' }, { path: 'MEMORY.b.md' }] },
-      ops: { merge: { ops: [{ concat: { glob: 'MEMORY.*.md', to: 'MEMORY.md', heading: '## {name}' } }] } },
+      op: [{ when: 'post', transform: { kind: 'merge', ops: [{ concat: { glob: 'MEMORY.*.md', to: 'MEMORY.md', heading: '## {name}' } }] } }],
     };
     const outDir = await tmpOut();
     const { status } = await runWorkflow(compile(wf([node])), {
@@ -1727,7 +1745,7 @@ describe('runWorkflow — project/merge POST DERIVE ops (S4)', () => {
       prompt: 'author the marker',
       tools: {},
       io: { reads: [], produces: ['marker.txt'], artifacts: [{ path: 'marker.txt' }] },
-      ops: { merge: { ops: [{ run: { cmd: 'node', args: ['{{WORKSPACE}}/scripts/derive.js', '{{RUN}}'] } }] } },
+      op: [{ when: 'post', transform: { kind: 'merge', ops: [{ run: { cmd: 'node', args: ['{{WORKSPACE}}/scripts/derive.js', '{{RUN}}'] } }] } }],
     };
     const outDir = await tmpOut();
     const { status } = await runWorkflow(compile(wf([node])), {
@@ -1760,14 +1778,14 @@ describe('runWorkflow — project/merge POST DERIVE ops (S4)', () => {
       prompt: 'author the source',
       tools: {},
       io: { reads: [], produces: ['spec/source.json'], artifacts: [{ path: 'spec/source.json' }] },
-      ops: {
-        // project: copy the `payload` subtree of spec/source.json → spec/derived.json (a discriminated op).
-        project: [{ to: 'spec/derived.json', source: 'spec/source.json', copy: 'payload' } as unknown as { to: string; from: string }],
-        // merge: a run op that records whether the projection already landed.
-        merge: { ops: [{ run: { cmd: 'node', args: ['{{WORKSPACE}}/scripts/order.js', '{{RUN}}'] } }] },
-        // promote: lift a channel LAST (it lands at the stage barrier, after project+merge in-node).
-        promote: [{ from: 'spec/source.json:phase', to: 'phase', merge: 'set' }],
-      },
+      // (op[]-only) project → merge → promote in canonical POST order. The RICH project `copy` op (a subtree
+      // drill) rides `transform.ops` (D6/opt-A — derivesFromOp carries it verbatim to applyProjectionOp);
+      // merge + promote use their transform bodies (the promote `reducer` is the NAME-FLIPPED `merge`).
+      op: [
+        { when: 'post', writes: ['spec/derived.json'], transform: { kind: 'project', ops: [{ to: 'spec/derived.json', source: 'spec/source.json', copy: 'payload' }] } },
+        { when: 'post', transform: { kind: 'merge', ops: [{ run: { cmd: 'node', args: ['{{WORKSPACE}}/scripts/order.js', '{{RUN}}'] } }] } },
+        { when: 'post', transform: { kind: 'promote', from: 'spec/source.json:phase', to: 'phase', reducer: 'set' } },
+      ],
     };
     const outDir = await tmpOut();
     const { status } = await runWorkflow(compile(wf([node])), {

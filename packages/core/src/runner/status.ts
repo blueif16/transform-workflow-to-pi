@@ -108,6 +108,13 @@ export interface NodeStatusRecord {
   repairAttempts?: number;
   /** (G8 fold) The repair budget was spent and the output STILL failed its schema — terminal `blocked`. */
   repairExhausted?: boolean;
+  /**
+   * (warm-resume) The MINTED per-node pi session id (= the node id) and its `--session-dir`, recorded when a
+   * warm-eligible (in-place/local) node ran with a persisted session. A future `node <run> <id> --resume`
+   * reads these to warm-resume without re-deriving. Absent on a cold (inmemory/cloud) or no-session node.
+   */
+  sessionId?: string;
+  sessionDir?: string;
 }
 
 /** Run-level rollup at completion. */
@@ -136,6 +143,14 @@ export interface RunStatus {
   profile?: string | null;
   provider?: string;
   model?: string | null;
+  /**
+   * The OS pid of the process that DROVE this run (the one that called `runWorkflow`), recorded at run
+   * start so `piflowctl node <run> <id> --stop` can later signal it. The runner spawns each node's child
+   * DETACHED as its own process group (sandbox/worktree.ts:128) and kills the GROUP via `kill(-pid)`; a
+   * later stop targets THIS controller's group (SIGTERM→SIGKILL grace) — a per-RUN stop, since per-node
+   * child pids are ephemeral and never persisted. Absent on an older run (additive, optional).
+   */
+  controllerPid?: number;
   /**
    * (SKIN channel) The run's EFFECTIVE sandbox BACKEND — the kind chosen ONCE at the CLI (`--sandbox`) for
    * the single provider instance, stamped run-wide. DISTINCT from `provider` (the MODEL gateway). A

@@ -54,7 +54,9 @@ import { ExpandContext } from "./ExpandContext";
 import { ViewModeContext, type ViewMode } from "./ViewModeContext";
 import { FusionContext, type FusionMode } from "./FusionContext";
 import { FusionSaveBar } from "./FusionSaveBar";
-import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, loadAgentCatalog } from "../data/runView";
+import { ComposeContext } from "./ComposeContext";
+import { ChipPalette } from "./ChipPalette";
+import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, loadAgentCatalog, loadNodeConfig, dropChipOnNode, type GateChip, type AuthoredNodeConfig } from "../data/runView";
 import { deriveZones, toZoneFlowNode, type ZoneFlowNode } from "../data/zones";
 import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
 import { useRunStream, RunStreamContext } from "../data/runStream";
@@ -78,6 +80,10 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   // (Fusion mode) per-node fusion overrides — `{ nodeId: "moa" | "best-of-n" }`. When non-empty the canvas
   // renders the SDK-expanded PREVIEW (via /__piflow/preview) instead of the live run-view; empty ⇒ run-view.
   const [fusionOverrides, setFusionOverrides] = useState<Record<string, FusionMode>>({});
+  // (Compose mode · SA-E) per-node AUTHORED config from the TEMPLATE (op[]/checkpoint/tier) — the gate-
+  // pipeline badge's source of truth (the run-view distillation does NOT carry the template op[]). Loaded
+  // lazily when Compose mode opens; refreshed for a single node after a chip drops.
+  const [nodeConfigs, setNodeConfigs] = useState<Record<string, AuthoredNodeConfig>>({});
   const [companionOpen, setCompanionOpen] = useState(false); // bottom-right pi chat; launched by the "P" key
 
   const [ix, setIx] = useState<GlobalIndex | null>(null);
@@ -210,15 +216,61 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   // Leaving Fusion mode drops every override ⇒ the canvas falls back to the live run-view.
   useEffect(() => { if (mode !== "fusion") setFusionOverrides((o) => (Object.keys(o).length ? {} : o)); }, [mode]);
 
+  // card-only nodes — the backdrop zones carry no config/provenance, so every card-only consumer (compose
+  // config fetch, file overlay) reads this narrowed set, never the flat array that also holds zone nodes.
+  // MEMOized so its identity is stable across renders — the compose effect below depends on it.
+  const flowNodes = useMemo(() => nodes.filter(isFlowNode), [nodes]);
+
+  // (Compose mode · SA-E) When Compose opens, fetch each node's AUTHORED config from the TEMPLATE (one
+  // /__piflow/node-config call per node) so each badge can render its real gate pipeline + tier. A node
+  // whose template config can't be read (e.g. a fusion-generated sibling that isn't an author node) is
+  // simply absent ⇒ its badge shows "drop a gate". Re-runs when the node set or the active run changes.
+  useEffect(() => {
+    if (mode !== "compose" || !activeRun || flowNodes.length === 0) { setNodeConfigs({}); return; }
+    let alive = true;
+    (async () => {
+      const entries = await Promise.all(
+        flowNodes.map(async (n) => [n.id, await loadNodeConfig(activeRun, n.id)] as const),
+      );
+      if (!alive) return;
+      const map: Record<string, AuthoredNodeConfig> = {};
+      for (const [id, cfg] of entries) if (cfg) map[id] = cfg;
+      setNodeConfigs(map);
+    })();
+    return () => { alive = false; };
+  }, [mode, activeRun, flowNodes]);
+
+  // (Compose mode · SA-E) drop a gate chip onto a node → mutate its TEMPLATE node.json (append to op[] /
+  // set checkpoint), then REFRESH that node's config so the badge re-renders WITH the new gate (round-trip:
+  // GUI edit → node.json → re-read renders the change). config is the single source of truth.
+  const dropChip = useCallback(async (nodeId: string, chip: GateChip): Promise<{ ok: boolean; error?: string; stub?: boolean }> => {
+    if (!activeRun) return { ok: false, error: "no active run" };
+    const r = await dropChipOnNode(activeRun, nodeId, chip, "template");
+    if (r.ok) {
+      // Prefer the mutated config the endpoint echoed; fall back to a fresh read.
+      const fresh = r.node ?? (await loadNodeConfig(activeRun, nodeId));
+      if (fresh) setNodeConfigs((prev) => ({ ...prev, [nodeId]: fresh }));
+    }
+    return { ok: r.ok, error: r.error, stub: r.stub };
+  }, [activeRun]);
+
+  const composeApi = useMemo(
+    () => ({ active: mode === "compose", run: activeRun, configs: nodeConfigs, dropChip }),
+    [mode, activeRun, nodeConfigs, dropChip],
+  );
+
+  // Leaving Compose mode drops the loaded configs (re-fetched fresh on re-entry).
+  useEffect(() => { if (mode !== "compose") setNodeConfigs((c) => (Object.keys(c).length ? {} : c)); }, [mode]);
+
+  // A backdrop zone is non-selectable, so the expanded node is always a real card — narrow before reading data.
   const expandedNode = nodes.find((n) => n.id === expandedId);
   const expandedData = expandedNode && isFlowNode(expandedNode) ? expandedNode.data : null;
-  // card-only nodes for the file overlay's provenance (zones carry no reads/writes).
-  const flowNodes = nodes.filter(isFlowNode);
 
   return (
     <ExpandContext.Provider value={expandApi}>
       <ViewModeContext.Provider value={viewModeApi}>
       <FusionContext.Provider value={fusionApi}>
+      <ComposeContext.Provider value={composeApi}>
       <RunStreamContext.Provider value={live}>
       <LayoutGroup>
         <div style={{ position: "relative", width: "100%", height: "100%", background: "var(--ds-bg-canvas)" }}>
@@ -289,10 +341,12 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
           <MenuBar activeRun={activeRun} onSelectRun={selectRun} ix={ix} />
           <ModeBar chatOpen={companionOpen} onToggleChat={() => setCompanionOpen((o) => !o)} />
           <FusionSaveBar active={mode === "fusion"} />
+          <ChipPalette active={mode === "compose"} />
           <Companion activeRun={activeRun} open={companionOpen} onOpenChange={setCompanionOpen} />
         </div>
       </LayoutGroup>
       </RunStreamContext.Provider>
+      </ComposeContext.Provider>
       </FusionContext.Provider>
       </ViewModeContext.Provider>
     </ExpandContext.Provider>

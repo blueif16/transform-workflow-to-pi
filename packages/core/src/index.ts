@@ -43,6 +43,20 @@ export { renderRealizedPrompt } from './workflow/template/render.js';
 export { mergePreset, parseAgentPreset, loadAgentPreset, defaultAgentsDir } from './workflow/agent-preset.js';
 export type { AgentPreset, PresetMergeable } from './workflow/agent-preset.js';
 
+// (SA-B · expert-representations) Gate authoring → op[] surface. Author-time gate descriptors +
+// cost-ladder ordering + compile-time lowering to the canonical `op[]` envelope. Zero new runtime.
+export { lowerGate, lowerGates, costLadderOrder } from './workflow/gate-authoring.js';
+export type {
+  GateAuthorSpec,
+  ExecutionGate,
+  FloorGate,
+  JudgeGate,
+  HumanGate,
+  GatePolicy,
+  LowerGateResult,
+  JudgeMaterializedNode,
+} from './workflow/gate-authoring.js';
+
 // (Phase 2) Fusion nodes: the pre-compile siblings+judge expansion + its built-in fusion PRESET AGENTS
 // (the judge/obligations roles). `expandFusion` runs before `compile`; the presets brand the generated
 // nodes via `agentType`. The verbatim Appendix-A prompt bodies + token fillers live in `fusion/prompts`.
@@ -179,6 +193,11 @@ export type { HookReport, RunHooksOpts } from './hooks/index.js';
 // Runner (M1 execution loop — create→stage→exec→collect→dispose; watchdogs · halt-on-failure ·
 // --from resume · run-status.json). The pi-spawn is injectable (buildCommand/execRunner) so it runs offline.
 export { runWorkflow, defaultExecRunner, defaultPiCommand, lastJsonBlock, writeStatus, artifactState, nowISO } from './runner/index.js';
+// (op⊖ops) derivesFromOp / gatesFromOp / runOpsFromOp — reconstruct the per-family executor inputs from a
+// node's canonical `op[]` (the SOLE derive rep; the legacy `node.ops` was retired in U6). The runner reads
+// derives/gates/run ops through these three adapters (one home), and consumers (inspector) render via them.
+export { derivesFromOp, gatesFromOp, runOpsFromOp } from './runner/index.js';
+export type { DerivedExecInputs, ProjectOp, RegistryProject, PromoteInput, RunnableOp, RejectedRunOp } from './runner/index.js';
 // The env-AGNOSTIC run entry (D5): a plain resolved-config object (workflowSpec | buildWorkflowSpec +
 // run opts) → compile → run. The bridge is consumer-injected; env resolution lives in `loadConfig`.
 export { runFromConfig } from './runner/index.js';
@@ -192,9 +211,15 @@ export {
   resolveNodeModel,
   ModelRoutingError,
   loadModelTiers,
+  writeModelTiers,
   loadModelsIndex,
   defaultTiersPath,
   defaultModelsPath,
+  CANONICAL_TIERS,
+  TIER_FAST,
+  TIER_BALANCED,
+  TIER_DEEP,
+  DEFAULT_TIERS_SEED,
 } from './runner/index.js';
 export type { ModelTiers, NodeRouting, RunRouting, EffectiveModel } from './runner/index.js';
 // loadConfig — the env layer (D5): PI_RUNNER_* env + parsed args → the run-opts object runFromConfig
@@ -254,12 +279,19 @@ export {
   nodeToolsFile,
   nodeMcpFile,
   nodeEventsFile,
+  // (warm-resume) the per-run pi session-storage dir (sibling of `.pi/`) — the `--session-dir` a
+  // `piflowctl node <run> <id> --resume` addresses the stored per-node session under.
+  piSessionsDir,
   writeNodeIo,
   // G5 — human-checkpoint marker/reply file paths (per-run data in the RUN dir).
   checkpointsDir,
   checkpointMarkerFile,
   checkpointReplyFile,
 } from './runner/layout.js';
+// G4 journal reader — the per-node content-hash journal (`.pi/journal.json`). A `node <run> <id>
+// --resume` reads `nodes.<id>.sessionId`/`.sessionDir` from here to confirm a resumable session.
+export { loadJournal, journalFile } from './runner/journal.js';
+export type { Journal, JournalNode } from './runner/journal.js';
 
 // Docker-style run-name generation (`<bake-adjective>-<pie>`, e.g. "flaky-pecan"): the CLI mints a
 // memorable, collision-checked run name when `--run/--id` is omitted, decoupling a run's identity from
@@ -300,6 +332,8 @@ export {
   globalDir,
   productsFile,
   indexFile,
+  homeTiersFile,
+  ensurePiflowHome,
   loadRegistry,
   upsertRoot,
   saveRegistry,

@@ -26,6 +26,16 @@ export const runJsonFile = (run: string): string => path.join(piDir(run), 'run.j
 /** `${run}/.pi/nodes/<id>` — a node's dedicated folder. */
 export const nodeDir = (run: string, id: string): string => path.join(piDir(run), 'nodes', id);
 
+// ── (warm-resume) per-run pi SESSION storage — a DEDICATED subdir, NEVER `.pi/`. ──────────────────
+// pi persists its own `<timestamp>_<uuid>.jsonl` session files under `--session-dir`. We co-locate them in
+// `${run}/.pi-sessions` — a SIBLING of `.pi/`, never inside it (dropping pi's session files into the engine
+// `.pi/` journal/state tree confuses the observe/journal readers; warm-resume-pi-surfaces.md §4d). Mirrors
+// the control-session host's `.pi-control` anti-collision discipline. Used as the `--session-dir` for a
+// per-node warm session (id = the node id); a future `node <run> <id> --resume` finds the session here.
+
+/** `${run}/.pi-sessions` — the per-run pi session-storage dir (sibling of `.pi/`, NEVER inside it). */
+export const piSessionsDir = (run: string): string => path.join(run, '.pi-sessions');
+
 /** `${run}/.pi/nodes/<id>/io.json` — the per-node I/O ledger record. */
 export const nodeIoFile = (run: string, id: string): string => path.join(nodeDir(run, id), 'io.json');
 
@@ -44,6 +54,56 @@ export const nodeMcpFile = (run: string, id: string): string =>
 /** `${run}/.pi/nodes/<id>/events.jsonl` — the behavior stream. */
 export const nodeEventsFile = (run: string, id: string): string =>
   path.join(nodeDir(run, id), 'events.jsonl');
+
+// ── (per-node stop) the node's LIVE-pi pid record — the home a `node <run> <id> --stop` reads. ──────────
+// When a node runs on a HOST-SIGNALABLE (in-place/local/inmemory) provider, the runner persists the spawned
+// pi's pid here at spawn (via ExecOpts.onSpawn) and REMOVES it on finish — so the file existing means a LIVE
+// host process is signallable, and its absence means the node is not running (finished / never started /
+// remote). A separate CLI signals the recorded GROUP (pid == pgid, the detached leader) SIGTERM→SIGKILL. A
+// CLOUD node's process lives in the VM (no host pid to signal) ⇒ the runner writes NO file there.
+
+/** `${run}/.pi/nodes/<id>/pid.json` — the node's live-pi pid record (present ⇔ a host-signalable live process). */
+export const nodePidFile = (run: string, id: string): string => path.join(nodeDir(run, id), 'pid.json');
+
+/** The on-disk shape of `pid.json`: the detached child's pid (== pgid, the group leader) + when it spawned. */
+export interface NodePidRecord {
+  pid: number;
+  /** The process-GROUP id `--stop` signals via `kill(-pgid)`. Equals `pid` (the detached child leads its group). */
+  pgid: number;
+  startedAt: string;
+}
+
+/**
+ * Persist a node's live-pi pid to `.pi/nodes/<id>/pid.json` ATOMICALLY (tmp+rename, mirroring writeStatus),
+ * so a concurrent `--stop` reader never sees a torn record. Records `{pid, pgid:pid, startedAt}` — pid==pgid
+ * because the child is spawned detached (its own group leader). Best-effort: a write failure is swallowed (a
+ * missing pid file only costs stoppability, never the run). mkdir -p the node dir first.
+ */
+export async function writeNodePid(run: string, id: string, pid: number): Promise<void> {
+  try {
+    const dir = nodeDir(run, id);
+    await fs.mkdir(dir, { recursive: true });
+    const rec: NodePidRecord = { pid, pgid: pid, startedAt: new Date().toISOString() };
+    const finalPath = nodePidFile(run, id);
+    const tmpPath = path.join(dir, `.pid.${process.pid}.tmp`);
+    await fs.writeFile(tmpPath, JSON.stringify(rec));
+    await fs.rename(tmpPath, finalPath);
+  } catch {
+    /* best-effort — a missing pid file only costs per-node stoppability, never the run */
+  }
+}
+
+/**
+ * Remove a node's `pid.json` (the node exited ⇒ the pid is STALE and must never be signalled). Best-effort:
+ * an absent file is fine (already gone / never written). Called from `finishNode` on every terminal verdict.
+ */
+export async function clearNodePid(run: string, id: string): Promise<void> {
+  try {
+    await fs.rm(nodePidFile(run, id), { force: true });
+  } catch {
+    /* already gone — fine */
+  }
+}
 
 // ── (G5) human-checkpoint marker/reply files — per-run data in the RUN dir (SDK/data boundary). ──
 // Each checkpoint node owns a nodeId-scoped pair under `.pi/checkpoints/`: the runner WRITES `<id>.json`
