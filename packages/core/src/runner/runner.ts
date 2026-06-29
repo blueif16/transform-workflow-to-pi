@@ -23,15 +23,10 @@ import type {
   OpenRunOpts,
   ToolRegistry,
   ResolveResult,
-  ExecResult,
   SecretResolver,
   Escalator,
-  PiCommandOptions,
   ReturnMode,
   RunState,
-  CheckpointSpec,
-  RetrySpec,
-  FailureClass,
   OnFailure,
 } from '../types.js';
 import { defaultSecretResolver, defaultEscalator } from '../types.js';
@@ -39,7 +34,7 @@ import { DefaultToolRegistry } from '../tools/registry.js';
 import { verifyToolBinding } from '../tools/verify.js';
 import { InMemorySandboxProvider } from '../sandbox/index.js';
 import { markersFromNode, emitMarkers } from '../contract.js';
-import { effectiveChecks, evaluateChecks, actionForVerdict, classifyFailure, consultPreamble, legacyRetry, type FileBytes, type FailureSignals } from '../checks.js';
+import { effectiveChecks, evaluateChecks, actionForVerdict, type FileBytes } from '../checks.js';
 import { validateArtifactSchemas, defaultSchemaValidator, type SchemaValidator } from './schema.js';
 import { runHooks } from '../hooks/index.js';
 import { NodeRecorder, recordingSandbox, type EventSink } from './events.js';
@@ -58,9 +53,9 @@ import { runMerge, applyMergeOp } from '../workflow/ops/merge.js';
 import { applyProjectionOp, runProjection } from '../workflow/ops/project.js';
 import { readJsonSafe, absUnder } from '../workflow/ops/util.js';
 import { parsePromote, extractPromoteValue, barrierMerge, type NodeUpdate, type ResolvedPromote } from '../workflow/ops/promote.js';
-import { derivesFromOp, gatesFromOp, runOpsFromOp, actionsFromOp } from './op-dispatch.js';
+import { derivesFromOp, gatesFromOp, runOpsFromOp } from './op-dispatch.js';
 import { loadState, persistState } from '../workflow/state.js';
-import { createLimiter, normalizeConcurrent, type Limiter } from './limit.js';
+import { createLimiter, normalizeConcurrent } from './limit.js';
 import {
   type RunStatus,
   type NodeStatusRecord,
@@ -73,7 +68,6 @@ import { runJsonFile, piSessionsDir } from './layout.js';
 import {
   type Journal,
   type NodeDecision,
-  type JournalNode,
   envelopeHash,
   inputFilesOf,
   decideResume,
@@ -82,18 +76,6 @@ import {
   loadJournal,
   writeJournalEntry,
 } from './journal.js';
-import {
-  type CheckpointMarker,
-  type CheckpointReply,
-  type CheckpointJournalSlot,
-  buildMarker,
-  validateReply,
-  writeMarker,
-  readMarker,
-  readReply,
-  readCheckpointJournal,
-  journalCheckpoint,
-} from './checkpoint.js';
 
 // ── exec/checkpoint primitives + seam types — moved to ./exec-runner.ts ──────────────────────────────
 // `defaultExecRunner`/`defaultCheckpointWait` + the `ExecRunner`/`ExecWatchdogOpts`/`CheckpointWaiter`
@@ -325,20 +307,6 @@ import { readHostFile, stageHostPathIntoSandbox } from './run-context.js';
 export type { RunContext } from './run-context.js';
 export { readHostFile, stageHostPathIntoSandbox } from './run-context.js';
 
-/**
- * Run ONE node through the full lifecycle. Returns its terminal record (already in ctx.status.nodes).
- *
- * create → stage io.reads (from the host run dir) + write the prompt file → PRE hooks → exec the
- * built command under the watchdog → downloadDir(output)→host → verify io.artifacts by host-stat →
- * POST hooks → dispose → write status.
- */
-/**
- * Run a node with its per-node RETRY budget (`io.retries`): the first attempt plus up to `retries`
- * MORE attempts whenever the node ends `error`/`blocked` (a transient model/timeout failure). Each
- * attempt is a FRESH `runNode` (own sandbox, re-seed, re-exec); the LAST attempt's record is returned
- * (last-wins). `ok`/`warn` never retries; `retries` 0/undefined ⇒ exactly one attempt (today's
- * behavior). Worst-case wall = (retries+1) × the node's timeout.
- */
 // ── the no-pi node lanes — moved to ./node-lanes.ts ──────────────────────────────────────────────────
 // The three NO-PI lanes — runCheckpoint(+finishCheckpoint), runRerouteGate, runProgrammatic (cluster H) —
 // now live in ./node-lanes.ts. They import `RunContext` from the leaf ./run-context.js and `finishNode`
@@ -347,125 +315,12 @@ export { readHostFile, stageHostPathIntoSandbox } from './run-context.js';
 import { runCheckpoint, runRerouteGate, runProgrammatic } from './node-lanes.js';
 export { runCheckpoint, runRerouteGate, runProgrammatic } from './node-lanes.js';
 
-/**
- * (G12 — M4) The trigger-action runtime — the bounded retry-by-failure-class + escalate-with-evidence
- * lanes around `runNode`, ported from run.mjs `runNodeWithEscalation`. ADDITIVE: a node that declares
- * NEITHER `io.retry` NOR `io.escalate` runs `legacyRetry(io.retries)` — today's EXACT semantics (max
- * extra attempts on a transient error/blocked, classes ['infra','degenerate']; no escalation).
- *
- * On each failed attempt the runner DERIVES a `FailureClass` from the signals `runNode` captured (never a
- * self-score) and routes: `halt` → stop immediately (escalation can't manufacture a missing input);
- * a same-model `retry` while the class is in the retry set AND budget remains; else, once the retry
- * budget is spent (or `escalate.after` is reached), ONE cross-family `escalate` on the stronger
- * `escalate.tier`/`escalate.model`-resolved model fed `consultPreamble` evidence. The last attempt wins.
- */
-async function runNodeWithRetries(ctx: RunContext, node: NodeSpec, scope: RunScope): Promise<NodeStatusRecord> {
-  const retry: RetrySpec = node.io.retry ?? legacyRetry(node.io.retries);
-  const escalate = node.io.escalate;
-  const retryAllows = (cls: FailureClass): boolean => (retry.on ? retry.on.includes(cls) : cls !== 'halt');
-  const escAllows = (cls: FailureClass): boolean => (escalate?.on ? escalate.on.includes(cls) : cls !== 'halt');
-
-  // ── (SA-D · expert-representations) L1 / L2 / L3 self-correction wiring ─────────────────────────
-  //
-  // SA-B (gate-authoring.ts:359–365) emits `op.action { kind:'retry', scope:'feedback'|'fix', max }` as
-  // canonical op[] entries on the node. We read them here ONCE and use them to override/supplement the
-  // per-node `io.retry`/`io.retries` budget with the gate's feedback-aware semantics.
-  //
-  // L1 (scope:'feedback', DEFAULT, BUILD): on each failed attempt, inject the gate's critique — the
-  // EMPIRICAL failure evidence (`consultPreamble`) — as a `promptPrefix` into the NEXT cold re-invocation.
-  // This is Reflexion / Self-Refine semantics: the producer receives its failure reason and is asked to
-  // fix it in a FRESH pi process (NOT a warm session resume — that infra is absent on this branch; see the
-  // flag below). The feedback MUST reach the retry attempt; a blind same-input retry is the WRONG default.
-  //
-  // NOTE: TRUE WARM-RESUME is not available here. `pi` is invoked with `--no-session` (command.ts:71);
-  // there is no `--resume-session`/`--session-id`/`--mode rpc` on this branch. The control-session /
-  // companion work (pi rpc-mode, session continuation) likely lives on main. When that infra merges, the
-  // warm-resume path here should: (a) persist the session id from the first invocation's event stream,
-  // (b) invoke pi with `--resume <sessionId>` + the feedback as an appended message, NOT a fresh @prompt.
-  // FLAG: search for TODO[warm-resume] to find the exact point to upgrade.
-  //
-  // L2 (scope:'fix') — STUB. When the gate emits `scope:'fix'`, the intended behavior is:
-  //   1. Infer the problem class from the failure signals (classifyFailure already does this).
-  //   2. Consult the per-workflow fix/issue memory (a run-scoped, recorded structure — NOT yet built).
-  //   3. Patch THIS node's prompt/tool-wiring for this run instance ONLY (ephemeral, recorded).
-  //   4. Resume with the patched node — still a cold re-invocation until warm-resume lands.
-  //   Best-effort, no guarantee. Promotion of the patch to the template = L3 (held-out check + human gate).
-  //   Reference: docs/research/2026-06-28-loop-engineering-self-improving-systems.md (loop engineering,
-  //   §"Memory-augmented loops" / "Reflexion" / "per-run fix memory"); build-spec §Self-correction.
-  //   Owned by SA-D + the memory system. NOT YET IMPLEMENTED — falls through to L1 feedback for now.
-  //
-  // L3 — STUB. Between-run DAG-level optimization (patch promotion to template, held-out check, human
-  //   gate). Owned by Hermes / `piflow-enhance` (between-runs, human-gated). NOT in scope for SA-D.
-  //   Reference: docs/design/expert-representations-build-spec.md §Self-correction (decision 6).
-  const { retryAction } = actionsFromOp(node.op);
-  // Determine the effective retry budget: the op[] action op's `max` wins over `io.retry`/`io.retries`
-  // when a gate-authored retry action is present (the gate author set an explicit budget).
-  const opRetryMax = retryAction?.max;
-  const effectiveRetryMax = opRetryMax !== undefined ? Math.max(0, opRetryMax) : Math.max(0, retry.max);
-  // Only L1 (scope:'feedback') and the default (undefined = 'feedback') are wired. L2 (scope:'fix') stubs
-  // through to L1 feedback: the scope is read, logged implicitly via the seam comment, but NOT executed.
-  const l1Active = retryAction !== undefined && (retryAction.scope === 'feedback' || retryAction.scope === undefined || retryAction.scope === 'fix');
-  // ── end SA-D wiring header ─────────────────────────────────────────────────────────────────────────
-
-  let rec = await runNode(ctx, node, scope);
-  let retriesLeft = opRetryMax !== undefined ? effectiveRetryMax : Math.max(0, retry.max);
-  let escalatedYet = false;
-  // `escalate.after` (default: after the retry budget is spent) gates how many same-model attempts run
-  // before the consult. With no explicit `after`, escalation waits until `retriesLeft` reaches 0.
-  let attemptsRun = 1;
-
-  while (rec.status === 'error' || rec.status === 'blocked') {
-    const sig = ctx.failureSignals.get(node.id);
-    if (!sig) break; // no captured signals (e.g. a pre-exec bind/stage error) — nothing to classify.
-    const cls = classifyFailure(sig);
-    if (cls === 'halt') break; // a missing upstream input — refuse to spin a retry/escalate.
-
-    const afterReached = escalate?.after !== undefined ? attemptsRun >= escalate.after : retriesLeft <= 0;
-    if (retriesLeft > 0 && retryAllows(cls) && !(escalate && afterReached && escAllows(cls))) {
-      retriesLeft--;
-      attemptsRun++;
-      if (l1Active) {
-        // L1 — scope:'feedback': inject the gate critique as a promptPrefix on the cold re-invocation.
-        // This is the FEEDBACK-INJECTED cold path (not warm-resume; see TODO[warm-resume] above).
-        // consultPreamble builds a DRIVER-VERIFIED evidence block (missing artifacts, schema errors,
-        // failed checks, stderr tail, watchdog kills) — NEVER a model self-score. The producer sees
-        // EXACTLY what failed and is asked to fix it. This is the Reflexion / Self-Refine pattern.
-        //
-        // L2 NOTE: if retryAction.scope === 'fix', the fix memory lookup would happen HERE before
-        // invoking runNode — patch the node's prompt/tool-wiring, then call runNode with the patched
-        // node. The stub falls through to feedback (same cold re-invocation, same evidence prefix).
-        // (warm-resume) WARM the SAME-MODEL L1 retry: resume the per-node session (id = the node id) so the
-        // producer continues its OWN conversation, with the feedback delivered as the next turn (NOT a cold
-        // re-run). `resumeSessionId` makes `runNode` emit `--session <id>` + a FEEDBACK-ONLY prompt. The warm
-        // path is HONORED only where the session dir persists across attempts (in-place/local); on every other
-        // provider `runNode` ignores it and stays cold (`--no-session`) — so this is safe to set unconditionally.
-        // Escalation (the branch below) NEVER sets it, so a model swap stays cold (§4d).
-        rec = await runNode(ctx, node, scope, { promptPrefix: consultPreamble(sig), resumeSessionId: node.id });
-      } else {
-        // Same-model retry: a FRESH attempt (re-seed + re-exec), no consult prefix, the node's own model.
-        rec = await runNode(ctx, node, scope);
-      }
-    } else if (escalate && !escalatedYet && escAllows(cls)) {
-      // Cross-family CONSULT: resolve the stronger target through model-routing, prepend the verified
-      // evidence. ONE escalation only (a second would just re-spend on the same class).
-      escalatedYet = true;
-      attemptsRun++;
-      let eff: EffectiveModel;
-      try {
-        eff = resolveNodeModel(
-          { model: escalate.model, tier: escalate.tier },
-          { model: ctx.model, provider: ctx.providerName, tiers: ctx.modelRouting.tiers, modelsIndex: ctx.modelRouting.modelsIndex },
-        );
-      } catch {
-        break; // an unresolvable escalation tier ⇒ keep the failed record (loud via its own issue).
-      }
-      rec = await runNode(ctx, node, scope, { promptPrefix: consultPreamble(sig), model: eff.model, provider: eff.provider });
-    } else {
-      break; // budget spent and no escalation applies — the failed record stands.
-    }
-  }
-  return rec;
-}
+// ── the retry/escalate runtime — moved to ./retry.ts ─────────────────────────────────────────────────
+// `runNodeWithRetries` (cluster G) now lives in ./retry.ts. It imports `RunContext` from the leaf
+// ./run-context.js and `runNode` from this file (a runtime-only call, temporary until step 8 repoints it
+// at ./node-lifecycle.js). Imported here for the run loop's gated lane and re-exported for symmetry.
+import { runNodeWithRetries } from './retry.js';
+export { runNodeWithRetries } from './retry.js';
 
 /**
  * (G12 — M4) A per-attempt OVERRIDE for an ESCALATION/CONSULT re-run: prepend the verified-evidence
@@ -487,7 +342,9 @@ interface AttemptOverride {
   resumeSessionId?: string;
 }
 
-async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: AttemptOverride = {}): Promise<NodeStatusRecord> {
+// EXPORTED (temporarily) so ./retry.ts can drive the retry/escalate loop around it (step 7); it moves
+// into ./node-lifecycle.ts WITH `finishNode` in step 8, after which ./retry.ts repoints there (RISK 2).
+export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: AttemptOverride = {}): Promise<NodeStatusRecord> {
   const rec = ctx.status.nodes[node.id];
   rec.status = 'running';
   rec.startedAt = nowISO();
