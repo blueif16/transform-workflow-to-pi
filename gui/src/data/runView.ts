@@ -8,6 +8,23 @@ import type { Edge } from "@xyflow/react";
 
 export type ScopeKind = "run" | "skill" | "template" | "package" | "repo";
 
+/** (SKIN channel) The sandbox BACKEND kind — mirrors core `SandboxProviderKind` (types.ts). */
+export type SandboxProviderKind = "inmemory" | "local" | "seatbelt" | "worktree" | "daytona" | "e2b";
+
+/** (SKIN channel) The curated per-node config slice — mirrors core `NodeConfig` (runner/status.ts). The
+ *  `sandbox` here is per-node SCOPING (workspace/readScope/owns), NOT the backend (that is run-level). */
+export interface NodeConfig {
+  model?: string | null;
+  provider?: string;
+  tier?: string;
+  tools?: { allow?: string[]; deny?: string[]; };
+  timeoutMs?: number;
+  retries?: number;
+  agentType?: string;
+  programmatic?: boolean;
+  sandbox?: { workspace?: string; readScope?: string[]; owns?: string[]; };
+}
+
 export interface ScopeBucket { kind: ScopeKind; label: string; count: number; paths: string[]; }
 export interface TimelineSpan { name: string; tStartMs: number | null; durMs: number; ok: boolean; }
 export interface ReadRef { path: string; displayPath: string; via: string; scope: ScopeKind; preview?: string; }
@@ -22,6 +39,8 @@ export interface RunViewNode {
   phase: string | null;
   /** (G6) the agent-PRESET label (branding) — resolved to {icon,color,label} via the agents catalog. */
   agentType?: string;
+  /** (SKIN channel) the curated per-node config slice (model/tools/scoping/programmatic) — mirrors core. */
+  config?: NodeConfig;
   status: string; // ok | reused | error | blocked | running | pending | gap | dry
   startedAt?: string;
   endedAt?: string;
@@ -65,6 +84,8 @@ export interface RunView {
   source?: string;
   provider?: string;
   model?: string | null;
+  /** (SKIN channel) the run's effective sandbox BACKEND — mirrors core; drives the node skin. */
+  sandbox?: SandboxProviderKind;
   startedAt?: string;
   updatedAt?: string;
   durationMs?: number | null;
@@ -153,8 +174,9 @@ export interface GateChip {
 
 /** A node's AUTHORED config as the template `node.json` holds it — the badge's source of truth (the
  *  run-view distillation does NOT carry the template `op[]`/tier/loadout). Only the fields the badge
- *  surfaces are typed; the file carries more. */
-export interface NodeConfig {
+ *  surfaces are typed; the file carries more. DISTINCT from the run-view's `NodeConfig` (the effective
+ *  "what it ran AS" slice surfaced from the digest) — this is the EDITABLE authored template slice. */
+export interface AuthoredNodeConfig {
   id?: string;
   agentType?: string;
   tier?: string;
@@ -172,11 +194,11 @@ export interface NodeConfig {
 }
 
 /** Fetch a node's authored config from the TEMPLATE (the badge read path the write path mirrors). */
-export async function loadNodeConfig(run: string, nodeId: string): Promise<NodeConfig | null> {
+export async function loadNodeConfig(run: string, nodeId: string): Promise<AuthoredNodeConfig | null> {
   try {
     const res = await fetch(`/__piflow/node-config/${encodeURIComponent(run)}?node=${encodeURIComponent(nodeId)}`);
     if (!res.ok) return null;
-    const { node } = (await res.json()) as { node: NodeConfig };
+    const { node } = (await res.json()) as { node: AuthoredNodeConfig };
     return node ?? null;
   } catch {
     return null;
@@ -191,7 +213,7 @@ export async function dropChipOnNode(
   nodeId: string,
   chip: GateChip,
   target: "template" | "run" = "template",
-): Promise<{ ok: boolean; node?: NodeConfig; error?: string; stub?: boolean }> {
+): Promise<{ ok: boolean; node?: AuthoredNodeConfig; error?: string; stub?: boolean }> {
   try {
     const res = await fetch(`/__piflow/node-edit/${encodeURIComponent(run)}`, {
       method: "POST",
@@ -199,7 +221,7 @@ export async function dropChipOnNode(
       body: JSON.stringify({ nodeId, chip, target }),
     });
     const body = await res.json().catch(() => ({}));
-    if (res.ok) return { ok: true, node: (body as { node?: NodeConfig }).node };
+    if (res.ok) return { ok: true, node: (body as { node?: AuthoredNodeConfig }).node };
     return { ok: false, error: (body as { error?: string }).error ?? `${res.status} ${res.statusText}`, stub: (body as { stub?: boolean }).stub };
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message ?? e) };
@@ -208,7 +230,7 @@ export async function dropChipOnNode(
 
 /** Distill a node's authored config into the compact badge labels the node card surfaces: the gate
  *  pipeline (ordered chip labels) + the tier. PURE — the GUI's projection of the op[] lane onto chips. */
-export function gatePipelineLabels(cfg: NodeConfig | null | undefined): string[] {
+export function gatePipelineLabels(cfg: AuthoredNodeConfig | null | undefined): string[] {
   if (!cfg) return [];
   const labels: string[] = [];
   for (const op of cfg.op ?? []) {
@@ -259,6 +281,21 @@ export function fileUrl(run: string, path: string): string {
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]);
 /** True when a path should render as an <img> (served binary) rather than fetched as text. */
 export const isImagePath = (p: string) => IMAGE_EXTS.has((p.split(".").pop() || "").toLowerCase());
+
+/** (SKIN channel) The cloud backends — a node that runs in one of these gets the extruded 3D block skin. */
+const CLOUD = new Set<SandboxProviderKind>(["daytona", "e2b"]);
+
+/** (SKIN channel) The EFFECTIVE backend a node ran in: a programmatic node is ALWAYS host-local (it spawns
+ *  no pi, so it ignores the run's chosen backend — core types.ts:97-99); otherwise the run-level backend. */
+export function effectiveSandbox(view: RunView, node: RunViewNode): SandboxProviderKind | undefined {
+  return node.config?.programmatic ? "local" : view.sandbox;
+}
+
+/** (SKIN channel) Map a backend kind → its node skin. Extensible (a future `danger-full-access` skin maps
+ *  here); only cloud→'cloud' is implemented now, everything else (incl. undefined) is the default 'flat'. */
+export function sandboxSkin(kind: SandboxProviderKind | undefined): "flat" | "cloud" {
+  return kind && CLOUD.has(kind) ? "cloud" : "flat";
+}
 
 /** Map the engine's node status ladder onto the design-system's visual NodeStatus. */
 export function toNodeStatus(s: string): NodeStatus {
@@ -316,20 +353,36 @@ export function contextTone(frac: number): ContextTone {
 
 const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+/** Node-placement geometry — the SINGLE source for where a node lands on the canvas. Exported so the
+ *  backdrop-zone math (`data/zones.ts`) mirrors `toFlowGraph` EXACTLY (no duplicated literals → no drift).
+ *  COL/ROW = stage-column / parallel-lane stride; NODE_W/NODE_H = the card box (= --ds-node-width /
+ *  --ds-node-min-h tokens) used to inflate a cluster's bbox from its members' top-left anchors. */
+export const COL = 300;
+export const ROW = 132;
+export const NODE_W = 220;
+export const NODE_H = 64;
+
+/** Top-left anchor of a node, given its stage/lane — the one formula `toFlowGraph` lays out by. */
+export function nodePosition(stageIndex: number | undefined, lane: number | undefined): { x: number; y: number } {
+  return { x: 40 + ((stageIndex ?? 1) - 1) * COL, y: 60 + (lane ?? 0) * ROW };
+}
+
 /** Build the React Flow graph (positions by stage column / parallel-lane row) from a run-view. The optional
  *  agent-preset `catalog` resolves a node's `agentType` → its branded icon/color/label (G6); absent ⇒ the
  *  node renders the default chip. */
 export function toFlowGraph(view: RunView, catalog: AgentCatalog = {}): { nodes: FlowNode[]; edges: Edge[] } {
-  const COL = 300;
-  const ROW = 132;
   const nodes: FlowNode[] = view.nodes.map((rv) => {
     const stageIndex = rv.stageIndex ?? 1;
     const lane = rv.lane ?? 0;
     const preset = rv.agentType ? catalog[rv.agentType] : undefined;
+    // (SKIN channel) The node's runtime skin from its EFFECTIVE backend (programmatic ⇒ local; else the
+    // run's backend). Set `runtime` only when 'cloud' is meaningful — 'flat' is the default (no DOM attr).
+    const skin = sandboxSkin(effectiveSandbox(view, rv));
     const data: FlowNodeData = {
       title: rv.label,
       kind: "agent",
       typeLabel: rv.phase ?? "node",
+      ...(skin === "cloud" ? { runtime: skin } : {}),
       // (G6) the preset's branding, resolved from the catalog by the node's agentType label. The icon is
       // a KEY the chip maps to a bundled glyph; absent/unknown ⇒ the default agent glyph (never blocks).
       ...(preset ? { agentIcon: preset.icon, agentColor: preset.color, agentLabel: preset.label ?? rv.agentType } : {}),
@@ -350,7 +403,7 @@ export function toFlowGraph(view: RunView, catalog: AgentCatalog = {}): { nodes:
     return {
       id: rv.id,
       type: "flowNode",
-      position: { x: 40 + (stageIndex - 1) * COL, y: 60 + lane * ROW },
+      position: nodePosition(stageIndex, lane),
       data,
     } as FlowNode;
   });

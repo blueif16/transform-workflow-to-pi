@@ -1,0 +1,78 @@
+/* ============================================================================
+   Frame channel — the non-interactive backdrop box drawn BEHIND a cluster of
+   related nodes (ZoneNode). ONE primitive; fusion vs template differ only by
+   hue/stroke. Angular sci-fi on the light brand: clip-path corner notch, L-bracket
+   corner ticks, a small mono UPPERCASE label tab, optional faint inner fill.
+   Depends on tokens.css. NEVER blue — blue is the separate node-skin channel.
+   ========================================================================== */
+
+/* The frame body. pointer-events:none ⇒ every click/keystroke falls THROUGH to the
+   card above (the zone never steals selection, focus, or a HUD-opening click). The
+   clip-path notches the top-end corner = the sci-fi-rectangle silhouette. Width/height
+   come inline from the derived bbox (data.width / data.height). */
+.ds-zone {
+  position: relative;
+  box-sizing: border-box;
+  pointer-events: none;        /* click-through — the whole point of a backdrop */
+  border-radius: 0;            /* right angles */
+  /* angular notch on the top-end corner (matches the node-card bevel direction) */
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+}
+
+/* ── FUSION variant: VIOLET, dashed hairline + faint inner wash + accented tab ── */
+.ds-zone--fusion {
+  border: 1.5px dashed var(--ds-fusion);
+  background: var(--ds-fusion-fill);
+}
+
+/* ── TEMPLATE variant (dormant): NEUTRAL ink, solid hairline bracket, no fill — recessive ── */
+.ds-zone--template {
+  border: 1px solid var(--ds-frame-ink);
+  background: transparent;
+}
+
+/* ── L-bracket corner ticks — HUD targeting cue at each corner ───────────────── */
+.ds-zone__tick {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--ds-fusion);
+  pointer-events: none;
+}
+.ds-zone--template .ds-zone__tick { border-color: var(--ds-frame-ink); }
+
+.ds-zone__tick--tl { top: -1px; left: -1px;  border-right: none; border-bottom: none; }
+.ds-zone__tick--tr { top: -1px; right: -1px; border-left: none;  border-bottom: none; }
+.ds-zone__tick--bl { bottom: -1px; left: -1px;  border-right: none; border-top: none; }
+.ds-zone__tick--br { bottom: -1px; right: -1px; border-left: none;  border-top: none; }
+
+/* ── label tab — small mono UPPERCASE chip riding the top edge ───────────────── */
+.ds-zone__tab {
+  position: absolute;
+  top: -10px;
+  left: 12px;
+  padding: 1px 8px;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ds-tracking-label);
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.ds-zone--fusion .ds-zone__tab {
+  color: var(--ds-violet-700);
+  background: var(--ds-violet-50);
+  border: 1px solid var(--ds-fusion);
+}
+.ds-zone--template .ds-zone__tab {
+  color: var(--ds-text-tertiary);
+  background: var(--ds-bg-surface);
+  border: 1px solid var(--ds-frame-ink);
+}
+
+/* Reduced motion: the frame is static (no animation), so nothing to disable — guard
+   left explicit so a future animated accent stays honoring the OS setting. */
+@media (prefers-reduced-motion: reduce) {
+  .ds-zone { animation: none; }
+}

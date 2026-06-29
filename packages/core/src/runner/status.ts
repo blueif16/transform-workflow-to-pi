@@ -10,7 +10,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { ReturnMode } from '../types.js';
+import type { ReturnMode, SandboxProviderKind } from '../types.js';
 import type { CheckResult } from '../checks.js';
 import { piDir, runJsonFile } from './layout.js';
 
@@ -33,6 +33,34 @@ export interface ArtifactState {
   bytes: number;
 }
 
+/**
+ * (SKIN channel) The CURATED per-node config slice — a stable named subset of the resolved `NodeSpec`,
+ * mirrored to disk so the single observe path can surface "what this node ran AS" without re-reading the
+ * template. NOT the whole NodeSpec: no prompt text, no op/io envelopes. `sandbox` here is per-node SCOPING
+ * (workspace/readScope/owns), NOT the chosen backend — the run-level backend is `RunStatus.sandbox`.
+ * Every field is OPTIONAL/additive and absent fields are OMITTED (never written as `undefined`).
+ */
+export interface NodeConfig {
+  /** Authored per-node model id (`node.model`). */
+  model?: string | null;
+  /** Per-node provider/gateway (`node.provider`). */
+  provider?: string;
+  /** Per-node tier alias (`node.tier`). */
+  tier?: string;
+  /** Per-node tool selection (`node.tools`). */
+  tools?: { allow?: string[]; deny?: string[] };
+  /** Hard wall-clock cap (`node.sandbox.timeoutMs`). */
+  timeoutMs?: number;
+  /** Per-node retry budget (`node.io.retries`). */
+  retries?: number;
+  /** Agent-PRESET label (`node.agentType`). */
+  agentType?: string;
+  /** No-pi declarative node (`node.programmatic === true`). */
+  programmatic?: boolean;
+  /** Per-node SCOPING (not the backend): workspace cwd + read scope + write-authority globs. */
+  sandbox?: { workspace?: string; readScope?: string[]; owns?: string[] };
+}
+
 /** A node's record in the run status. */
 export interface NodeStatusRecord {
   id: string;
@@ -53,6 +81,8 @@ export interface NodeStatusRecord {
   command?: string;
   /** G1 — the EFFECTIVE model this node ran on (after the routing precedence). Null/absent ⇒ pi's provider default. */
   model?: string | null;
+  /** (SKIN channel) The curated per-node config slice mirrored from the resolved NodeSpec (see NodeConfig). */
+  config?: NodeConfig;
   /** Declarative integrity-check results (explicit ∪ auto fill-sentinel), when any were run. */
   checks?: CheckResult[];
   /** (M5 · #11) PRE-gate results — the `when:'pre'` gate ops run over staged inputs BEFORE the model. */
@@ -121,6 +151,13 @@ export interface RunStatus {
    * child pids are ephemeral and never persisted. Absent on an older run (additive, optional).
    */
   controllerPid?: number;
+  /**
+   * (SKIN channel) The run's EFFECTIVE sandbox BACKEND — the kind chosen ONCE at the CLI (`--sandbox`) for
+   * the single provider instance, stamped run-wide. DISTINCT from `provider` (the MODEL gateway). A
+   * programmatic node is always host-local regardless (carved out per-node in `NodeConfig.programmatic`).
+   * Absent on older records (additive, optional).
+   */
+  sandbox?: SandboxProviderKind;
   startedAt: string;
   updatedAt: string;
   done: boolean;

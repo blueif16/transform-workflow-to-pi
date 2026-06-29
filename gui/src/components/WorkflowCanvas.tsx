@@ -43,6 +43,7 @@ import "../styles/panels.css";
 
 import { OrbField } from "./OrbField";
 import { WorkflowNode, type FlowNode } from "./WorkflowNode";
+import { ZoneNode } from "./ZoneNode";
 import { NodeExpandOverlay } from "./NodeExpandOverlay";
 import { FileExpandOverlay, openFileFor, type OpenFile } from "./FileExpandOverlay";
 import { DirectoryPanel, type DirEntry } from "./DirectoryPanel";
@@ -55,15 +56,22 @@ import { FusionContext, type FusionMode } from "./FusionContext";
 import { FusionSaveBar } from "./FusionSaveBar";
 import { ComposeContext } from "./ComposeContext";
 import { ChipPalette } from "./ChipPalette";
-import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, loadAgentCatalog, loadNodeConfig, dropChipOnNode, type GateChip, type NodeConfig } from "../data/runView";
+import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, loadAgentCatalog, loadNodeConfig, dropChipOnNode, type GateChip, type AuthoredNodeConfig } from "../data/runView";
+import { deriveZones, toZoneFlowNode, type ZoneFlowNode } from "../data/zones";
 import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
 import { useRunStream, RunStreamContext } from "../data/runStream";
 
 /* defined OUTSIDE the component — prevents node re-mounts on every render */
-const nodeTypes = { flowNode: WorkflowNode };
+const nodeTypes = { flowNode: WorkflowNode, zone: ZoneNode };
+
+/* the canvas holds real cards AND backdrop zone nodes in one flat array (zones recompute each poll). */
+type CanvasNode = FlowNode | ZoneFlowNode;
+/* a backdrop zone is non-selectable, so it never becomes the expanded node nor a file-provenance source —
+   the card-only consumers (HUD, file overlay) read this narrowed set. */
+const isFlowNode = (n: CanvasNode): n is FlowNode => n.type === "flowNode";
 
 function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [expandedId, setExpandedId] = useState<string | null>(initialExpandedId ?? null);
   // the file opened from the navigator — shown in the standalone file overlay (null = closed).
@@ -75,7 +83,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   // (Compose mode · SA-E) per-node AUTHORED config from the TEMPLATE (op[]/checkpoint/tier) — the gate-
   // pipeline badge's source of truth (the run-view distillation does NOT carry the template op[]). Loaded
   // lazily when Compose mode opens; refreshed for a single node after a chip drops.
-  const [nodeConfigs, setNodeConfigs] = useState<Record<string, NodeConfig>>({});
+  const [nodeConfigs, setNodeConfigs] = useState<Record<string, AuthoredNodeConfig>>({});
   const [companionOpen, setCompanionOpen] = useState(false); // bottom-right pi chat; launched by the "P" key
 
   const [ix, setIx] = useState<GlobalIndex | null>(null);
@@ -134,7 +142,10 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
         if (!alive) return;
         setLoadError(null);
         const { nodes: n, edges: e } = toFlowGraph(view, agents); // (G6) resolve preset icons by agentType
-        setNodes(n);
+        // Prepend the derived backdrop zones (fusion clusters; template frame is dormant) — they're flat
+        // nodes recomputed each poll, painted UNDER the cards via their negative zIndex. Same RunView shape
+        // for the live run AND the fusion preview, so frames appear in preview automatically.
+        setNodes([...deriveZones(view).map(toZoneFlowNode), ...n]);
         setEdges(e);
         // The navigator shows the run's FULL on-disk tree (rooted at {{RUN}}); `fileToNode` still comes
         // from the run-view so clicking a produced file opens its node. Fall back to the produced-files
@@ -205,24 +216,29 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   // Leaving Fusion mode drops every override ⇒ the canvas falls back to the live run-view.
   useEffect(() => { if (mode !== "fusion") setFusionOverrides((o) => (Object.keys(o).length ? {} : o)); }, [mode]);
 
+  // card-only nodes — the backdrop zones carry no config/provenance, so every card-only consumer (compose
+  // config fetch, file overlay) reads this narrowed set, never the flat array that also holds zone nodes.
+  // MEMOized so its identity is stable across renders — the compose effect below depends on it.
+  const flowNodes = useMemo(() => nodes.filter(isFlowNode), [nodes]);
+
   // (Compose mode · SA-E) When Compose opens, fetch each node's AUTHORED config from the TEMPLATE (one
   // /__piflow/node-config call per node) so each badge can render its real gate pipeline + tier. A node
   // whose template config can't be read (e.g. a fusion-generated sibling that isn't an author node) is
   // simply absent ⇒ its badge shows "drop a gate". Re-runs when the node set or the active run changes.
   useEffect(() => {
-    if (mode !== "compose" || !activeRun || nodes.length === 0) { setNodeConfigs({}); return; }
+    if (mode !== "compose" || !activeRun || flowNodes.length === 0) { setNodeConfigs({}); return; }
     let alive = true;
     (async () => {
       const entries = await Promise.all(
-        nodes.map(async (n) => [n.id, await loadNodeConfig(activeRun, n.id)] as const),
+        flowNodes.map(async (n) => [n.id, await loadNodeConfig(activeRun, n.id)] as const),
       );
       if (!alive) return;
-      const map: Record<string, NodeConfig> = {};
+      const map: Record<string, AuthoredNodeConfig> = {};
       for (const [id, cfg] of entries) if (cfg) map[id] = cfg;
       setNodeConfigs(map);
     })();
     return () => { alive = false; };
-  }, [mode, activeRun, nodes]);
+  }, [mode, activeRun, flowNodes]);
 
   // (Compose mode · SA-E) drop a gate chip onto a node → mutate its TEMPLATE node.json (append to op[] /
   // set checkpoint), then REFRESH that node's config so the badge re-renders WITH the new gate (round-trip:
@@ -246,7 +262,9 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   // Leaving Compose mode drops the loaded configs (re-fetched fresh on re-entry).
   useEffect(() => { if (mode !== "compose") setNodeConfigs((c) => (Object.keys(c).length ? {} : c)); }, [mode]);
 
-  const expandedData = nodes.find((n) => n.id === expandedId)?.data ?? null;
+  // A backdrop zone is non-selectable, so the expanded node is always a real card — narrow before reading data.
+  const expandedNode = nodes.find((n) => n.id === expandedId);
+  const expandedData = expandedNode && isFlowNode(expandedNode) ? expandedNode.data : null;
 
   return (
     <ExpandContext.Provider value={expandApi}>
@@ -315,7 +333,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
             open={openFile}
             run={activeRun}
             tree={dir.tree}
-            nodes={nodes}
+            nodes={flowNodes}
             onSelectFile={setOpenFile}
             onOpenNode={(nodeId) => { setOpenFile(null); setExpandedId(nodeId); }}
             onClose={() => setOpenFile(null)}

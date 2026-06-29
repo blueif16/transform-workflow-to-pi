@@ -382,6 +382,10 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
       // `piflowctl node <run> <id> --stop` can signal THIS run's process group (the runner spawns each
       // node's child detached in its own group; a stop targets the controller, a per-run group-kill).
       controllerPid: process.pid,
+      // (SKIN channel) Stamp the run's EFFECTIVE sandbox BACKEND ONCE — the kind of the single provider
+      // instance chosen at the CLI (`--sandbox`). Run-wide (every pi node runs in this backend); the
+      // per-node programmatic carve-out is recorded in each node's `config` slice (always host-local).
+      sandbox: provider.kind,
       startedAt: nowISO(),
       updatedAt: nowISO(),
       done: false,

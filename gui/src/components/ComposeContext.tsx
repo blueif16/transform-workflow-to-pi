@@ -10,7 +10,7 @@
  * so the edit round-trips. Same discipline as FusionContext, which never rewrites the DAG itself.
  */
 import { createContext, useContext } from "react";
-import type { GateChip, NodeConfig } from "../data/runView";
+import type { GateChip, AuthoredNodeConfig } from "../data/runView";
 
 export interface ComposeApi {
   /** True while the Compose view-mode is active (nodes paint their gate drop-targets). */
@@ -18,7 +18,7 @@ export interface ComposeApi {
   /** The run whose TEMPLATE we edit. Empty ⇒ no edits possible. */
   run: string;
   /** node id → its authored config (op[]/checkpoint/tier) — the badge's source of truth. */
-  configs: Record<string, NodeConfig>;
+  configs: Record<string, AuthoredNodeConfig>;
   /** Drop a gate chip onto a node → mutate the template node.json (append to op[] / set checkpoint).
    *  Resolves ok/error/stub for UI feedback; on success the node's config is refreshed upstream. */
   dropChip: (nodeId: string, chip: GateChip) => Promise<{ ok: boolean; error?: string; stub?: boolean }>;

@@ -4,7 +4,7 @@
 // `checkpoint` reads "human" — IN op[] ORDER (the pipeline is ordered). A test here FAILS if the badge
 // would mislabel or drop a gate, or scramble the order — not coverage theater.
 import { describe, it, expect } from "vitest";
-import { gatePipelineLabels, type NodeConfig } from "./runView";
+import { gatePipelineLabels, type AuthoredNodeConfig } from "./runView";
 
 describe("gatePipelineLabels — op[] → badge chip labels", () => {
   it("an unconfigured node (no op[], no checkpoint) has an empty pipeline", () => {
@@ -14,7 +14,7 @@ describe("gatePipelineLabels — op[] → badge chip labels", () => {
   });
 
   it("maps each op body to its chip label, preserving op[] ORDER", () => {
-    const cfg: NodeConfig = {
+    const cfg: AuthoredNodeConfig = {
       id: "build",
       op: [
         { when: "post", run: { cmd: "npm test" } },
@@ -27,12 +27,12 @@ describe("gatePipelineLabels — op[] → badge chip labels", () => {
   });
 
   it("a human gate (G5 checkpoint) appends 'human' to the pipeline", () => {
-    const cfg: NodeConfig = { id: "build", op: [{ when: "post", run: { cmd: "tsc" } }], checkpoint: { kind: "confirm", prompt: "ok?" } };
+    const cfg: AuthoredNodeConfig = { id: "build", op: [{ when: "post", run: { cmd: "tsc" } }], checkpoint: { kind: "confirm", prompt: "ok?" } };
     expect(gatePipelineLabels(cfg)).toEqual(["exec", "human"]);
   });
 
   it("a non-reroute action keeps its kind as the label (e.g. retry)", () => {
-    const cfg: NodeConfig = { id: "n", op: [{ when: "on-failure", action: { kind: "retry" } }] };
+    const cfg: AuthoredNodeConfig = { id: "n", op: [{ when: "on-failure", action: { kind: "retry" } }] };
     expect(gatePipelineLabels(cfg)).toEqual(["retry"]);
   });
 });

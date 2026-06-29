@@ -29,6 +29,17 @@
   --ds-blue-600: #0061d5;
   --ds-blue-700: #0052b3;
 
+  /* --- violet (the FRAME channel — the fusion-cluster backdrop only; NOT an action/accent color, and
+     deliberately NOT blue, which is reserved for the separate node-skin channel) --- */
+  --ds-violet-50: #f5f3ff;
+  --ds-violet-100: #ede9fe;
+  --ds-violet-200: #ddd6fe;
+  --ds-violet-300: #c4b5fd;
+  --ds-violet-400: #a78bfa;
+  --ds-violet-500: #8b5cf6;
+  --ds-violet-600: #7c3aed;
+  --ds-violet-700: #6d28d9;
+
   /* --- semantic: background --- */
   --ds-bg-canvas: var(--ds-white);
   --ds-bg-soft: var(--ds-neutral-50);
@@ -82,6 +93,11 @@
   --ds-edge-default: var(--ds-neutral-400);
   --ds-edge-active: var(--ds-blue-500);
 
+  /* --- frame channel (cluster backdrops drawn BEHIND grouped nodes) --- */
+  --ds-fusion: var(--ds-violet-500);                 /* fusion-cluster stroke + label tab (dashed, accented) */
+  --ds-fusion-fill: rgba(139, 92, 246, 0.05);        /* faint inner wash — fusion only */
+  --ds-frame-ink: var(--ds-neutral-500);             /* neutral template-frame bracket (recessive ink) */
+
   /* --- glass --- */
   --ds-glass-bg: rgba(255, 255, 255, 0.72);
   --ds-glass-bg-strong: rgba(255, 255, 255, 0.85);
@@ -96,6 +112,13 @@
   --ds-node-blur: 12px;
   /* the game corner: sharp by default; bevel where corner-shape is supported */
   --ds-bevel: 10px;
+
+  /* --- skin channel (per-node runtime) — the CLOUD block (daytona/e2b). FORM-FIRST: the extrusion is the
+     signal, the blue tint only reinforces it. Reuses the blue accent voice; coexists with the status ring. */
+  --ds-cloud-tint: rgba(0, 112, 243, 0.06);          /* faint blue body wash */
+  --ds-cloud-face: rgba(0, 82, 179, 0.22);           /* the extruded right/bottom face (blue-700-ish) */
+  --ds-cloud-face-edge: rgba(0, 82, 179, 0.32);      /* the lit edge between top face and side face */
+  --ds-cloud-depth: 5px;                              /* how far the block is extruded (px) */
 
   /* --- orbs (dynamic background) — must be present enough that the frosted
      nodes actually have something to frost (glass needs a varied backdrop) --- */
