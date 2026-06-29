@@ -10,6 +10,7 @@
 import FluidGrid from "@/components/FluidGrid";
 import HoverGrid from "@/components/HoverGrid";
 import LearnMoreButton from "@/components/LearnMoreButton";
+import ProductMenu from "@/components/ProductMenu";
 
 const GITHUB_URL = "https://github.com/blueif16/PiFlow";
 
@@ -45,9 +46,10 @@ export default function Hero() {
           {/* left pill: logo chip + minimal links — diagonal cut (TR+BL) */}
           <div className="hud-frame [--hud-bevel:14px] inline-flex items-center gap-1 bg-white py-1.5 pl-1.5 pr-2 shadow-[var(--shadow-sm)]">
             <LogoMark />
+            <ProductMenu className="ml-1.5" />
             <a
               href="/docs"
-              className="ml-1.5 px-2.5 text-sm font-medium text-fg-muted transition-colors hover:text-fg"
+              className="px-2.5 text-sm font-medium text-fg-muted transition-colors hover:text-fg"
             >
               Docs
             </a>
