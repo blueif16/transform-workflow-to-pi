@@ -29,6 +29,16 @@ describe('applyModelCommand — set', () => {
     expect(next.tiers).toEqual({ fast: 'keep-fast', balanced: 'keep-mid', deep: 'new-deep' });
   });
 
+  it('set PRESERVES an existing `claude` block (mutating the pi map must not erase the claude map)', () => {
+    const current: ModelTiers = {
+      active: false,
+      tiers: { fast: 'deepseek-v3', balanced: '', deep: '' },
+      claude: { fast: 'haiku', balanced: 'sonnet', deep: 'opus' },
+    };
+    const { next } = applyModelCommand(current, ['set', 'deep', 'claude-opus-4-8']);
+    expect(next.claude).toEqual({ fast: 'haiku', balanced: 'sonnet', deep: 'opus' });
+  });
+
   it('a NON-canonical tier name WARNS (free product name) but does NOT throw and still sets it', () => {
     let result!: ReturnType<typeof applyModelCommand>;
     // The whole point: free product names are ALLOWED — no throw.

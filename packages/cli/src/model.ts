@@ -56,8 +56,14 @@ function renderList(t: ModelTiers): string {
  * error and leave `next` unchanged (never throws — agent/CI safe).
  */
 export function applyModelCommand(current: ModelTiers, argv: string[]): ModelCommandResult {
-  // Defensive clone so a caller's `current` is never mutated in place (pure-function contract).
-  const clone = (): ModelTiers => ({ active: current.active, tiers: { ...current.tiers } });
+  // Defensive clone so a caller's `current` is never mutated in place (pure-function contract). Preserve the
+  // optional `claude` tier block — this command mutates only the `pi` map, and dropping `claude` on every
+  // write would silently erase the user's claude-code tier mappings (model-routing.ts ModelTiers.claude).
+  const clone = (): ModelTiers => ({
+    active: current.active,
+    tiers: { ...current.tiers },
+    ...(current.claude ? { claude: { ...current.claude } } : {}),
+  });
   const [sub, ...rest] = argv;
 
   switch (sub) {
