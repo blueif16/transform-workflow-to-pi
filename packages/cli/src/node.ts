@@ -14,18 +14,21 @@
 // re-execution: it does NOT re-stage the node's sandbox/tools/gates or re-run the contract. That heavier,
 // runner-driven resume is a follow-up; this command is the thin user surface over the persisted session.
 //
-// `--stop` (investigation): stopping a LIVE node would need a discoverable per-node PID. `piflowctl run
-// --detach` records NO pid anywhere (run.json/status.json/journal/state carry none — verified); the runner's
-// SIGTERM `killChild` seam is internal to a single live run process, unreachable from a separate CLI call.
-// Rather than invent a fragile signal path, `--stop` is the smallest honest thing: it prints a clear
-// "not yet supported" + exit non-zero. Real stop needs per-node PID tracking written by `--detach`.
+// `--stop` STOPS a detached run by signalling its CONTROLLING process group. The runner records the run
+// controller's pid into `.pi/run.json` (`controllerPid`) at run start (status.ts), and spawns each node's
+// child DETACHED as its own process group (sandbox/worktree.ts:128) — killed via `kill(-pid)`. So `--stop`
+// resolves the run dir, reads `controllerPid`, and signals THAT group with the runner's SIGTERM→SIGKILL
+// grace (exec-runner's kill semantics). This is a per-RUN stop (group-kill), not per-node: a node's child
+// pid is ephemeral and never persisted, but the controller's group reaches the whole tree. A run with NO
+// recorded pid (older run, or one that crashed before its first status write) FAILS with an actionable
+// message — `--stop` NEVER guesses a pid.
 
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdtemp, writeFile } from 'node:fs/promises';
-import { loadJournal as coreLoadJournal, piSessionsDir, piDir, type Journal } from '@piflow/core';
+import { loadJournal as coreLoadJournal, piSessionsDir, piDir, runJsonFile, type Journal, type RunStatus } from '@piflow/core';
 
 /** Shell-quote a single token (paths may contain spaces). Mirrors command.ts `q`. */
 function q(s: string): string {
@@ -65,6 +68,54 @@ export function buildNodeResumeCommand(input: NodeResumeCommandInput): string {
   const parts = ['pi', '-p', '--mode', 'json', '-a', ...sessionFlags];
   if (messageFile) parts.push(`@${q(messageFile)}`);
   return parts.join(' ');
+}
+
+/** One step of the kill escalation: send `signal` `afterMs` after the stop was issued. */
+export interface StopSignalStep {
+  signal: 'SIGTERM' | 'SIGKILL';
+  /** Delay before this step fires (SIGTERM = 0, SIGKILL = the kill grace, mirroring exec-runner's escalation). */
+  afterMs: number;
+}
+
+/** The PLAN a `--stop` executes: the pid to signal + the ordered SIGTERM→SIGKILL escalation. */
+export type StopAction =
+  | { ok: true; pid: number; signalSequence: StopSignalStep[] }
+  | { ok: false; reason: string };
+
+/** Inputs to the PURE stop planner. `runState` is the run's `.pi/run.json` digest (it carries the pid). */
+export interface BuildStopActionInput {
+  runDir: string;
+  runState: RunStatus | null;
+}
+
+/** ms to wait after SIGTERM before SIGKILL — the same kill grace the exec-runner uses (exec-runner.ts:30). */
+export const STOP_KILL_GRACE_MS = 3000;
+
+/**
+ * Build the stop PLAN for a run — PURE (no `process.kill`, no fs), so the wiring is unit-tested without
+ * killing a real process. It reads the CONTROLLING pid the runner recorded into `.pi/run.json`
+ * (`controllerPid`, status.ts) and returns the SIGTERM→SIGKILL escalation to apply to that process group
+ * — the SAME grace the runner's watchdog kill uses (exec-runner.ts). When no pid was recorded (an older
+ * run, or one that died before its first status write), it returns a NOT-OK plan with an actionable reason
+ * — it NEVER guesses a pid. The actual signalling is a thin wrapper around this plan (see `runNodeCli`).
+ */
+export function buildStopAction(input: BuildStopActionInput): StopAction {
+  const pid = input.runState?.controllerPid;
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
+    return {
+      ok: false,
+      reason: `no controlling pid is recorded for this run (.pi/run.json carries no controllerPid) — re-run with 'piflowctl run --detach' (which records the pid) to make it stoppable.`,
+    };
+  }
+  return {
+    ok: true,
+    pid,
+    // SIGTERM first (graceful), then SIGKILL after the kill grace — the exec-runner's escalation order.
+    signalSequence: [
+      { signal: 'SIGTERM', afterMs: 0 },
+      { signal: 'SIGKILL', afterMs: STOP_KILL_GRACE_MS },
+    ],
+  };
 }
 
 /** Inputs to `resolveNodeRunDir`. */
@@ -125,6 +176,16 @@ export interface NodeDeps {
   spawnResume?: (cmd: string, runDir: string) => number;
   /** Stage the `-m` message to a temp file and return its path (`@<file>`). Default a real tmp write. */
   writeMessageFile?: (message: string) => Promise<string>;
+  /** Read a run's `.pi/run.json` digest (for `--stop`'s recorded pid). Default reads `runJsonFile(runDir)`. */
+  loadRunStatus?: (runDir: string) => RunStatus | null;
+  /**
+   * Signal a process GROUP (the boundary `--stop` mocks under test — NEVER kills a real process there).
+   * Default `process.kill(-pid, signal)` (the leading `-` targets the detached group, mirroring
+   * sandbox/worktree.ts:141). Returns true if the signal was delivered (false ⇒ already gone / no perms).
+   */
+  signalProcess?: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => boolean;
+  /** Sleep `ms` between the SIGTERM and the SIGKILL escalation. Default real `setTimeout`; tests pass a no-op. */
+  sleep?: (ms: number) => Promise<void>;
   print?: (line: string) => void;
   error?: (line: string) => void;
 }
@@ -185,6 +246,22 @@ export async function runNodeCli(argv: string[], deps: NodeDeps = {}): Promise<n
       await writeFile(file, message);
       return file;
     });
+  const loadRunStatus =
+    deps.loadRunStatus ??
+    ((runDir: string): RunStatus | null => {
+      try {
+        return JSON.parse(readFileSync(runJsonFile(runDir), 'utf8')) as RunStatus;
+      } catch {
+        return null;
+      }
+    });
+  const signalProcess =
+    deps.signalProcess ??
+    ((pid: number, signal: 'SIGTERM' | 'SIGKILL'): boolean => {
+      // `-pid` targets the detached process GROUP (the runner spawns each node detached; worktree.ts:141).
+      try { process.kill(-pid, signal); return true; } catch { return false; }
+    });
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.(); }));
   const print = deps.print ?? ((s: string) => process.stdout.write(s + '\n'));
   const error = deps.error ?? ((s: string) => process.stderr.write(s + '\n'));
 
@@ -199,12 +276,42 @@ export async function runNodeCli(argv: string[], deps: NodeDeps = {}): Promise<n
     return 1;
   }
 
-  // ── --stop: honest not-yet-supported (the --stop investigation conclusion). ──
+  // ── --stop: signal the run's CONTROLLING process group (per-run group-kill). ──
   if (parsed.stop) {
-    error(
-      `piflowctl node ${parsed.run} ${parsed.nodeId} --stop: not yet supported — stopping a live node needs per-node PID tracking, which 'piflowctl run --detach' does not yet record (run.json/journal carry no pid). Real stop = have --detach write each node's child PID into the run state, then signal it here.`,
+    let stopRunDir: string;
+    try {
+      stopRunDir = resolveRunDir(parsed.run);
+    } catch (e) {
+      error((e as Error).message);
+      return 1;
+    }
+    const runState = loadRunStatus(stopRunDir);
+    const action = buildStopAction({ runDir: stopRunDir, runState });
+    if (!action.ok) {
+      error(
+        `piflowctl node ${parsed.run} ${parsed.nodeId} --stop: cannot stop — ${action.reason} (this signals the whole RUN's process group, not just node "${parsed.nodeId}").`,
+      );
+      return 1;
+    }
+    print(
+      `piflowctl node: stopping run "${parsed.run}" — signalling its controlling process group (pid ${action.pid}) with SIGTERM→SIGKILL. (A per-RUN stop, not just node "${parsed.nodeId}".)`,
     );
-    return 1;
+    // Send SIGTERM, then escalate to SIGKILL after the kill grace if the group is still alive (the
+    // exec-runner's watchdog escalation). `signalProcess` returning false ⇒ the group is already gone.
+    let firstAlive = false;
+    for (const step of action.signalSequence) {
+      if (step.afterMs > 0) {
+        if (!firstAlive) break; // SIGTERM already found it gone — no need to escalate.
+        await sleep(step.afterMs);
+      }
+      const delivered = signalProcess(action.pid, step.signal);
+      if (step.signal === 'SIGTERM') firstAlive = delivered;
+      if (!delivered && step.signal === 'SIGTERM') {
+        print(`piflowctl node: pid ${action.pid} was already gone — nothing to stop.`);
+        return 0;
+      }
+    }
+    return 0;
   }
 
   // ── --resume: resolve → guard → spawn. ──

@@ -73,8 +73,9 @@ NODE
   -m / --message "<msg>"  send one headless message into the resumed session; omit for a LIVE session.
                 A node with no recorded session (cold inmemory/cloud, or never ran --sandbox local) errors,
                 naming the resumable nodes.
-  --stop        NOT YET SUPPORTED — stopping a live node needs per-node PID tracking that 'run --detach'
-                does not yet record; exits non-zero with what real stop requires.
+  --stop        STOP the run by signalling its controlling process GROUP (SIGTERM→SIGKILL grace). This is a
+                per-RUN stop, not just one node: the runner records the run controller's pid in .pi/run.json
+                and spawns each node detached in that group. A run with no recorded pid (older run) errors.
 
 NEW
   <templateDir> the template dir to create (e.g. .piflow/<wf>/template). Writes meta.json + nodes/.

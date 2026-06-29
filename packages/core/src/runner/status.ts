@@ -113,6 +113,14 @@ export interface RunStatus {
   profile?: string | null;
   provider?: string;
   model?: string | null;
+  /**
+   * The OS pid of the process that DROVE this run (the one that called `runWorkflow`), recorded at run
+   * start so `piflowctl node <run> <id> --stop` can later signal it. The runner spawns each node's child
+   * DETACHED as its own process group (sandbox/worktree.ts:128) and kills the GROUP via `kill(-pid)`; a
+   * later stop targets THIS controller's group (SIGTERM→SIGKILL grace) — a per-RUN stop, since per-node
+   * child pids are ephemeral and never persisted. Absent on an older run (additive, optional).
+   */
+  controllerPid?: number;
   startedAt: string;
   updatedAt: string;
   done: boolean;

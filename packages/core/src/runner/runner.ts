@@ -378,6 +378,10 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
       profile: opts.profile ?? null,
       provider: opts.providerName ?? 'cp',
       model: opts.model ?? null,
+      // The CONTROLLING process's pid — the one driving this run. Recorded so a later
+      // `piflowctl node <run> <id> --stop` can signal THIS run's process group (the runner spawns each
+      // node's child detached in its own group; a stop targets the controller, a per-run group-kill).
+      controllerPid: process.pid,
       startedAt: nowISO(),
       updatedAt: nowISO(),
       done: false,

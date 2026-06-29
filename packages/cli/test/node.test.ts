@@ -4,11 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   buildNodeResumeCommand,
+  buildStopAction,
   resolveNodeRunDir,
   runNodeCli,
   type NodeDeps,
 } from '../src/node.js';
-import { piSessionsDir, journalFile, piDir, type Journal } from '@piflow/core';
+import { piSessionsDir, journalFile, piDir, runJsonFile, type Journal, type RunStatus } from '@piflow/core';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // (A) buildNodeResumeCommand — the PURE argv builder (no spawn, no fs).
@@ -178,28 +179,112 @@ describe('runNodeCli --resume — resolve + guard', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (D) runNodeCli --stop — the HONEST not-yet-supported path (no PID tracking exists).
+// (D-pure) buildStopAction — the PURE pid-resolve + signal-PLAN (no process.kill).
+// A run records its CONTROLLER pid into `.pi/run.json` at start; --stop signals THAT
+// process group with the runner's SIGTERM→SIGKILL grace. This function builds the plan;
+// the actual kill is a thin wrapper, so tests assert WITHOUT killing a real process.
 // ─────────────────────────────────────────────────────────────────────────────
-describe('runNodeCli --stop — honest not-yet-supported (no per-node PID tracking in --detach)', () => {
-  it('exits non-zero with a clear message that stop needs per-node PID tracking, and does not spawn', async () => {
-    const spawned: string[] = [];
+describe('buildStopAction — the pure pid-resolve + signal plan', () => {
+  const runDir = '/runs/flaky-pecan';
+  function status(over: Partial<RunStatus>): RunStatus {
+    return {
+      run: 'flaky-pecan',
+      startedAt: 't',
+      updatedAt: 't',
+      done: false,
+      ok: null,
+      durationMs: null,
+      stage: null,
+      totals: null,
+      nodes: {},
+      ...over,
+    };
+  }
+
+  it('with a recorded controllerPid: returns that pid + the SIGTERM→SIGKILL grace sequence', () => {
+    const action = buildStopAction({ runDir, runState: status({ controllerPid: 4242, done: false }) });
+    expect(action.ok).toBe(true);
+    if (!action.ok) throw new Error('unreachable');
+    expect(action.pid).toBe(4242);
+    // The kill grace is the exec-runner's SIGTERM-then-SIGKILL escalation, in order.
+    expect(action.signalSequence.map((s) => s.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+    // SIGTERM fires first (graceMs 0), SIGKILL after a grace > 0 — the escalation is delayed, not simultaneous.
+    expect(action.signalSequence[0].afterMs).toBe(0);
+    expect(action.signalSequence[1].afterMs).toBeGreaterThan(0);
+  });
+
+  it('a runState with NO controllerPid: returns a NOT-OK plan (no pid to signal) with an actionable reason', () => {
+    const action = buildStopAction({ runDir, runState: status({}) });
+    expect(action.ok).toBe(false);
+    if (action.ok) throw new Error('unreachable');
+    // The reason must be actionable — it names that no controlling pid was recorded (an attended/older run).
+    expect(action.reason.toLowerCase()).toContain('pid');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (D) runNodeCli --stop — resolves the run dir, reads the recorded controllerPid from
+// `.pi/run.json`, signals it (mocked); a run with NO recorded pid FAILS actionably and
+// NEVER signals. The signal boundary is mocked — we NEVER kill a real process.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('runNodeCli --stop — signal a detached run (signal boundary mocked)', () => {
+  let TMP: string;
+  beforeEach(async () => {
+    TMP = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-node-stop-'));
+  });
+  afterEach(async () => {
+    await fs.rm(TMP, { recursive: true, force: true });
+  });
+
+  async function writeRunJson(runDir: string, over: Partial<RunStatus>): Promise<void> {
+    await fs.mkdir(piDir(runDir), { recursive: true });
+    const s: RunStatus = {
+      run: 'r', startedAt: 't', updatedAt: 't', done: false, ok: null,
+      durationMs: null, stage: null, totals: null, nodes: {}, ...over,
+    };
+    await fs.writeFile(runJsonFile(runDir), JSON.stringify(s));
+  }
+
+  it('a run WITH a recorded controllerPid: signals that pid (SIGTERM→SIGKILL) and exits 0; never spawns', async () => {
+    const runDir = path.join(TMP, 'run-a');
+    await writeRunJson(runDir, { controllerPid: 9191, done: false });
+    const signals: { pid: number; signal: string }[] = [];
     const errs: string[] = [];
-    const code = await runNodeCli(['r', 'w0', '--stop'], {
-      loadJournal: async () => null,
-      resolveRunDir: () => '/runs/r',
-      spawnResume: (cmd) => {
-        spawned.push(cmd);
-        return 0;
-      },
-      writeMessageFile: async () => '/tmp/m.md',
+    const spawned: string[] = [];
+
+    const code = await runNodeCli(['run-a', 'w0', '--stop'], {
+      resolveRunDir: () => runDir,
+      spawnResume: (cmd) => { spawned.push(cmd); return 0; },
+      signalProcess: (pid, signal) => { signals.push({ pid, signal }); return true; },
+      sleep: async () => {}, // no real grace wait under test
+      print: () => {},
+      error: (s) => errs.push(s),
+    });
+
+    expect(code).toBe(0);
+    expect(spawned).toHaveLength(0); // a stop never spawns pi
+    // It signalled the RECORDED pid, SIGTERM first.
+    expect(signals.some((s) => s.pid === 9191 && s.signal === 'SIGTERM')).toBe(true);
+    expect(errs).toHaveLength(0);
+  });
+
+  it('a run with NO recorded controllerPid (older/attended run): fails actionably and NEVER signals', async () => {
+    const runDir = path.join(TMP, 'run-b');
+    await writeRunJson(runDir, { done: false }); // no controllerPid
+    const signals: { pid: number; signal: string }[] = [];
+    const errs: string[] = [];
+
+    const code = await runNodeCli(['run-b', 'w0', '--stop'], {
+      resolveRunDir: () => runDir,
+      signalProcess: (pid, signal) => { signals.push({ pid, signal }); return true; },
       print: () => {},
       error: (s) => errs.push(s),
     });
 
     expect(code).not.toBe(0);
-    expect(spawned).toHaveLength(0);
+    expect(signals).toHaveLength(0); // NEVER guesses a pid
     const msg = errs.join('\n').toLowerCase();
-    expect(msg).toContain('not yet supported');
     expect(msg).toContain('pid'); // names the missing capability
+    expect(msg).toContain('detach'); // actionable: re-run with --detach to record one
   });
 });

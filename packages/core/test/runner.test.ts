@@ -140,6 +140,20 @@ describe('runWorkflow — end-to-end on InMemorySandboxProvider (no live pi)', (
 
     await fs.rm(outDir, { recursive: true, force: true });
   });
+
+  // The run RECORDS the controlling process's pid into `.pi/run.json` at start, so a later
+  // `piflowctl node <run> <id> --stop` can signal the (detached) run's process group. Additive:
+  // it does NOT change run semantics; the assertion is just that the recorded pid IS this process.
+  it('records the controlling process pid into .pi/run.json so a later --stop can signal it', async () => {
+    const g = compile(wf([n('Solo', [], ['solo.txt'])]));
+    const outDir = await tmpOut();
+    await runWorkflow(g, { run: 'pid-rec', outDir, buildCommand: stubBuilder() });
+
+    const onDisk = JSON.parse(await fs.readFile(runJsonFile(outDir), 'utf8')) as RunStatus;
+    expect(onDisk.controllerPid).toBe(process.pid);
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
 });
 
 // ── 1b. concurrent collect into a SHARED dest subtree (the swallowed-EEXIST footgun) ───────────────
