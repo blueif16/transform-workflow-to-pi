@@ -8,6 +8,8 @@
    with a single import.
    ============================================================ */
 import FluidGrid from "@/components/FluidGrid";
+import HoverGrid from "@/components/HoverGrid";
+import LearnMoreButton from "@/components/LearnMoreButton";
 
 const GITHUB_URL = "https://github.com/blueif16/PiFlow";
 
@@ -26,6 +28,11 @@ export default function Hero() {
     <section id="top" className="relative min-h-svh w-full overflow-hidden">
       {/* right-half grid + morphing modules (desktop) */}
       <FluidGrid className="pointer-events-none absolute inset-y-0 right-0 z-0 hidden w-[56%] lg:block" />
+
+      {/* left-side hover field — the grid lights up under the cursor.
+          Scoped to the left 44% (complement of FluidGrid's right 56%) so
+          the right half stays untouched. */}
+      <HoverGrid className="pointer-events-none absolute inset-y-0 left-0 z-0 hidden w-[44%] lg:block" />
 
       {/* targeting brackets on the two square corners (TL + BR) */}
       <span className="hud-corner hud-corner--tl" aria-hidden />
@@ -66,7 +73,11 @@ export default function Hero() {
         </nav>
 
         {/* ── TITLE — lower-left ───────────────────────────────── */}
-        <div className="mt-auto max-w-xl pb-12 sm:pb-16 lg:pb-20">
+        {/* data-hover-anchor: HoverGrid warms cells near this box to accent */}
+        <div
+          data-hover-anchor
+          className="mt-auto max-w-xl pb-12 sm:pb-16 lg:pb-20"
+        >
           <span className="hud-frame [--hud-bevel:8px] blur-in mb-5 inline-flex w-fit items-center gap-2 border border-[var(--hairline)] bg-white/70 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint backdrop-blur">
             <span className="size-1.5 rounded-full bg-accent" aria-hidden />
             Agentic workflow powered by the Pi Agents
@@ -77,6 +88,17 @@ export default function Hero() {
           >
             Pi Flow
           </h1>
+
+          {/* primary CTA — angular ink button, GSAP-scrolls to the next section */}
+          <LearnMoreButton
+            className="hud-cut-tr [--hud-bevel:12px] blur-in mt-8 inline-flex w-fit items-center gap-2 bg-[var(--ink)] px-5 py-3 text-sm font-medium text-white shadow-[var(--shadow-sm)] transition-[background,transform] hover:bg-[var(--ink-hover)] hover:-translate-y-0.5 active:translate-y-0"
+            target="#loop"
+          >
+            Learn more
+            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 5v14M6 13l6 6 6-6" />
+            </svg>
+          </LearnMoreButton>
         </div>
       </div>
     </section>
