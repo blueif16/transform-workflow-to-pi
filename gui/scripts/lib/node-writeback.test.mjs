@@ -87,12 +87,17 @@ describe("chipToOps — the chip→op[] projection (mirrors SA-B lowerGate)", ()
     expect(ops[0].onFailure).toBe("block");
   });
 
-  it("judge chip → producer-side rerouteTo self + a DEFERRED pending judge node", () => {
-    const { ops, pendingJudgeNode } = chipToOps({ kind: "judge", judgeTier: "deep", retryMax: 2 }, "build");
+  it("judge chip → producer-side rerouteTo self + a PERSISTED judgeGate descriptor (loader materializes it)", () => {
+    const { ops, judgeGate } = chipToOps(
+      { kind: "judge", judgeTier: "deep", rubric: "Is it correct and complete?", threshold: "7/10", retryMax: 2 },
+      "build",
+    );
     expect(ops).toHaveLength(1);
     expect(ops[0].action).toEqual({ kind: "rerouteTo", node: "build", max: 2 });
-    // The materialized judge pi node is the deferred multi-file wiring — surfaced, not written.
-    expect(pendingJudgeNode).toMatchObject({ agentType: "judge", tier: "deep" });
+    // The judge GATE descriptor (judgeTier/rubric/threshold/policy) is PERSISTED onto node.json — the loader's
+    // `materializeJudgeNodes` consumes it to insert a real `<id>__judge` node. NOT a bare stub thrown away.
+    expect(judgeGate).toMatchObject({ judgeTier: "deep", rubric: "Is it correct and complete?", threshold: "7/10" });
+    expect(judgeGate.policy).toMatchObject({ retryMax: 2 });
   });
 
   it("human chip → a checkpoint patch, NOT an op[] entry", () => {
@@ -108,20 +113,32 @@ describe("chipToOps — the chip→op[] projection (mirrors SA-B lowerGate)", ()
 });
 
 describe("writeNodeEdit — the end-to-end TEMPLATE node.json mutation", () => {
-  it("appends a JUDGE gate to a node with NO prior op[] — the on-disk file gains the rerouteTo op", async () => {
+  it("a JUDGE chip PERSISTS the judgeGate descriptor on disk (loader-consumable) + the rerouteTo op", async () => {
     const { root, templateDir } = await makeTemplate(baseNode());
     try {
       const before = JSON.parse(await readFile(nodeJsonPathFor(templateDir, "build"), "utf8"));
       expect(before.op).toBeUndefined(); // precondition: no gate lane yet
+      expect(before.judgeGate).toBeUndefined(); // and no judge gate yet
 
-      const res = await writeNodeEdit(templateDir, "build", { chip: { kind: "judge", judgeTier: "deep", retryMax: 3 } }, validate);
+      const res = await writeNodeEdit(
+        templateDir,
+        "build",
+        { chip: { kind: "judge", judgeTier: "deep", rubric: "Exhaustive and self-consistent?", threshold: "pass", retryMax: 3 } },
+        validate,
+      );
       expect(res.status).toBe(200);
 
       // ASSERT THE ON-DISK FILE CHANGED CORRECTLY — re-read from disk, not the in-memory return.
       const after = JSON.parse(await readFile(nodeJsonPathFor(templateDir, "build"), "utf8"));
+      // (1) The producer-side reroute op landed (the judge-fail loop).
       expect(Array.isArray(after.op)).toBe(true);
       expect(after.op).toHaveLength(1);
       expect(after.op[0].action).toEqual({ kind: "rerouteTo", node: "build", max: 3 });
+      // (2) The judge GATE descriptor landed — NOT a bare `pendingJudgeNode` stub. The loader reads THIS.
+      expect(after.judgeGate).toMatchObject({ judgeTier: "deep", rubric: "Exhaustive and self-consistent?", threshold: "pass" });
+      expect(after.judgeGate.policy).toMatchObject({ retryMax: 3 });
+      // (3) The persisted node STILL validates against the real nodeSchema (so it re-loads through the loader).
+      expect(validate(nodeSchema, after).ok).toBe(true);
       // additive: the producer's prior fields are untouched.
       expect(after.contract).toEqual(before.contract);
     } finally {

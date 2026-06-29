@@ -40,16 +40,16 @@ export function nodeJsonPathFor(templateDir, nodeId) {
 // the result re-loads through the template loader unchanged:
 //
 //   execution → op{ when:'post', run:{cmd,args?,cwd?}, onFailure }
-//   judge     → op{ when:'on-failure', action:{kind:'rerouteTo', node:<self>, max} }   (+ judge node: DEFERRED, see below)
+//   judge     → op{ when:'on-failure', action:{kind:'rerouteTo', node:<self>, max} } + a PERSISTED judgeGate
 //   human     → the G5 `checkpoint` field on the node (NOT an op[] entry — types.ts CheckpointSpec)
 //   floor     → op{ when:'post', gate:{kind, path?, param?, advisory?}, onFailure }     (structural floor)
 //
-// NOTE on judge auto-expansion: SA-B's full judge lowering ALSO materializes a separate judge pi node
-// that the loader wires into the DAG (build-spec §"Judge expansion"). Materializing + wiring a sibling
-// node from the GUI is a multi-file template mutation (new nodes/<judge>/ dir + dep rewiring) — that is
-// explicitly the harder case; v1 writes the producer-side `rerouteTo` action (the gate's one op) and
-// STUBS the judge-node materialization (returned as `pendingJudgeNode` so the caller/UI can surface it).
-// The reroute op alone round-trips through the schema; the node-wiring is the deferred follow-up.
+// JUDGE auto-expansion is REAL (no longer deferred): a judge chip PERSISTS the `judgeGate` descriptor
+// (judgeTier/rubric/threshold/policy — the `JudgeGate` shape, gate-authoring.ts) onto node.json in the
+// loader-consumable `judgeGate` field. The template LOADER's `materializeJudgeNodes` (judge/materialize.ts)
+// reads it and INSERTS a real `<id>__judge` pi node wired into the DAG at load time — so the GUI never
+// hand-writes a sibling node dir; it just records the gate intent and the loader does the multi-node wiring.
+// We ALSO append the producer-side `rerouteTo` op (the judge-fail loop) so the producer carries it directly.
 
 const ONFAIL = new Set(["block", "warn", "stop"]); // the schema's policyAction enum (node.schema.ts $defs.policyAction)
 
@@ -81,16 +81,17 @@ export function chipToOps(chip, nodeId) {
       // Producer-side reroute op (the one op the gate appends to THIS node). max = retry budget (default 1).
       const max = Number.isInteger(chip.retryMax) && chip.retryMax > 0 ? chip.retryMax : 1;
       const ops = [{ when: "on-failure", action: { kind: "rerouteTo", node: nodeId, max } }];
-      // The materialized judge pi node is DEFERRED (multi-file DAG wiring). Surface its intent so the UI
-      // can show "judge node pending" without us half-writing a sibling node dir.
-      const pendingJudgeNode = {
-        label: `${nodeId} judge`,
-        tier: typeof chip.judgeTier === "string" ? chip.judgeTier : "deep",
-        rubric: typeof chip.rubric === "string" ? chip.rubric : "",
-        threshold: typeof chip.threshold === "string" ? chip.threshold : "pass",
-        agentType: "judge",
-      };
-      return { ops, pendingJudgeNode };
+      // PERSIST the judge GATE descriptor (the `JudgeGate` shape minus `kind`) onto node.json — the loader's
+      // `materializeJudgeNodes` consumes it to insert a real `<id>__judge` node. judgeTier+rubric are required
+      // by the schema; threshold/policy are optional. We carry exactly what the loader needs (no GUI-local stub).
+      if (typeof chip.judgeTier !== "string" || !chip.judgeTier.length) throw new WritebackError("judge gate requires a non-empty `judgeTier`");
+      if (typeof chip.rubric !== "string" || !chip.rubric.length) throw new WritebackError("judge gate requires a non-empty `rubric`");
+      const judgeGate = { judgeTier: chip.judgeTier, rubric: chip.rubric };
+      if (typeof chip.threshold === "string" && chip.threshold.length) judgeGate.threshold = chip.threshold;
+      // The reroute budget rides the gate's policy so the loader's lowering re-derives the SAME rerouteTo op.
+      judgeGate.policy = { retryMax: max };
+      if (chip.retryScope === "feedback" || chip.retryScope === "fix") judgeGate.policy.retryScope = chip.retryScope;
+      return { ops, judgeGate };
     }
     case "human": {
       // Human (HITL) gate → the G5 `checkpoint` field (NOT an op[] entry — CheckpointSpec, types.ts).
@@ -126,11 +127,14 @@ export class WritebackError extends Error {
 export function applyEdit(node, nodeId, edit) {
   if (!node || typeof node !== "object" || Array.isArray(node)) throw new WritebackError("node.json must be a JSON object");
   if (!edit || typeof edit !== "object") throw new WritebackError("edit must be { chip }");
-  const { ops, checkpointPatch, pendingJudgeNode } = chipToOps(edit.chip, nodeId);
+  const { ops, checkpointPatch, judgeGate } = chipToOps(edit.chip, nodeId);
   const next = { ...node };
   if (ops.length) next.op = [...(Array.isArray(node.op) ? node.op : []), ...ops];
   if (checkpointPatch) next.checkpoint = { ...(node.checkpoint && typeof node.checkpoint === "object" ? node.checkpoint : {}), ...checkpointPatch };
-  return { node: next, pendingJudgeNode };
+  // PERSIST the judge gate descriptor onto node.json — the loader materializes a real `<id>__judge` node
+  // from it (judge/materialize.ts). A second judge chip OVERWRITES the prior gate (one judge per producer).
+  if (judgeGate) next.judgeGate = judgeGate;
+  return { node: next, judgeGate };
 }
 
 /**
@@ -175,9 +179,9 @@ export async function writeNodeEdit(templateDir, nodeId, edit, validate) {
     return { ok: false, status: 404, body: { error: String(e?.message ?? e) } };
   }
 
-  let mutated, pendingJudgeNode;
+  let mutated, judgeGate;
   try {
-    ({ node: mutated, pendingJudgeNode } = applyEdit(node, nodeId, edit));
+    ({ node: mutated, judgeGate } = applyEdit(node, nodeId, edit));
   } catch (e) {
     return { ok: false, status: 400, body: { error: String(e?.message ?? e), reasons: e?.reasons } };
   }
@@ -191,7 +195,7 @@ export async function writeNodeEdit(templateDir, nodeId, edit, validate) {
   const file = nodeJsonPathFor(templateDir, nodeId);
   const bytes = JSON.stringify(mutated, null, 2) + "\n";
   await atomicWrite(file, bytes);
-  return { ok: true, status: 200, body: { ok: true, node: mutated, ...(pendingJudgeNode ? { pendingJudgeNode } : {}) }, file };
+  return { ok: true, status: 200, body: { ok: true, node: mutated, ...(judgeGate ? { judgeGate } : {}) }, file };
 }
 
 // The schema object is injected by the plugin (it imports core's dist); in the test we pass the validator

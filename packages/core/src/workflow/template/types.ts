@@ -91,6 +91,18 @@ export interface TemplateNode {
     verify?: boolean;
   };
   /**
+   * (expert-representations · "Judge expansion") A JUDGE GATE authored on this producer node → the loader
+   * MATERIALIZES a real `<id>__judge` pi node into the spec at load time (`lowerGates` + `materializeJudgeNodes`)
+   * and attaches the producer-side `rerouteTo` judge-fail loop. The `JudgeGate` shape MINUS its `kind`
+   * discriminator (the field name implies it). `judgeTier` MUST differ from the producer's tier (no self-judging).
+   */
+  judgeGate?: {
+    judgeTier: string;
+    rubric: string;
+    threshold?: string;
+    policy?: { onFail?: 'block' | 'warn' | 'stop' | 'retry' | 'escalate'; retryMax?: number; retryScope?: 'feedback' | 'fix' };
+  };
+  /**
    * (G9) Subworkflow activation → intent `subworkflow`, consumed by `expandSubworkflow` before compile/
    * fusion: this node is REPLACED by the referenced sub-template's nodes (id-namespaced under it). A v1
    * subworkflow node is a pure reference holder — author its `contract` so the child terminal writes the

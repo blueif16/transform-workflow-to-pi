@@ -29,6 +29,7 @@ import {
   checkMcpSecrets,
 } from './checks.js';
 import { buildWorkflowJson, writeWorkflowJson } from './workflow-json.js';
+import { materializeJudgeNodes, JudgeConfigError } from '../judge/materialize.js';
 
 /** Thrown when the template does not compile. Carries EVERY §8 violation (like `WorkflowError`). */
 export class TemplateError extends Error {
@@ -180,6 +181,10 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
   // (G9) Carry a SUBWORKFLOW activation block verbatim onto the intent when authored — `expandSubworkflow`
   // consumes it before fusion + compile (the node is replaced by the referenced sub-template). Additive.
   if (n.def.subworkflow) intent.subworkflow = n.def.subworkflow;
+  // (expert-representations · "Judge expansion") Carry a JUDGE GATE block verbatim onto the intent when
+  // authored — `materializeJudgeNodes` consumes it at LOAD time (below), inserting a real `<id>__judge`
+  // node + the producer-side reroute loop. Twin of the `fusion`/`subworkflow` carries. Additive: no block ⇒ no change.
+  if (n.def.judgeGate) intent.judgeGate = n.def.judgeGate;
   return intent;
 }
 
@@ -230,9 +235,23 @@ export async function loadTemplate(dir: string, opts: LoadTemplateOpts = {}): Pr
   // (4) (re)write the generated workflow.json lock — always synced from the node set.
   await writeWorkflowJson(dir, buildWorkflowJson(meta as TemplateMeta, loaded));
 
-  // (5) build + return the in-memory WorkflowSpec (deterministic node order = id-sorted from scan).
+  // (5) build the in-memory WorkflowSpec (deterministic node order = id-sorted from scan).
   const m = meta as TemplateMeta;
-  const nodes = loaded.map(toNodeIntent);
+  const authoredNodes = loaded.map(toNodeIntent);
+  // (expert-representations · "Judge expansion") MATERIALIZE every authored `judgeGate` into a real
+  // `<producer>__judge` pi node + the producer-side reroute loop + the downstream-consumer rewiring. A
+  // PURE intent→intent transform (the `expandReroute`/`expandFusion` precedent) — runs BEFORE the
+  // externalInputs join below so the judge's new reads/produces participate in the edge inference. A spec
+  // with no judge gate is returned referentially unchanged. Throws `JudgeConfigError` on a same-tier judge.
+  let nodes: NodeIntent[];
+  try {
+    nodes = materializeJudgeNodes({ meta: { name: m.name, description: m.description }, nodes: authoredNodes }).nodes;
+  } catch (e) {
+    // The judge invariant (judgeTier != producer tier) is a TEMPLATE buildability failure — surface it
+    // through the SAME fail-closed `TemplateError` envelope the §8 checks use (the single compile gate).
+    if (e instanceof JudgeConfigError) throw new TemplateError([e.message]);
+    throw e;
+  }
   // (M5 · #10/#16) Now that `io.reads` folds the op/injected reads (no longer the `reads:[]` hardcode),
   // mark each read with NO producer in the spec as an externalInput — a RAW input, NOT a missing-producer
   // error (the template's `checkRefs` already proved each injected read is produced upstream or canonical).

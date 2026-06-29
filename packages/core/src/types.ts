@@ -909,6 +909,19 @@ export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentTyp
   mcp?: { servers?: Record<string, unknown>; ref?: string };
   /** (G9) Subworkflow activation — consumed by `expandSubworkflow` BEFORE compile/fusion; never reaches the dense NodeSpec. */
   subworkflow?: SubworkflowSpec;
+  /**
+   * (expert-representations · "Judge expansion") A JUDGE GATE on this producer node. Lives ONLY on the
+   * authoring/intent layer: `materializeJudgeNodes(spec)` consumes it at LOAD time (BEFORE compile),
+   * INSERTING a real `<label>__judge` pi node wired after the producer + the producer-side `rerouteTo`
+   * judge-fail loop (the `fusion?`/`subworkflow?` precedent — never reaches the dense `NodeSpec`). The
+   * `judgeTier` MUST differ from the producer's tier, else a loud `JudgeConfigError`. Additive: no block ⇒ no change.
+   */
+  judgeGate?: {
+    judgeTier: string;
+    rubric: string;
+    threshold?: string;
+    policy?: { onFail?: 'block' | 'warn' | 'stop' | 'retry' | 'escalate'; retryMax?: number; retryScope?: 'feedback' | 'fix' };
+  };
 };
 
 /**
