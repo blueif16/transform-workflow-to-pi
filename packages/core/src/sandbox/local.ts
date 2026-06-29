@@ -143,6 +143,9 @@ export class LocalSandbox implements Sandbox {
         // EOF (the documented ~10-minute pi hang). Pipe stdout/stderr for the event stream.
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+      // SURFACE the pid the instant the child exists (per-node stop seam, ExecOpts.onSpawn): the child is
+      // the detached group leader, so pid == pgid — a later CLI signals `-pid` to reach the whole tree.
+      if (child.pid !== undefined) opts.onSpawn?.(child.pid);
       let stdout = '';
       let stderr = '';
       let done = false;

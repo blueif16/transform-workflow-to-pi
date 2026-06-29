@@ -35,7 +35,7 @@ import {
   writeStatus,
   artifactState,
 } from './status.js';
-import { piSessionsDir } from './layout.js';
+import { piSessionsDir, writeNodePid, clearNodePid } from './layout.js';
 import {
   envelopeHash,
   inputFilesOf,
@@ -368,8 +368,16 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
     // watchdog's own onStdout, so recording can never disable the stall kill). See ./events.ts.
     const recorder = ctx.recordEvents ? new NodeRecorder(ctx.outDir, node.id, ctx.onEvent) : null;
     const execSandbox = recorder ? recordingSandbox(sandbox, recorder) : sandbox;
+    // (per-node stop) PERSIST the spawned pi's pid to `.pi/nodes/<id>/pid.json` the instant the child exists,
+    // so a separate `piflowctl node <run> <id> --stop` can signal THIS node's live process group. SCOPED to
+    // HOST-SIGNALABLE (in-place/local) providers: the recorded pid is a real host process a host CLI can reach.
+    // On an inmemory (ephemeral) or CLOUD (in-VM) provider the host cannot signal the process, so we persist
+    // NOTHING (`onSpawn` left undefined ⇒ no misleading host pid). `finishNode` clears the file on every exit.
+    // Both the first exec and the G8 repair re-exec carry it (a repair spawns a fresh pi for the same node).
+    const hostSignalable = IN_PLACE_KINDS.has(ctx.providerKind);
+    const onSpawn = hostSignalable ? (pid: number): void => { void writeNodePid(ctx.outDir, node.id, pid); } : undefined;
     // `let result` (not `const`): the G8 repair loop re-execs in the live sandbox and re-binds it.
-    const exec0 = await ctx.execRunner(execSandbox, cmd, { ...ctx.watchdog, nodeTimeoutMs });
+    const exec0 = await ctx.execRunner(execSandbox, cmd, { ...ctx.watchdog, nodeTimeoutMs, onSpawn });
     let result = exec0.result;
     const { killed } = exec0;
     await recorder?.close();
@@ -577,7 +585,7 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
         const repairFile = path.posix.join(nodeStage, `repair-${repairs}.md`);
         await sandbox.writeFile(repairFile, repairPrompt);
         const repairCmd = ctx.buildCommand(node, resolved, { promptFile: repairFile, model: effModel, provider: effProvider, extensionFile, skillPath }, ctx.commandOpts);
-        const repairExec = await ctx.execRunner(execSandbox, repairCmd, { ...ctx.watchdog, nodeTimeoutMs });
+        const repairExec = await ctx.execRunner(execSandbox, repairCmd, { ...ctx.watchdog, nodeTimeoutMs, onSpawn });
         result = repairExec.result;
         // Re-collect (a fresh artifact may have been rewritten) under the same serialized collect mutex.
         // In-place skips for the same reason as the first collect: the repaired artifact is already on the
@@ -750,6 +758,11 @@ export async function finishNode(
   rec.artifacts = artifacts;
   rec.issues = issues;
   rec.summary = summary;
+  // (per-node stop) The node has EXITED ⇒ any persisted live-pi pid is now STALE and must never be signalled.
+  // Remove `.pi/nodes/<id>/pid.json` on EVERY terminal verdict (the single choke point for every lane,
+  // incl. the no-pi lanes that reuse finishNode). Best-effort + absent-file-safe (a node that never persisted
+  // a pid — cloud/inmemory, or one that never spawned — simply has nothing to clear).
+  await clearNodePid(ctx.outDir, node.id);
   // AWAIT the write (was a fire-and-forget `void`): a node's terminal record must be durable on disk
   // before its lane resolves, so the halt decision + final rollup never race an in-flight write. The
   // write is serialized + atomic (see writeStatus), so awaiting here cannot deadlock parallel lanes.

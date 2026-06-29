@@ -5,11 +5,13 @@ import path from 'node:path';
 import {
   buildNodeResumeCommand,
   buildStopAction,
+  buildNodeStopAction,
   resolveNodeRunDir,
   runNodeCli,
   type NodeDeps,
+  type NodePidRecord,
 } from '../src/node.js';
-import { piSessionsDir, journalFile, piDir, runJsonFile, type Journal, type RunStatus } from '@piflow/core';
+import { piSessionsDir, journalFile, piDir, runJsonFile, nodeDir, type Journal, type RunStatus } from '@piflow/core';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // (A) buildNodeResumeCommand — the PURE argv builder (no spawn, no fs).
@@ -223,6 +225,111 @@ describe('buildStopAction — the pure pid-resolve + signal plan', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// (C-node) buildNodeStopAction — the PURE per-NODE pid-resolve + signal-PLAN (no process.kill).
+// A node's live `pi` pid is persisted to `.pi/nodes/<id>/pid.json` at spawn (and removed on finish), so a
+// PRESENT record ⇒ a LIVE host-signalable process; absent ⇒ the node is not running (finished / never
+// started / remote). This plans the GROUP SIGTERM→SIGKILL; the kill is a thin wrapper, so we assert WITHOUT
+// killing a real process.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('buildNodeStopAction — the pure per-node pid-resolve + signal plan', () => {
+  it('with a LIVE recorded pid record: returns that pgid + the SIGTERM→SIGKILL grace sequence', () => {
+    const rec: NodePidRecord = { pid: 7777, pgid: 7777, startedAt: '2026-06-28T00:00:00.000Z' };
+    const action = buildNodeStopAction({ nodeId: 'w1a', pidRecord: rec });
+    expect(action.ok).toBe(true);
+    if (!action.ok) throw new Error('unreachable');
+    // It signals the recorded GROUP (pgid), not a guessed pid — the detached node leads its own group.
+    expect(action.pid).toBe(7777);
+    expect(action.signalSequence.map((s) => s.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(action.signalSequence[0].afterMs).toBe(0);
+    expect(action.signalSequence[1].afterMs).toBeGreaterThan(0);
+  });
+
+  it('with NO pid record (node not running / finished / remote): NOT-OK, no pid to signal, actionable reason', () => {
+    const action = buildNodeStopAction({ nodeId: 'w1a', pidRecord: null });
+    expect(action.ok).toBe(false);
+    if (action.ok) throw new Error('unreachable');
+    // Must NOT carry a pid (nothing to signal) and must explain — names the node + that it is not running.
+    expect((action as { pid?: number }).pid).toBeUndefined();
+    expect(action.reason).toContain('w1a');
+    expect(action.reason.toLowerCase()).toMatch(/not running|no .*pid|finished|remote/);
+  });
+
+  it('a malformed record (no positive integer pid) is treated as ABSENT — never signals a bogus pid', () => {
+    const action = buildNodeStopAction({ nodeId: 'w1a', pidRecord: { pid: 0, pgid: 0, startedAt: 't' } });
+    expect(action.ok).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (D-node) runNodeCli --stop on a node WITH a persisted pid.json signals THAT node's group (mocked) and
+// exits 0 — a true PER-NODE stop, distinct from the per-run controllerPid path. The signal boundary is
+// mocked; we NEVER kill a real process.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('runNodeCli --stop — per-NODE stop reads .pi/nodes/<id>/pid.json (signal boundary mocked)', () => {
+  let TMP: string;
+  beforeEach(async () => {
+    TMP = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-nodestop-'));
+  });
+  afterEach(async () => {
+    await fs.rm(TMP, { recursive: true, force: true });
+  });
+
+  async function writeNodePidFile(runDir: string, id: string, rec: NodePidRecord): Promise<void> {
+    const dir = nodeDir(runDir, id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'pid.json'), JSON.stringify(rec));
+  }
+
+  it('a node WITH a persisted pid.json: signals THAT pid (SIGTERM first), exits 0, never spawns', async () => {
+    const runDir = path.join(TMP, 'run-n');
+    await fs.mkdir(piDir(runDir), { recursive: true });
+    await writeNodePidFile(runDir, 'w1a', { pid: 8484, pgid: 8484, startedAt: 't' });
+    const signals: { pid: number; signal: string }[] = [];
+    const errs: string[] = [];
+    const spawned: string[] = [];
+
+    const code = await runNodeCli(['run-n', 'w1a', '--stop'], {
+      resolveRunDir: () => runDir,
+      spawnResume: (cmd) => { spawned.push(cmd); return 0; },
+      signalProcess: (pid, signal) => { signals.push({ pid, signal }); return true; },
+      sleep: async () => {},
+      print: () => {},
+      error: (s) => errs.push(s),
+    });
+
+    expect(code).toBe(0);
+    expect(spawned).toHaveLength(0);
+    // Signalled the NODE's recorded pid (8484), NOT a run-level controllerPid (none was set).
+    expect(signals.some((s) => s.pid === 8484 && s.signal === 'SIGTERM')).toBe(true);
+    expect(errs).toHaveLength(0);
+  });
+
+  it('a node with NO pid.json and NO controllerPid: fails actionably and NEVER signals', async () => {
+    const runDir = path.join(TMP, 'run-none');
+    await fs.mkdir(piDir(runDir), { recursive: true });
+    // run.json with no controllerPid; node w9 has no pid.json.
+    const s: RunStatus = {
+      run: 'r', startedAt: 't', updatedAt: 't', done: false, ok: null,
+      durationMs: null, stage: null, totals: null, nodes: {},
+    };
+    await fs.writeFile(runJsonFile(runDir), JSON.stringify(s));
+    const signals: { pid: number; signal: string }[] = [];
+    const errs: string[] = [];
+
+    const code = await runNodeCli(['run-none', 'w9', '--stop'], {
+      resolveRunDir: () => runDir,
+      signalProcess: (pid, signal) => { signals.push({ pid, signal }); return true; },
+      print: () => {},
+      error: (s) => errs.push(s),
+    });
+
+    expect(code).not.toBe(0);
+    expect(signals).toHaveLength(0); // never guesses a pid
+    expect(errs.join('\n')).toContain('w9');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // (D) runNodeCli --stop — resolves the run dir, reads the recorded controllerPid from
 // `.pi/run.json`, signals it (mocked); a run with NO recorded pid FAILS actionably and
 // NEVER signals. The signal boundary is mocked — we NEVER kill a real process.
@@ -286,5 +393,85 @@ describe('runNodeCli --stop — signal a detached run (signal boundary mocked)',
     const msg = errs.join('\n').toLowerCase();
     expect(msg).toContain('pid'); // names the missing capability
     expect(msg).toContain('detach'); // actionable: re-run with --detach to record one
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (E) stop → resume COMPOSITION — the "stop AND resume a node" end-to-end requirement.
+// After a per-node --stop, the node's WARM SESSION under `.pi-sessions` (and the journal's recorded
+// sessionId) is UNTOUCHED, so `--resume` continues the SAME conversation. We prove: (1) --stop signals the
+// node's group and leaves the session file intact; (2) the subsequent --resume resolves to a real resume
+// command addressing that exact session. Signal + spawn boundaries are mocked — no real process, no real pi.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('stop → resume composition — a stopped node remains warm-resumable', () => {
+  let TMP: string;
+  beforeEach(async () => {
+    TMP = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-stopresume-'));
+  });
+  afterEach(async () => {
+    await fs.rm(TMP, { recursive: true, force: true });
+  });
+
+  it('--stop signals the node and leaves its .pi-sessions session intact; --resume then continues it', async () => {
+    const runDir = path.join(TMP, 'run-sr');
+    const nodeId = 'w1a';
+    await fs.mkdir(piDir(runDir), { recursive: true });
+
+    // The node ran on a local provider: it has a persisted live pid (running) AND a warm session on disk +
+    // a journal entry recording that session (what --resume keys on).
+    const nodeDirPath = nodeDir(runDir, nodeId);
+    await fs.mkdir(nodeDirPath, { recursive: true });
+    const rec: NodePidRecord = { pid: 6363, pgid: 6363, startedAt: 't' };
+    await fs.writeFile(path.join(nodeDirPath, 'pid.json'), JSON.stringify(rec));
+
+    // The warm session file pi persisted under <run>/.pi-sessions, keyed by the node id.
+    const sessionDir = piSessionsDir(runDir);
+    await fs.mkdir(sessionDir, { recursive: true });
+    const sessionFile = path.join(sessionDir, `${nodeId}.jsonl`);
+    await fs.writeFile(sessionFile, '{"role":"user","content":"produce"}\n');
+
+    const journal: Journal = {
+      version: 3,
+      runId: 'run-sr',
+      source: 'wf',
+      nodes: {
+        [nodeId]: {
+          hash: 'sha256:x', inputHashes: {}, outputHashes: {}, status: 'ok', producedAt: 't',
+          sessionId: nodeId, sessionDir,
+        },
+      },
+    };
+
+    // ── (1) STOP the node — signal boundary mocked. ──
+    const signals: { pid: number; signal: string }[] = [];
+    const stopCode = await runNodeCli([runDir, nodeId, '--stop'], {
+      resolveRunDir: () => runDir,
+      signalProcess: (pid, signal) => { signals.push({ pid, signal }); return true; },
+      sleep: async () => {},
+      print: () => {},
+      error: () => {},
+    });
+    expect(stopCode).toBe(0);
+    expect(signals.some((s) => s.pid === 6363 && s.signal === 'SIGTERM')).toBe(true);
+
+    // The stop does NOT touch the warm session — it is still byte-intact on disk, so the node stays resumable.
+    expect(await fs.readFile(sessionFile, 'utf8')).toBe('{"role":"user","content":"produce"}\n');
+
+    // ── (2) RESUME the stopped node — it resolves to a real resume command addressing THIS session. ──
+    const spawned: string[] = [];
+    const resumeCode = await runNodeCli([runDir, nodeId, '--resume'], {
+      resolveRunDir: () => runDir,
+      loadJournal: async () => journal,
+      spawnResume: (cmd) => { spawned.push(cmd); return 0; },
+      print: () => {},
+      error: () => {},
+    });
+    expect(resumeCode).toBe(0);
+    expect(spawned).toHaveLength(1);
+    // The resume RESUMES this node's stored session by id (warm continuation), under the same session dir.
+    expect(spawned[0]).toContain('--session');
+    expect(spawned[0]).toContain(nodeId);
+    expect(spawned[0]).toContain(sessionDir);
+    expect(spawned[0]).not.toContain('--session-id'); // resume, not create
   });
 });

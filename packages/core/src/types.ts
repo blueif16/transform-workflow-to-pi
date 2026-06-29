@@ -527,6 +527,17 @@ export interface ExecOpts {
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
   /**
+   * SPAWN HOOK — fired ONCE, synchronously, with the child's OS pid the instant the process exists (per-
+   * node stop seam). The provider spawns the command DETACHED (its own process-group leader), so the pid
+   * doubles as the PGID — a separate CLI process can later signal the whole group via `kill(-pid)`. The
+   * runner persists this pid to `.pi/nodes/<id>/pid.json` so `piflowctl node <run> <id> --stop` can reach
+   * a specific node's live `pi`. Optional + additive: a provider that never spawns a host process (cloud)
+   * or a caller that ignores it is unchanged. NEVER fired with an undefined pid (a spawn that produced no
+   * pid skips the call). The host pid is only meaningful where the process runs on THIS host (in-place/
+   * local/inmemory); a cloud sandbox's process lives in the VM, so the runner does not persist it there.
+   */
+  onSpawn?: (pid: number) => void;
+  /**
    * Cancellation. When this aborts, the provider MUST terminate the command and any process group it
    * spawned (SIGTERM→SIGKILL) — the runner's watchdog drives this on a node-timeout/stall. A provider
    * that ignores it falls back to the runner's liveness timer (which can orphan the child).

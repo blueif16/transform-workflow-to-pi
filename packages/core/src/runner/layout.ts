@@ -55,6 +55,56 @@ export const nodeMcpFile = (run: string, id: string): string =>
 export const nodeEventsFile = (run: string, id: string): string =>
   path.join(nodeDir(run, id), 'events.jsonl');
 
+// ── (per-node stop) the node's LIVE-pi pid record — the home a `node <run> <id> --stop` reads. ──────────
+// When a node runs on a HOST-SIGNALABLE (in-place/local/inmemory) provider, the runner persists the spawned
+// pi's pid here at spawn (via ExecOpts.onSpawn) and REMOVES it on finish — so the file existing means a LIVE
+// host process is signallable, and its absence means the node is not running (finished / never started /
+// remote). A separate CLI signals the recorded GROUP (pid == pgid, the detached leader) SIGTERM→SIGKILL. A
+// CLOUD node's process lives in the VM (no host pid to signal) ⇒ the runner writes NO file there.
+
+/** `${run}/.pi/nodes/<id>/pid.json` — the node's live-pi pid record (present ⇔ a host-signalable live process). */
+export const nodePidFile = (run: string, id: string): string => path.join(nodeDir(run, id), 'pid.json');
+
+/** The on-disk shape of `pid.json`: the detached child's pid (== pgid, the group leader) + when it spawned. */
+export interface NodePidRecord {
+  pid: number;
+  /** The process-GROUP id `--stop` signals via `kill(-pgid)`. Equals `pid` (the detached child leads its group). */
+  pgid: number;
+  startedAt: string;
+}
+
+/**
+ * Persist a node's live-pi pid to `.pi/nodes/<id>/pid.json` ATOMICALLY (tmp+rename, mirroring writeStatus),
+ * so a concurrent `--stop` reader never sees a torn record. Records `{pid, pgid:pid, startedAt}` — pid==pgid
+ * because the child is spawned detached (its own group leader). Best-effort: a write failure is swallowed (a
+ * missing pid file only costs stoppability, never the run). mkdir -p the node dir first.
+ */
+export async function writeNodePid(run: string, id: string, pid: number): Promise<void> {
+  try {
+    const dir = nodeDir(run, id);
+    await fs.mkdir(dir, { recursive: true });
+    const rec: NodePidRecord = { pid, pgid: pid, startedAt: new Date().toISOString() };
+    const finalPath = nodePidFile(run, id);
+    const tmpPath = path.join(dir, `.pid.${process.pid}.tmp`);
+    await fs.writeFile(tmpPath, JSON.stringify(rec));
+    await fs.rename(tmpPath, finalPath);
+  } catch {
+    /* best-effort — a missing pid file only costs per-node stoppability, never the run */
+  }
+}
+
+/**
+ * Remove a node's `pid.json` (the node exited ⇒ the pid is STALE and must never be signalled). Best-effort:
+ * an absent file is fine (already gone / never written). Called from `finishNode` on every terminal verdict.
+ */
+export async function clearNodePid(run: string, id: string): Promise<void> {
+  try {
+    await fs.rm(nodePidFile(run, id), { force: true });
+  } catch {
+    /* already gone — fine */
+  }
+}
+
 // ── (G5) human-checkpoint marker/reply files — per-run data in the RUN dir (SDK/data boundary). ──
 // Each checkpoint node owns a nodeId-scoped pair under `.pi/checkpoints/`: the runner WRITES `<id>.json`
 // (the question), a courier (GUI/console/TUI) WRITES `<id>.reply.json` (the answer). nodeId-scoped so ≥2

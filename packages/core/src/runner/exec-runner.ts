@@ -28,6 +28,13 @@ export interface ExecWatchdogOpts {
   stallMs: number;
   /** ms to wait after SIGTERM before SIGKILL (the kill grace). */
   killGraceMs: number;
+  /**
+   * (per-node stop) Forwarded VERBATIM into `sandbox.exec`'s `ExecOpts.onSpawn` — fired once with the
+   * spawned child's pid. The runner threads a callback here that persists the node's pid to
+   * `.pi/nodes/<id>/pid.json` so a separate `--stop` can signal it. Optional/additive: an injected exec
+   * runner that ignores it (a test) is unchanged, and the default just relays it to the sandbox.
+   */
+  onSpawn?: (pid: number) => void;
 }
 
 /** The checkpoint wait seam — polls for a reply until `accept` passes or the deadline elapses (G5). */
@@ -85,7 +92,8 @@ export const defaultExecRunner: ExecRunner = (sandbox, cmd, opts) =>
       : (setInterval(() => {}, 1 << 30) as NodeJS.Timeout); // inert sentinel cleared in settle()
     const touch = (): void => { lastEventAt = Date.now(); };
     sandbox
-      .exec(cmd, { signal: ac.signal, onStdout: touch, onStderr: touch })
+      // Relay onSpawn through to the sandbox so the runner's pid-persist fires the instant the child exists.
+      .exec(cmd, { signal: ac.signal, onStdout: touch, onStderr: touch, onSpawn: opts.onSpawn })
       .then((result) => settle(result))
       .catch((err) => settle({ stdout: '', stderr: String(err), code: 1 }));
   });

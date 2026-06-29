@@ -31,4 +31,23 @@ describe('InMemorySandbox lifecycle (create → stage → exec → collect → d
   it('a not-yet-implemented provider rejects clearly', async () => {
     await expect(new NotImplementedProvider('daytona').create()).rejects.toThrow(/not implemented/);
   });
+
+  // (a) onSpawn surfaces the child pid — the seam per-node stop persists. The child is spawned DETACHED
+  // (its own process-group leader, so pid doubles as pgid), so a separate CLI can later signal `-pid`.
+  it('exec fires onSpawn(pid) with the real, live child pid (detached group leader)', async () => {
+    const sb = await InMemorySandbox.create({ readScope: [], outputDir: 'out', workdir: '.' });
+    let spawnedPid: number | undefined;
+    // The exec resolves only after the child closes, so the pid we capture WAS a real running process.
+    const r = await sb.exec('echo hi', { onSpawn: (pid) => { spawnedPid = pid; } });
+    expect(r.code).toBe(0);
+    expect(typeof spawnedPid).toBe('number');
+    expect(spawnedPid).toBeGreaterThan(0);
+    // It is the OS pid of a real process: process.kill(pid, 0) probes liveness/existence. The child has
+    // since exited, so signalling errors — but with ESRCH (no such process), NOT EINVAL/EPERM on a bogus
+    // pid. A NaN/0/undefined pid would not even reach ESRCH. (We never KILL it — signal 0 only probes.)
+    expect(() => process.kill(spawnedPid as number, 0)).toThrow(
+      expect.objectContaining({ code: expect.stringMatching(/ESRCH|EPERM/) }),
+    );
+    await sb.dispose();
+  });
 });
