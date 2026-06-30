@@ -64,7 +64,7 @@ DECLARED a unit. Which source answers which question (validated on piflow 2026-0
 | Question | Authoritative source | NOT |
 |---|---|---|
 | Which slices exist NOW? (membership) | codegraph: files **reachable from the live entry points** (each package `index.ts`/`bin` + each app `main`) | git history — it remembers dead concerns forever |
-| How important? (ranking) | codegraph: current cross-file **centrality** (fan-in) | git cumulative commit count (churn ≠ importance) |
+| How important? (ranking) | codegraph: current cross-file **centrality** (fan-in) | git CUMULATIVE commit count (over-weights historically-troubled-but-now-dead code; cf. CodeScene) |
 | What's it named? | the commit **scope** / spec that last touched the cluster | — |
 | Live or dormant? | git **recency** (last-touched) per slice | git **frequency** |
 
@@ -92,8 +92,13 @@ scope-name + recency-liveness — on **TS/SDK** code (computed clean above). ⚠
 codegraph traces TS import/call graphs but **not React/JSX composition** — every `gui/src/components/*` showed
 false-"unreachable" (gui centrality 4); for frontends, root from the app `main`/html and fall back to
 directory-as-cluster, and remember reachability is only as complete as the ROOT SET (a missing entry = false
-dead-code). 🔬 NOT-YET: sub-directory community detection, auto-split of the big buckets, auto-retire (today =
-human-gated flag).
+dead-code). The SOTA audit (`sota-verification-2026-06-30.md` P2) generalizes this: reachability under-counts ALL
+dynamic/framework-wired dispatch (DI, glob-import, reflection, lifecycle hooks), not just JSX — so prefer a
+confidence tier (safe / likely / **review**) over a binary in/out. And a NUANCE on liveness: only CUMULATIVE
+frequency is the rear-view trap — *recent* churn among already-LIVE slices is a positive importance signal (churn is
+the best-validated defect-risk predictor, Nagappan & Ball ICSE'05), so use recency as a liveness/importance signal,
+never as a negative. 🔬 NOT-YET: sub-directory community detection, auto-split of the big buckets, auto-retire (today
+= human-gated flag).
 
 **Repo-agnostic:** every step reads only manifests + codegraph + git — no piflow-specific knowledge — so the same
 procedure stands up the slice set for ANY repo; the slices live in that repo's `.agents/okf/` (the SDK stays
@@ -139,8 +144,11 @@ first. What is BUILT today vs DESIGNED (record-only-proven):
 
 So the answer to "accurate to paragraph or just filename?": **today the gate is symbol-accurate — file + `line∈span`
 for definition anchors, symbol-in-file for call-sites — strictly more than filename, but NOT yet paragraph.**
-Paragraph-accuracy is the method-body-hash rung (E4), deliberately advisory/post-merge because it is the layer
-most prone to false positives and needs tree-sitter. Why the ladder and not one rung: a slice like `runner` spans
+Paragraph-accuracy is the method-body-hash rung (E4), deliberately advisory/post-merge for COST/CADENCE reasons —
+it carries tree-sitter parse cost and a body change does NOT strictly imply the prose is now wrong (a behavior-
+preserving refactor re-triggers it). The AST-hash itself is a CLEAN, formatting-insensitive signal, not a noisy one
+(corrected per the SOTA audit — `sota-verification-2026-06-30.md` P4; docdrift/sem/symtrace all use it as a *low*-FP
+detector). Why the ladder and not one rung: a slice like `runner` spans
 27 files — a filename-level trigger would re-flag it on nearly every commit (cry-wolf), whereas a method-body hash
 over its ~8 anchored functions fires only when the spine it describes actually shifts. **Coarse granularity is why
 a drift gate gets ignored; matching granularity to cadence is what keeps it trusted.** Maintenance IS partly
@@ -176,7 +184,17 @@ wrong). The hand-trace in §1 is our **ground truth** for base-agent-types. Stat
   for tier-1 rather than extend this. The "run --write" advice is wrong for a stale curated anchor (re-author it).
 - [ ] **E4 · Tier-1 granularity.** file-level `slice@sha` vs tree-sitter **method-body hash** (docdrift).
   Formatting-only change vs semantic change to `mergePreset`. **Win:** method-body hash fires ONLY on the
-  semantic change (fewer false re-derive triggers).
+  semantic change (fewer false re-derive triggers). SOTA note (audit P4): compute the hash at the AST-NODE level with
+  incremental subtree reuse (symtrace BLAKE3 / tree-sitter `InputEdit`), NOT a from-scratch pass — cheaper than the
+  current ~30s `--check`.
+- [ ] **E8 · Stable-symbol anchors (the headline SOTA upgrade — audit P5).** Anchor each card entry on a STABLE
+  symbol id (SCIP/LSIF descriptor, or codegraph's qualified name) and DERIVE `:line` as a re-rendered hint, instead of
+  storing+validating `file:line`. **Why:** line numbers are the fragile part — the whole `line ∈ span` gate exists to
+  absorb line drift a symbol id never suffers; SCIP was designed expressly to "limit the blast radius of off-by-one
+  indexer bugs," and its alias-chain rename detection beats our `symbol-present-in-file` fallback (free rename
+  tracking). **Win:** zero line-drift near-FPs + rename detection, measured against the current `line ∈ span` gate on a
+  refactor that moves a symbol's lines without changing its body. Mature tooling exists (scip-typescript/python/java,
+  rust-analyzer emits SCIP natively).
 - [ ] **E5 · Tier-2 dependency.** change an UPSTREAM type `mergePreset` depends on (outside the slice's seeds);
   run `codegraph impact`. **Win:** the base-agent-types slice is flagged — proving git-log-of-seeds would miss it
   and the graph catches it.
