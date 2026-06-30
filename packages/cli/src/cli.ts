@@ -14,7 +14,7 @@
 // NO run model of their own — the shared reader VERIFIES artifacts on disk (verified, not trusted).
 
 import { runLogsCli, ensurePiflowHome } from '@piflow/core';
-import { runNewCli, runAddNodeCli } from './scaffold.js';
+import { runNewCli, runAddNodeCli, runMemoryCli } from './scaffold.js';
 import { runModelCli } from './model.js';
 import { runStatusCli } from './status.js';
 import { runWatchCli } from './watch.js';
@@ -30,6 +30,7 @@ const HELP = `piflowctl — drive + observe a pi-flow run over the .pi/ run layo
 USAGE
   piflowctl new     <templateDir> [flags]   scaffold meta.json + the nodes/ dir (then add-node + Write prose)
   piflowctl add-node <templateDir> --id <id> [flags]  emit one schema-valid node.json (prose is yours)
+  piflowctl memory  scaffold <templateDir>  seed the memory layer (template + per-node memory.md/code-map.md)
   piflowctl run     <templateDir> [--run <id>] [flags]  drive a template run (real or --dry-run)
   piflowctl node    <run> <nodeId> --resume [-m "<msg>"]  warm-resume a node's stored pi session (--stop too)
   piflowctl inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
@@ -98,6 +99,13 @@ ADD-NODE
   --programmatic  a no-pi node (omits prompt/tools; its declarative ops ARE the node).
   Emits/overwrites node.json from the flags; NEVER touches nodes/<id>/prompt.md (yours to Write).
 
+MEMORY
+  scaffold <templateDir>  seed the memory layer — the template's memory.md (system reconcile summary) +
+                each node's memory.md (Leg A: standing behavior + failure lessons) and code-map.md (Leg B:
+                Tier-0 OKF slice of the product code it touches). CREATE-IF-ABSENT — never clobbers curated
+                files. new/add-node seed these automatically; use this to backfill an older template.
+                These files are OPTIMIZER-FACING (the Hermes fixer reads+updates them) — NEVER prompt-injected.
+
 INSPECT
   <templateDir> an authored template/ dir. Compiles it and prints each node's RESOLVED view —
                 sandbox (provider/workspace/read/write/output) · tools (allow/deny + resolved
@@ -151,6 +159,9 @@ async function main(): Promise<void> {
       break;
     case 'add-node':
       await runAddNodeCli(rest);
+      break;
+    case 'memory':
+      await runMemoryCli(rest);
       break;
     case 'run':
       await runRunCli(rest);
