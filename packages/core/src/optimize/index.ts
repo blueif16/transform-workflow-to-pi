@@ -24,3 +24,9 @@ export type {
 } from './driver.js';
 export { writeStagingManifest, adoptFile } from './land.js';
 export type { StageOpts } from './land.js';
+
+// The held-out replay+scoring harness (v1.5 §5.1) — the KEYSTONE that makes baseScore/replayScore REAL off a
+// product oracle. Product-agnostic: folds whatever verify report the injected oracle emits (via readVerifyReport),
+// enforcing abstain→null and VAL-hygiene. The product (game-omni) supplies oracle · mineTask · copyScope.
+export { makeReplayStages } from './replay.js';
+export type { CheckableTask, ReplayOracle, MineTask, CopyScope, ReplayDeps, ReplayStages } from './replay.js';
