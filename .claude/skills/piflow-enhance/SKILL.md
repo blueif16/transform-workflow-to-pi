@@ -5,18 +5,19 @@ description: >-
   a recurring finding, or human feedback into ONE atomic, generalizing change via capture→route→edit→verify→
   approve→commit, never a one-off hack. Owns the criteria fixture (the per-node quality bar) and Companion-Mode
   judging. Use to "improve a wave/node", "fix a recurring failure in the pipeline", "the generated output is
-  wrong — fix the system not the case", "edit the skill vs edit the chain". To CREATE a workflow use piflow-init;
-  to RUN one use piflow-start. STATUS — STUB: the canonical method is the hermes-skill-system skill; this routes
-  to it and pins the piflow-specific precedence.
+  wrong — fix the system not the case", "edit the skill vs edit the chain", "score / triage / fix a finished
+  run", "run the optimize loop", "auto-improve a node from its trace". To CREATE a workflow use piflow-init;
+  to RUN one use piflow-start. The canonical capture→route→edit method is the hermes-skill-system skill; this
+  COMPOSES it and pins the piflow-specific precedence + the autonomous SCORE→TRIAGE→FIX→GATE→LAND loop.
 ---
 
-# Pi Flow · enhance — improve a running workflow  ·  STUB
+# Pi Flow · enhance — improve a running workflow
 
-> **This is a scope-declaring stub, not the finished skill.** The canonical improvement method already exists —
-> it is the **`hermes-skill-system`** skill (capture → route → edit → verify → human-approve → commit → record).
-> This skill exists so the lifecycle has a clean IMPROVE entry; do NOT hand-roll a parallel method here. Load
-> `hermes-skill-system` and follow it; this stub only pins the piflow-specific bindings below.
-> (Paths are relative to the piflow repo root, `~/Desktop/piflow`.)
+> **The canonical improvement *method* is the `hermes-skill-system` skill** (capture → route → edit → verify →
+> human-approve → commit → record). Load it first for any by-hand edit; this skill COMPOSES it (it does NOT
+> fork that method) and adds two piflow-specific things hermes doesn't know: the precedence rules below, and
+> the AUTONOMOUS optimize loop (`piflowctl optimize …`) that turns a finished run's trace into staged,
+> gate-proven node edits. (Paths are relative to the piflow repo root, `~/Desktop/piflow`.)
 
 ## What this skill will own (the IMPROVE half of the lifecycle)
 A workflow is a living system; a flaw, a recurring finding, or user feedback on a run is a trigger to evolve it.
@@ -49,13 +50,112 @@ When you're babysitting a run, the orchestrator + human ARE the verifier: judge 
 GOLD sample + its criteria-fixture entry as it lands, fix at the canonical owner, rerun the suffix. Full
 procedure: piflow-init → "Companion Mode (dev-time)".
 
+## The autonomous optimize loop (SCORE → TRIAGE → FIX → GATE → LAND)
+Companion Mode is the *human* improvement loop; this is its *autonomous* sibling — it reads a FINISHED run's
+`.pi` trace + the product's recorded verify reports, scores every node, triages each failure into one of four
+buckets, has a context-isolated fixer edit a CANDIDATE COPY, and lets a deterministic gate decide. It is the
+hermes loop with the capture+route steps MECHANIZED and the edit step BOUNDED + MEASURED — same law (one
+generalizing change, the human is the eye, the oracle is immutable), executed as a command instead of by hand.
+
+**This loop IS the production path. NEVER write a throwaway replay/fix/score script** — every step below is a
+`piflowctl` subcommand or a product binding module that the CLI dynamic-imports. Ad-hoc bash here re-improvises
+a tested seam and bypasses the gate (the whole point of the loop), so it is forbidden. (And as everywhere in
+piflow: use the global `piflowctl` bin, never `node …/packages/cli/dist/cli.js`.)
+
+### The two commands (copy-paste exact)
+**1 · SCORE + TRIAGE (read-only, lands nothing) — always run this first to see the worklist:**
+```bash
+piflowctl optimize <rundir> [--json]        # default: the rendered routing markdown (the auto HERMES-ROUTING.md)
+                                            # --json:  the raw { run, scores, defects } worklist for a driver
+```
+**2 · FIX → GATE → LAND (stages a manifest; lands NOTHING live):**
+```bash
+piflowctl optimize --fix <rundir> --binding <module> \
+  [--node <substr>]        # scope the worklist to ONE node (the live oracle is expensive — build+browser per
+                           #   candidate; a targeted first run is both the cost bound and the safety scope)
+  [--watch] [--watch-json] # stream the FIX→GATE→LAND events live (see the 9-event order below); --watch-json = JSONL
+  [--auto-adopt]           # default OFF — see the OUTCOME-gated accept rule; without it, EVERY win only STAGES
+  [--staging-dir <d>]      # where the manifest lands (default: <rundir>/optimize/staging/manifest.json)
+  [--edit-budget n]        # max fixer ATTEMPTS this round (the "learning rate"/cost cap; default 4)
+  [--token-budget n]       # cumulative token cap; the driver stops before the next attempt once reached
+```
+
+### The FIX → GATE → LAND method (what the driver guarantees)
+The model PROPOSES + SCORES; deterministic CODE decides, bounds, and lands. The control flow is straight-line:
+- **Candidate-COPY only — the loop NEVER mutates the live file.** The fixer edits a candidate copy
+  (`prepareCandidate` → `candidateRef`); the scorer reads the copy; the gate compares copy-vs-base. The live
+  file is touched ONLY by the separate adopt step (below), which backs it up first (`<basename>.bak`).
+- **Strict-improvement gate on the HELD-OUT VAL slice.** Accept = `≥1 edit applied AND candidate > base` on a
+  val slice the fixer never saw — this strict bar (not the round count) is what stops self-edit DRIFT
+  (autonomous self-editing measured +0.0pp WITHOUT it). An unmeasurable/abstained score CANNOT auto-accept →
+  it routes to the human. FUNCTIONALITY carries a STRICTER gate: a code edit's higher blast radius means the
+  product's OWN build/tests/typecheck must ALSO pass, not just a score bump.
+- **The four-way triage buckets** (ascending blast radius; default to the lowest when unsure — corpus
+  protection): **LAPSE** (self-originating structural slip, no code signal) · **SKILL** (a recurring lapse →
+  edit the node's SKILL; needs the cross-run recurrence signal) · **FUNCTIONALITY** (a clean node whose
+  checkable Tier-1 outcome failed → the product CODE is wrong) · **ARCH** (the failure originated upstream →
+  route UP to reconcile). ARCH always takes the heavyweight human gate.
+- **STAGING → manifest → human-adopt seam (adopt is a SEPARATE step).** A round writes a deterministic
+  `manifest.json` (per-record: node · bucket · decision · gate reason/delta/landPolicy). It lands nothing.
+  Physical adoption — backup-then-overwrite the live file from a candidate copy — is the explicit, reversible
+  follow-up the human runs after reading the manifest. "The loop never mutates the live file" is the invariant.
+
+### The OUTCOME-gated accept rule (when may a fix land itself?)
+`--auto-adopt` is **default OFF**, and even with it ON it only adopts edits the gate marks `auto-adopt-eligible`:
+- **Auto-adopt ONLY on deterministic Tier-0/1 signals** — an outcome-gated bucket (LAPSE/SKILL/FUNCTIONALITY)
+  whose candidate strictly beat base on a MEASURED val slice (FUNCTIONALITY also passing the product build).
+- **Judgment edits STAGE for the human** — ARCH (structural), and any edit whose score was unmeasurable /
+  abstained / judge-gated, always stage. Never let a judge-gated or abstained score auto-land.
+
+### Authoring a product binding (`{ oracle, copyScope, fixer }`)
+The LIVE stages cannot live in `@piflow/core` (it is product-agnostic — see CLAUDE.md "Data & SDK boundaries"),
+so each product ships ONE binding module that the CLI dynamic-imports (`--binding <module>`; a local path or a
+package specifier). It MUST export three functions; the CLI validates them on load:
+- **`oracle`** — re-verify a candidate build → a raw verify report (game-omni: `runMilestoneVerify2` + `npm
+  build` + the browser). This is the held-out scorer.
+- **`copyScope`** — copy the node's editable scope to a candidate dir (the minimal owns/readScope set + rebuild).
+- **`fixer`** — the context-isolated `claude -p` that edits the candidate copy per defect bucket. Its model
+  comes from the **deep** tier of `~/.piflow/model-tiers.json` (the strongest model authors the fix). It is
+  **MEASURED, not trusted** — the gate decides whether its edit lands; a no-op or non-improving edit is
+  discarded and never re-proposed.
+- (optional `mineOpts` — customize the default trace miner's node→milestone map / val·train split.)
+
+**game-omni is the reference binding** — `packages/verify/optimize/` (in the game-omni repo, NOT in
+`@piflow/core`): `scope.mjs` (copyScope), `binding-live.mjs` (live oracle+fixer), `binding-dry.mjs` (a
+no-model dry binding for wiring tests). Read it before authoring a new product's binding; don't reinvent the shape.
+
+### ANTI-AD-HOC rules (absolute — why first, then the rule)
+- **A throwaway script bypasses the gate that exists to stop drift → NEVER write one.** `piflowctl optimize
+  --fix` IS the production path; if you reach for `node replay.mjs` or a bespoke score/fix loop, STOP — extend
+  the binding instead.
+- **A live-edited file has no backup and no gate record → manifests are STAGED, never live-edited.** Read the
+  manifest, then run the explicit adopt step; never hand-patch the live file the loop proposed against.
+- **A mutable oracle is reward-hackable → the oracle / verify harness / criteria fixture is IMMUTABLE.** A fix
+  changes real product behavior so the held-out oracle passes; it NEVER changes the oracle, the verify checks,
+  or the criteria fixture to make a candidate look better.
+- **Injecting the bar teaches-to-the-test → NEVER inject the criteria fixture into a node prompt.** It is a
+  JUDGING reference only; putting it in the prompt voids the clean-room signal the whole loop depends on.
+
+### Self-check (a downstream agent must pass this before claiming the loop ran)
+- Name the exact fix command WITH live monitoring: `piflowctl optimize --fix <rundir> --binding <module>
+  --watch`.
+- Recite the 9-event order `--watch` streams, in order:
+  **`triaged → candidate-prepared → fixer-started → fixer-trace* → fixer-done → scored → gated → landed →
+  stopped`** (`fixer-trace*` repeats per fixer step).
+- Confirm: no `sleep`/`tail -f`/throwaway script anywhere; the live file was never edited (only a staged
+  manifest, adopted as a separate backed-up step); the oracle/criteria fixture was untouched.
+
 ## Where the material is (read these — do not duplicate them here)
 - **`hermes-skill-system`** skill — the canonical capture→route→edit→verify→approve→commit loop + the
   node-validation loop (`references/node-validation-loop.md`). **This is the method; load it first.**
 - piflow-init → "The laws" + "Designing a node's I/O" — the piflow precedence + the I/O-map reconciliation rule.
+- piflow-start → "Monitor & diagnose live" — the watch/status/telemetry surface the optimize loop's `--watch`
+  reuses; the run-monitoring rules (no `sleep`/`tail` polling) apply identically here.
 - `docs/design/` (this repo) — the design canon, when an improvement is an architectural change not a wave edit.
 
-## When this stub is filled in
-Lift the piflow-specific precedence + the criteria/map maintenance into a self-contained skill here that
-*composes* `hermes-skill-system` (don't fork its method). Until then: load `hermes-skill-system`, apply the
-precedence above, and the human approves before anything lands.
+## Which loop to reach for
+- A spotted flaw / feedback / an architectural change → the **hermes by-hand loop** (capture→route→edit) +
+  the precedence above; the human approves before anything lands.
+- A FINISHED run with measurable per-node outcomes → the **autonomous optimize loop** (`piflowctl optimize
+  [--fix]`) — it mechanizes capture+route and bounds+measures the edit, staging a gate-proven manifest.
+Both obey one law: ONE generalizing change, an IMMUTABLE oracle, and the human is the eye on what lands.
