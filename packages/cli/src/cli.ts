@@ -24,6 +24,7 @@ import { runNodeCli } from './node.js';
 import { runInspectCli } from './inspect.js';
 import { runTelemetryCli } from './telemetry.js';
 import { runOptimizeCli } from './optimize.js';
+import { runOptimizeFixCli } from './optimize-fix.js';
 import { runGuiCli } from './gui.js';
 
 const HELP = `piflowctl — drive + observe a pi-flow run over the .pi/ run layout
@@ -44,6 +45,9 @@ USAGE
   piflowctl optimize <rundir> [--json] [--archetype <n>]  out-of-band Score + Triage of a FINISHED run:
                                             folds Tier-0 (telemetry) × Tier-1 (verify outcome) → the
                                             four-way (LAPSE/SKILL/FUNCTIONALITY/ARCH) worklist. Read-only.
+  piflowctl optimize --fix <rundir> --binding <module> [--auto-adopt] [--staging-dir <d>] [--edit-budget n]
+                                            drive FIX→GATE with a PRODUCT binding (oracle/copyScope/fixer);
+                                            strict-improvement gate on a candidate copy → STAGES a manifest.
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
   piflowctl model   [list | set <tier> <modelId> | activate | deactivate]  the model-tier config
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
@@ -189,7 +193,9 @@ async function main(): Promise<void> {
       await runTelemetryCli(rest);
       break;
     case 'optimize':
-      await runOptimizeCli(rest);
+      // `--fix` routes to the FIX→GATE→LAND driver (writes a staging manifest); bare `optimize` is read-only.
+      if (rest.includes('--fix')) await runOptimizeFixCli(rest);
+      else await runOptimizeCli(rest);
       break;
     case 'logs':
       await runLogsCli(rest);
