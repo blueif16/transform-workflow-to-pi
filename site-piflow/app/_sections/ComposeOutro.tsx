@@ -65,10 +65,9 @@ const WWW = (
   </svg>
 );
 
-// TODO: confirm the two URLs marked below (GitHub is the live profile).
 const SOCIAL_GH = "https://github.com/blueif16";
-const SOCIAL_LI = "#";
-const SOCIAL_WWW = "#";
+const SOCIAL_LI = "https://www.linkedin.com/in/shiran-wang-2b2478338";
+const SOCIAL_WWW = "https://me.infinityopus.com/";
 
 // Social presence — bare icon glyphs rendered INLINE in the closing sentence
 // (no "find me on …" prose, no chips). Self-colored ink-muted so they stay live
