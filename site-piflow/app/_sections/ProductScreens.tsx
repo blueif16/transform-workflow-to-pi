@@ -259,6 +259,12 @@ export default function ProductScreens() {
         pin: true,
         pinSpacing: true,
         anticipatePin: 1,
+        // This pin's spacer shifts EVERY trigger below it (the #start handoff,
+        // the #layers morph) down by one viewport. Those siblings aren't inside
+        // the pin, so ScrollTrigger can't auto-compensate — it must refresh this
+        // pin FIRST so the spacer exists before they measure. Without it they
+        // anchor one viewport too high and silently mis-fire.
+        refreshPriority: 1,
         onEnter: () => enter(0), // arrived scrolling down → first panel
         onEnterBack: () => enter(n - 1), // came back up from below → last panel
         onLeave: () => obs.disable(),
