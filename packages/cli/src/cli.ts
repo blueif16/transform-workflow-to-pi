@@ -21,6 +21,7 @@ import { runClaudeCodeCli } from './claude-code.js';
 import { runStatusCli } from './status.js';
 import { runWatchCli } from './watch.js';
 import { runExtractCli } from './extract.js';
+import { runSchemaCli } from './schema.js';
 import { runRunCli } from './run.js';
 import { runNodeCli } from './node.js';
 import { runInspectCli } from './inspect.js';
@@ -42,6 +43,7 @@ USAGE
   piflowctl node    <run> <nodeId> --resume [-m "<msg>"]  warm-resume a node's stored pi session (--stop too)
   piflowctl inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
   piflowctl extract <templateDir>           free DAG preview (node count + parallel lanes; no model)
+  piflowctl schema  [node|meta|workflow]    print the SDK's machine-readable authoring JSON Schema
   piflowctl status  <rundir> [--every <s>]  per-node table + stage/rollup (verified on disk)
   piflowctl watch   <rundir> [--notify]     silent sentinel — one line on done / fail / dead-stall
   piflowctl telemetry <rundir> [nodeId] [--watch] [--verbose] [--json]  agent-facing digest:
@@ -142,6 +144,13 @@ INSPECT
 EXTRACT
   <templateDir> an authored template/ dir. Prints stages + parallel lanes. FREE (no model).
 
+SCHEMA
+  [node|meta|workflow]  print the @piflow/core JSON Schema (draft 2020-12) for that file — the
+                machine-readable AUTHORING CONTRACT an agent targets when emitting node.json /
+                meta.json / workflow.json. Default 'node' (the node-authoring schema, with rich
+                per-field descriptions). The output IS the SDK's own schema (re-exported, never
+                copied), so it can never drift. An unknown selector errors with the valid ones.
+
 STATUS
   <rundir>      a run dir holding .pi/run.json. Default '.'.
   --every <s>   refresh in place every <s>s (live dashboard); omit for one-shot.
@@ -209,6 +218,9 @@ async function main(): Promise<void> {
       break;
     case 'extract':
       await runExtractCli(rest);
+      break;
+    case 'schema':
+      runSchemaCli(rest);
       break;
     case 'status':
       await runStatusCli(rest);
