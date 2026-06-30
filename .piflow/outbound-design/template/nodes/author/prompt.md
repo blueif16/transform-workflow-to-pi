@@ -17,9 +17,10 @@ a loadable piflow template under your owned `out/` scope, then prove it loads.
    with the flags that encode the design: `--dep` for each edge, `--artifact` for each required output,
    `--owns` for write authority (keep parallel siblings DISJOINT), `--read` for read scope, `--tool` for each
    tool the node needs, and `--on-fail block` on every node that PRODUCES an artifact.
-3. After scaffolding each node, **Write its `nodes/<id>/prompt.md`** — the scaffolder never writes prose. Each
-   prompt = the node's role + its specific task + an output spec + a self-check. If a node maps to one of the
-   six base agents, prepend that agent's role body and add its tools (the by-hand mergePreset binding).
+3. After scaffolding each node, **Write its `nodes/<id>/prompt.md`** — the scaffolder never writes prose. If a
+   node maps to one of the six base agents, bind it with `--agent-type <base>` (or set `agentType` + add its
+   tools); Write into `prompt.md` ONLY the node's TASK — the base agent's role body is INHERITED at render, so
+   never paste it. Each task prompt = the specific task + an output spec + a self-check.
 4. `workflow.json` and stages are GENERATED — never hand-author them.
 
 ### Output

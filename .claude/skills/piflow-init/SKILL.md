@@ -354,12 +354,13 @@ them, and where an edit must be reconciled against the rest. For every node:
   author assigns a node `agentType: <id>` (e.g. `market-research`), EXPAND it at author time. **The scaffolder
   does this for you:** `piflowctl add-node --agent-type <id>` folds the preset's tools + skill + the OBSERVABLE
   `agentType` label into `node.json` via the real `mergePreset` (the GUI then renders the base agent the node
-  INHERITS from; you still `Write` the role-prompt into `prompt.md` — the scaffolder never touches prose). To
-  expand BY HAND instead — do not treat the
-  name as magic: read `~/.piflow/agents/<id>.md`, call `mergePreset` (`@piflow/core`) to fold its base tools +
-  role-prompt INTO the node's concrete `tools`/`prompt` (additive: the node ADDS tools and its task is appended
-  to the role), keep `agentType` as the branding LABEL (the GUI renders its icon via observe), and choose the
-  node's `model`/`tier` yourself — a preset NEVER sets a model. Unknown `<id>` ⇒ HALT, never invent one.
+  INHERITS from). **The role-prompt is inherited BY REFERENCE at render** — keyed off `agentType`,
+  single-sourced from `~/.piflow/agents/<id>.md` (role first, the node's TASK after, applied exactly once by
+  `renderRealizedPrompt`) — so you `Write` into `prompt.md` ONLY the node's TASK, NEVER the role body; the
+  scaffolder still never touches prose. To bind BY HAND instead — do not treat the name as magic: add the
+  preset's base `tools` to the node and set `agentType: <id>` (the role-prompt then comes free at render; the
+  GUI renders the base agent's icon via observe), and choose the node's `model`/`tier` yourself — a preset NEVER
+  sets a model. Unknown `<id>` ⇒ HALT, never invent one.
   Presets are an optional convenience, not a lock-in — skipping them and wiring `tools`/`prompt`/`model` by
   hand is the common path. **Full contract + the seed presets + how to author a new one:**
   `references/agent-presets/README.md`. On init, materialize any missing seed into `~/.piflow/agents/`
