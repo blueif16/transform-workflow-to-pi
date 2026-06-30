@@ -29,6 +29,16 @@ describe('applyModelCommand — set', () => {
     expect(next.tiers).toEqual({ fast: 'keep-fast', balanced: 'keep-mid', deep: 'new-deep' });
   });
 
+  it('set PRESERVES an existing `claude` block (mutating the pi map must not erase the claude map)', () => {
+    const current: ModelTiers = {
+      active: false,
+      tiers: { fast: 'deepseek-v3', balanced: '', deep: '' },
+      claude: { fast: 'haiku', balanced: 'sonnet', deep: 'opus' },
+    };
+    const { next } = applyModelCommand(current, ['set', 'deep', 'claude-opus-4-8']);
+    expect(next.claude).toEqual({ fast: 'haiku', balanced: 'sonnet', deep: 'opus' });
+  });
+
   it('a NON-canonical tier name WARNS (free product name) but does NOT throw and still sets it', () => {
     let result!: ReturnType<typeof applyModelCommand>;
     // The whole point: free product names are ALLOWED — no throw.
@@ -46,6 +56,35 @@ describe('applyModelCommand — set', () => {
     }).not.toThrow();
     expect(result.next).toEqual(EMPTY); // unchanged
     expect(result.output.toLowerCase()).toMatch(/usage|error|require/);
+  });
+});
+
+// `set --claude` writes the PARALLEL `claude` tier map (the claude-code executor reads it via
+// resolveClaudeModel). It is gated by the SAME `active` flag (model-routing.ts:138), so `--claude` must
+// flip active:true exactly like the pi `set`, and must leave the pi `tiers` map untouched (and vice-versa).
+describe('applyModelCommand — set --claude (the parallel claude-code tier map)', () => {
+  it('set <tier> <model> --claude writes claude[tier], activates, and does NOT touch the pi tiers', () => {
+    const current: ModelTiers = { active: false, tiers: { fast: 'deepseek-v3', balanced: '', deep: '' } };
+    const { next } = applyModelCommand(current, ['set', 'deep', 'opus', '--claude']);
+    expect(next.claude).toEqual({ deep: 'opus' });
+    expect(next.active).toBe(true); // gated by the same active flag → set must activate.
+    expect(next.tiers).toEqual({ fast: 'deepseek-v3', balanced: '', deep: '' }); // pi map untouched.
+  });
+
+  it('set --claude MERGES into an existing claude block (other claude tiers preserved)', () => {
+    const current: ModelTiers = {
+      active: true,
+      tiers: { fast: '', balanced: '', deep: '' },
+      claude: { fast: 'haiku', deep: 'opus' },
+    };
+    const { next } = applyModelCommand(current, ['set', 'fast', 'sonnet', '--claude']);
+    expect(next.claude).toEqual({ fast: 'sonnet', deep: 'opus' }); // fast overwritten, deep preserved.
+  });
+
+  it('the --claude flag position is irrelevant (tier/model parse the same with the flag anywhere)', () => {
+    const { next } = applyModelCommand(EMPTY, ['set', '--claude', 'balanced', 'sonnet']);
+    expect(next.claude).toEqual({ balanced: 'sonnet' });
+    expect(next.tiers.balanced).toBe(''); // still the pi map's original empty — only claude changed.
   });
 });
 

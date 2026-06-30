@@ -42,6 +42,13 @@ export interface NodeSpec {
   provider?: string;
   /** Per-node tier ALIAS resolved to a model via `~/.piflow/model-tiers.json` (when active). Undefined ⇒ none. */
   tier?: string;
+  /**
+   * Which agent binary runs this node. Absent/`'pi'` → the pi coding agent (today's path, BYTE-IDENTICAL).
+   * `'claude-code'` → a headless `claude -p` session on the LOCAL logged-in subscription (builtins only, for
+   * read/write/fix/debug); it resolves its model from the `claude` tier block (`resolveClaudeModel`) and runs
+   * with no provider gateway. See docs/design/agent-executor-interface.md.
+   */
+  executor?: 'pi' | 'claude-code';
 
   /** 1. Where it runs. */
   sandbox: SandboxSpec;
@@ -898,7 +905,7 @@ export interface SubworkflowSpec {
  * metadata (a display label, §5) carried through so a PROFILE predicate can select nodes by it — it
  * NEVER drives ordering/parallelism (deps + owns do).
  */
-export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentType' | 'tools' | 'model' | 'provider' | 'tier'> & {
+export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentType' | 'tools' | 'model' | 'provider' | 'tier' | 'executor'> & {
   io: NodeIO;
   /** Generic phase label (display metadata; the elision predicate may select by it). Optional/additive. */
   phase?: string;
