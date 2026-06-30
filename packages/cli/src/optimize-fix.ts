@@ -11,8 +11,8 @@
 
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { scoreRun as coreScoreRun, triage, mineTaskFromTrace, makeReplayStages, runFixGate, writeStagingManifest } from '@piflow/core';
-import type { ReplayOracle, CopyScope, Fixer, MineOpts, NodeScore, RunDigest } from '@piflow/core';
+import { scoreRun as coreScoreRun, triage, mineTaskFromTrace, makeReplayStages, runFixGate, writeStagingManifest, renderOptimizeEvent } from '@piflow/core';
+import type { ReplayOracle, CopyScope, Fixer, MineOpts, NodeScore, RunDigest, OptimizeEventSink } from '@piflow/core';
 
 /** The product binding the CLI dynamic-imports — the LIVE stages that stay product-side (out of @piflow/core). */
 export interface OptimizeBinding {
@@ -35,6 +35,10 @@ export interface ParsedOptimizeFixArgs {
   tokenBudget?: number;
   /** substring filter on the worklist — process ONLY defects whose node id contains it (cost/safety scope). */
   node?: string;
+  /** stream the live FIX→GATE progress (one OptimizeEvent line per phase) as the loop runs. */
+  watch: boolean;
+  /** with --watch, emit each event as a JSON line instead of the human-readable render (machine-consumable). */
+  watchJson: boolean;
 }
 
 export interface OptimizeFixDeps {
@@ -44,7 +48,7 @@ export interface OptimizeFixDeps {
 }
 
 export function parseOptimizeFixArgs(argv: string[]): ParsedOptimizeFixArgs {
-  const out: ParsedOptimizeFixArgs = { dir: '', binding: '', autoAdopt: false };
+  const out: ParsedOptimizeFixArgs = { dir: '', binding: '', autoAdopt: false, watch: false, watchJson: false };
   const positionals: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -55,6 +59,8 @@ export function parseOptimizeFixArgs(argv: string[]): ParsedOptimizeFixArgs {
     else if (k === '--edit-budget') out.editBudget = Number(argv[++i]);
     else if (k === '--token-budget') out.tokenBudget = Number(argv[++i]);
     else if (k === '--node') out.node = argv[++i];
+    else if (k === '--watch') out.watch = true;
+    else if (k === '--watch-json') { out.watch = true; out.watchJson = true; } // --watch-json implies --watch
     else if (k.startsWith('--')) { /* ignore unknown flags */ }
     else positionals.push(k);
   }
@@ -103,10 +109,16 @@ export async function runOptimizeFixCli(argv: string[], deps: OptimizeFixDeps = 
   const binding = await loadBinding(args.binding);
   const mineTask = mineTaskFromTrace(args.dir, binding.mineOpts);
   const stages = makeReplayStages({ oracle: binding.oracle, mineTask, copyScope: binding.copyScope });
+  // --watch: stream the live FIX→GATE progress through the driver's OWN OptimizeEventSink (fire-and-forget;
+  // a throwing print never breaks the loop — the driver swallows sink throws). --watch-json prints raw JSON.
+  const onEvent: OptimizeEventSink | undefined = args.watch
+    ? (e) => print(args.watchJson ? JSON.stringify(e) : renderOptimizeEvent(e))
+    : undefined;
   const result = await runFixGate(defects, { fixer: binding.fixer, ...stages }, {
     autoAdopt: args.autoAdopt,
     ...(args.editBudget !== undefined ? { editBudget: args.editBudget } : {}),
     ...(args.tokenBudget !== undefined ? { tokenBudget: args.tokenBudget } : {}),
+    ...(onEvent ? { onEvent } : {}),
   });
 
   const stagingDir = args.stagingDir ?? path.join(args.dir, 'optimize', 'staging');

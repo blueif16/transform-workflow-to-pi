@@ -39,3 +39,7 @@ out/
 .claude/worktrees/
 .claude/workflows/
 .tasks/HANDOFF-*.md
+
+# generated optimize/memory artifacts (not committed)
+.agents/
+.codegraph/

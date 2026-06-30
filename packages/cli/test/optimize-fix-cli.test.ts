@@ -51,6 +51,18 @@ describe('parseOptimizeFixArgs', () => {
     const a = parseOptimizeFixArgs(['runs/gs01', '--binding', './b.mjs']);
     expect(a.node).toBeUndefined();
   });
+
+  it('parses --watch / --watch-json (the live progress surface), defaulting both OFF', () => {
+    const off = parseOptimizeFixArgs(['runs/gs01', '--binding', './b.mjs']);
+    expect(off.watch).toBe(false);
+    expect(off.watchJson).toBe(false);
+    const on = parseOptimizeFixArgs(['runs/gs01', '--binding', './b.mjs', '--watch']);
+    expect(on.watch).toBe(true);
+    expect(on.watchJson).toBe(false);
+    const json = parseOptimizeFixArgs(['runs/gs01', '--binding', './b.mjs', '--watch', '--watch-json']);
+    expect(json.watch).toBe(true);
+    expect(json.watchJson).toBe(true);
+  });
 });
 
 describe('loadBinding — the dynamic-import seam', () => {
@@ -128,5 +140,66 @@ describe('runOptimizeFixCli — composition smoke (scoreRun injected)', () => {
 
     const manifest = JSON.parse(await fs.readFile(path.join(stagingDir, 'manifest.json'), 'utf8'));
     expect(manifest.records.map((r: { node: string }) => r.node)).toEqual(['w4-execute-m3']); // m1 filtered OUT
+  });
+
+  it('--watch streams live OptimizeEvent lines (gated/landed visible); without --watch only the summary prints', async () => {
+    const mk = async () => {
+      const runDir = await fs.mkdtemp(path.join(os.tmpdir(), 'optfix-run-'));
+      const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'optfix-stage-'));
+      await fs.mkdir(path.join(runDir, 'verify'), { recursive: true });
+      await fs.writeFile(path.join(runDir, 'verify', 'report.M2.json'), JSON.stringify({ milestoneId: 'M2', marker: 'VALIDATION_FAILED', passed: false, fixOutcome: 'exhausted' }));
+      const digest: RunDigest = {
+        run: 'tmp', done: true, ok: true, durationMs: 1,
+        totals: { nodes: 1, ok: 1, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0, contextPeak: 0, modelCalls: 0, toolCalls: 0 },
+        nodes: [dnode('w4-execute-m2')], anomalies: [], rootCauses: [],
+      };
+      const tier1ByNode = new Map([['w4-execute-m2', t1('M2', [{ id: 'M2-A3', gate: 'fidelity', passed: false }])]]);
+      const fakeScoreRun = async () => ({ scores: scoreNodes({ digest, tier1ByNode }), digest });
+      return { runDir, stagingDir, fakeScoreRun };
+    };
+
+    // WITH --watch: the capturing print receives ≥1 live event line (gated/landed) BEYOND the summary.
+    const watched = await mk();
+    const watchedLines: string[] = [];
+    await runOptimizeFixCli(
+      ['--fix', watched.runDir, '--binding', FAKE, '--staging-dir', watched.stagingDir, '--watch'],
+      { scoreRun: watched.fakeScoreRun, print: (s) => watchedLines.push(s) },
+    );
+    expect(watchedLines.some((l) => /gated|landed/.test(l))).toBe(true);
+
+    // WITHOUT --watch: print receives ONLY the summary line — no per-event progress.
+    const quiet = await mk();
+    const quietLines: string[] = [];
+    await runOptimizeFixCli(
+      ['--fix', quiet.runDir, '--binding', FAKE, '--staging-dir', quiet.stagingDir],
+      { scoreRun: quiet.fakeScoreRun, print: (s) => quietLines.push(s) },
+    );
+    expect(quietLines).toHaveLength(1);
+    expect(quietLines[0]).toMatch(/optimize --fix:/);
+    expect(quietLines.some((l) => /gated|landed/.test(l))).toBe(false);
+  });
+
+  it('--watch-json emits machine-readable JSON lines (each parses to an event with a type)', async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), 'optfix-run-'));
+    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'optfix-stage-'));
+    await fs.mkdir(path.join(runDir, 'verify'), { recursive: true });
+    await fs.writeFile(path.join(runDir, 'verify', 'report.M2.json'), JSON.stringify({ milestoneId: 'M2', marker: 'VALIDATION_FAILED', passed: false, fixOutcome: 'exhausted' }));
+    const digest: RunDigest = {
+      run: 'tmp', done: true, ok: true, durationMs: 1,
+      totals: { nodes: 1, ok: 1, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0, contextPeak: 0, modelCalls: 0, toolCalls: 0 },
+      nodes: [dnode('w4-execute-m2')], anomalies: [], rootCauses: [],
+    };
+    const tier1ByNode = new Map([['w4-execute-m2', t1('M2', [{ id: 'M2-A3', gate: 'fidelity', passed: false }])]]);
+    const fakeScoreRun = async () => ({ scores: scoreNodes({ digest, tier1ByNode }), digest });
+
+    const lines: string[] = [];
+    await runOptimizeFixCli(
+      ['--fix', runDir, '--binding', FAKE, '--staging-dir', stagingDir, '--watch', '--watch-json'],
+      { scoreRun: fakeScoreRun, print: (s) => lines.push(s) },
+    );
+    const events = lines.slice(0, -1).map((l) => JSON.parse(l)); // last line = the human summary
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((e) => typeof e.type === 'string')).toBe(true);
+    expect(events.some((e) => e.type === 'gated')).toBe(true);
   });
 });
