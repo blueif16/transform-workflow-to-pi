@@ -26,6 +26,7 @@ import { runNodeCli } from './node.js';
 import { runInspectCli } from './inspect.js';
 import { runTelemetryCli } from './telemetry.js';
 import { runGuiCli } from './gui.js';
+import { runSkillsCli } from './skills.js';
 import { createRequire } from 'node:module';
 
 // CLI version, read from this package's own package.json (always shipped in the tarball; resolved
@@ -51,6 +52,7 @@ USAGE
   piflowctl model   [list | set <tier> <modelId> [--claude] | activate | deactivate]  the model-tier config
   piflowctl claude-code [connect [--token <t>] | status]  OPTIONAL credential for the claude-code executor
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
+  piflowctl skills  install [targetDir] [--force]  install the workflow-authoring skills into a repo
   piflowctl --version                       print the piflowctl version
 
 RUN
@@ -174,6 +176,13 @@ CLAUDE-CODE  (OPTIONAL — a node runs on a headless local Claude session via 'n
   SKIPPABLE: on macOS an existing 'claude' login is used automatically; the file is the portable layer for
   Linux/cloud. The runner resolves env → ~/.piflow/claude-code.json → local login (runner/claude-executor.ts).
 
+SKILLS
+  install [targetDir] [--force]  copy piflow's workflow-authoring skills (piflow-init/start/enhance) into
+                            <targetDir>/.claude/skills/ so a fresh Claude Code agent there can compose
+                            workflows against the SDK. Default targetDir = cwd. An existing skill dir is
+                            kept unless --force. (The skills are bundled in the npm tarball; a source checkout
+                            falls back to this repo's canonical .claude/skills.)
+
 LOGS (from @piflow/core)
   -f --follow · --node <id> · --summary · --raw · --poll <ms>   (see 'piflowctl logs --help' semantics)
 
@@ -230,6 +239,9 @@ async function main(): Promise<void> {
       break;
     case 'gui':
       await runGuiCli(rest);
+      break;
+    case 'skills':
+      await runSkillsCli(rest);
       break;
     case '--version':
     case '-v':

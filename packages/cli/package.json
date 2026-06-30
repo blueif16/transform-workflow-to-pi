@@ -38,10 +38,12 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "skills"
   ],
   "scripts": {
     "build": "tsc -b",
+    "prepack": "node scripts/bundle-skills.mjs",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
