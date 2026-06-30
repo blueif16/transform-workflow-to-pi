@@ -1,41 +1,114 @@
-import Link from "next/link";
-import { Motif } from "@/components/iso/Motif";
+"use client";
+
+/* ============================================================
+   SECTION · Presentation / demo page  ·  #start  ·  data-section="presentation"
+   ------------------------------------------------------------
+   A single, simple render panel sits centred (reduced width) on the
+   field; the GUI key embeds the REAL piflow flowmap (a pure-frontend
+   static build served at /gui-demo/) so visitors can actually try a
+   workflow. Beneath, two minimal keys — GUI | TUI — are labels split
+   by ONE hairline; their divider lines run FULL-BLEED across the page.
+   Each key rides a delicate kaomoji that swaps idle → active on click.
+   This page sparks BLUE (.theme-blue) — see globals.css.
+   (File is still named CTA.tsx — see the page.tsx glossary.)
+   ============================================================ */
+
+import { useState } from "react";
+
+type View = {
+  key: string;
+  label: string;
+  /** delicate kaomoji on the key — swaps when selected */
+  idle: string;
+  active: string;
+};
+
+const VIEWS: View[] = [
+  { key: "gui", label: "GUI", idle: "(｡･ω･｡)", active: "(｡•‿•｡)♡" },
+  { key: "tui", label: "TUI", idle: "[ ･_･ ]", active: "[ •‿• ]✦" },
+];
 
 export default function CTA() {
+  const [active, setActive] = useState(0);
+  const current = VIEWS[active];
+
   return (
-    <section id="start" className="relative isolate overflow-hidden border-y border-[var(--hairline)]">
-      <div className="aurora" aria-hidden />
-      <Motif
-        src="/motifs/m25.svg"
-        motion="spin-slow"
-        className="absolute left-1/2 top-1/2 -z-10 h-[520px] w-[520px] -translate-x-1/2 -translate-y-1/2 opacity-[0.10]"
-      />
-      <div className="relative z-10 mx-auto w-full max-w-3xl px-6 py-32 text-center">
-        <h2 className="reveal text-balance text-4xl font-semibold tracking-[-0.03em] text-fg sm:text-5xl">
-          Build flows that build themselves.
-        </h2>
-        <p className="reveal mx-auto mt-5 max-w-lg text-lg leading-relaxed text-fg-muted">
-          Describe the goal once. An agent designs the graph, a sealed fleet runs it, and a learning
-          loop makes it better — every run.
-        </p>
-        <div className="reveal mt-10 flex flex-wrap items-center justify-center gap-3">
-          <Link
-            href="/docs/start/getting-started"
-            className="inline-flex h-11 items-center rounded-full bg-accent px-6 text-sm font-medium text-[var(--accent-ink)] transition-opacity hover:opacity-90"
-          >
-            Start a flow
-          </Link>
-          <Link
-            href="/docs"
-            className="inline-flex h-11 items-center rounded-full border border-[var(--hairline)] px-6 text-sm font-medium text-fg transition-colors hover:border-[var(--hairline-2)]"
-          >
-            Read the docs →
-          </Link>
+    <section
+      id="start"
+      data-section="presentation"
+      className="theme-blue relative flex min-h-svh w-full flex-col overflow-hidden bg-canvas"
+    >
+      <div className="gridpaper pointer-events-none absolute inset-0" aria-hidden />
+
+      {/* top-left brand pill is the page-level FixedBrandPill */}
+
+      {/* ── render panel — ONE container, centred at a reduced width ── */}
+      <div className="relative mx-auto flex w-full max-w-5xl flex-1 items-stretch px-4 py-4 sm:px-6 sm:py-6">
+        <div className="hud-frame [--hud-bevel:20px] relative flex min-h-[55vh] w-full overflow-hidden bg-[var(--surface-3)] shadow-[var(--shadow-lg)]">
+          {/* ink targeting brackets on the two square corners */}
+          <span className="hud-corner hud-corner--tl" aria-hidden />
+          <span className="hud-corner hud-corner--br" aria-hidden />
+
+          {current.key === "gui" ? (
+            // the real flowmap GUI, running pure-frontend from /gui-demo/. Target the
+            // index.html FILE explicitly: Next 308-redirects the bare dir `/gui-demo/`
+            // → `/gui-demo`, which has no static match and 404s (blank iframe).
+            <iframe
+              src="/gui-demo/index.html"
+              title="piflow GUI — interactive demo"
+              loading="lazy"
+              className="h-full w-full border-0 bg-white"
+            />
+          ) : (
+            // the real piflow terminal monitor (ink-canvas → xterm.js), running pure-frontend from
+            // /tui-demo/ off the SAME curated data as the GUI demo. Target index.html explicitly for the
+            // same reason as the GUI branch (Next 308-redirects the bare dir and 404s a blank iframe).
+            <iframe
+              src="/tui-demo/index.html"
+              title="piflow TUI — interactive demo"
+              loading="lazy"
+              className="h-full w-full border-0 bg-white"
+            />
+          )}
         </div>
-        <p className="reveal mt-9 inline-flex items-center gap-2 font-mono text-xs text-fg-faint">
-          <span className="size-1.5 rounded-full bg-accent" aria-hidden />
-          self-designing · durable · self-improving
-        </p>
+      </div>
+
+      {/* ── two keys — GUI | TUI. The top divider + the centre divider run
+            FULL-BLEED across the whole page (outside the panel's width). ── */}
+      <div className="relative grid grid-cols-2 border-t border-[var(--hairline)]">
+        {VIEWS.map((v, i) => {
+          const isActive = i === active;
+          return (
+            <button
+              key={v.key}
+              type="button"
+              onClick={() => setActive(i)}
+              aria-pressed={isActive}
+              className={`group relative flex items-center justify-between gap-4 px-6 py-7 text-left outline-none transition-colors sm:px-12 sm:py-10 ${
+                i === 1 ? "border-l border-[var(--hairline)]" : ""
+              }`}
+            >
+              <span
+                className={`border-b-2 pb-2 text-5xl font-semibold tracking-[-0.03em] transition-colors sm:text-7xl ${
+                  isActive
+                    ? "border-[var(--accent)] text-fg"
+                    : "border-transparent text-fg-muted group-hover:text-fg"
+                }`}
+              >
+                {v.label}
+              </span>
+              {/* delicate kaomoji — sans (not mono) so the glyphs render fully */}
+              <span
+                className={`text-2xl transition-colors sm:text-4xl ${
+                  isActive ? "text-fg" : "text-fg-faint"
+                }`}
+                aria-hidden
+              >
+                {isActive ? v.active : v.idle}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </section>
   );

@@ -1,0 +1,100 @@
+{
+  "generatedAt": "2026-06-30T02:31:03.674Z",
+  "products": [
+    {
+      "id": "piflow",
+      "name": "piflow",
+      "root": "/Users/tk/Desktop/piflow",
+      "namespaces": [
+        {
+          "id": "example-fusion",
+          "name": "example-fusion",
+          "templatePath": "/Users/tk/Desktop/piflow/.piflow/example-fusion/template/meta.json",
+          "meta": {
+            "id": "example-fusion",
+            "name": "example-fusion",
+            "description": "Fusion showcase — a short-explainer pipeline (plan → draft → harden → publish) that demonstrates BOTH fusion modes side by side: `draft` is a MoA panel (one sibling per model tier → a judge SYNTHESIZES across them) and `harden` is best-of-n (one model sampled N times → a judge SELECTS + repairs the strongest), each feeding the next, then a plain `publish` consumer. Dry-run it (`piflowctl run .piflow/example-fusion/template --dry-run`) to see the siblings+judge expansion, or open the GUI, press F for Fusion mode, and toggle any node between moa / best-of-n to watch the DAG re-expand live.",
+            "phases": [
+              "plan",
+              "draft",
+              "harden",
+              "publish"
+            ]
+          },
+          "threads": [
+            {
+              "run": "demo-fusion",
+              "runDir": "/Users/tk/Desktop/piflow/.piflow/example-fusion/runs/demo-fusion",
+              "statusPath": "/Users/tk/Desktop/piflow/.piflow/example-fusion/runs/demo-fusion",
+              "state": "done",
+              "done": true,
+              "ok": null,
+              "stageIndex": null,
+              "stageTotal": null,
+              "phase": null,
+              "runningNode": null,
+              "runningTool": null,
+              "runningStalled": false,
+              "nodesDone": 10,
+              "nodesTotal": 10,
+              "frac": 1,
+              "elapsedMs": null,
+              "tokensBillable": 0,
+              "cost": 0,
+              "provider": "cp",
+              "model": null,
+              "updatedAt": null,
+              "staleMs": null,
+              "errorNode": null,
+              "runViewPath": null,
+              "viewable": true
+            }
+          ]
+        },
+        {
+          "id": "example-academy",
+          "name": "example-academy",
+          "templatePath": "/Users/tk/Desktop/piflow/.piflow/example-academy/template/meta.json",
+          "meta": {
+            "id": "example-academy",
+            "name": "example-academy",
+            "description": "PiFlow Academy — a 2-node demo of per-node capability isolation (separation of concerns). A RESEARCH node reaches the outside world through the deepwiki MCP tool but has NO shell; a BUILD node has a shell and implements + tests the result but has NO internet. The data-only handoff (findings.md) keeps the lethal trifecta split across nodes, so an injection in fetched content lands on a node that cannot escalate. Security thesis + sources: docs/research/2026-06-27-per-node-capability-isolation.md. Also exercises external-MCP-in-sandbox (research) + coding-in-sandbox (build) on E2B.",
+            "phases": [
+              "research",
+              "build"
+            ]
+          },
+          "threads": [
+            {
+              "run": "academy-e2b-final",
+              "runDir": "/Users/tk/Desktop/piflow/.piflow/example-academy/runs/academy-e2b-final",
+              "statusPath": "/Users/tk/Desktop/piflow/.piflow/example-academy/runs/academy-e2b-final",
+              "state": "done",
+              "done": true,
+              "ok": true,
+              "stageIndex": null,
+              "stageTotal": null,
+              "phase": null,
+              "runningNode": null,
+              "runningTool": null,
+              "runningStalled": false,
+              "nodesDone": 2,
+              "nodesTotal": 2,
+              "frac": 1,
+              "elapsedMs": 100488,
+              "tokensBillable": 11413,
+              "cost": 0,
+              "provider": "mmgw",
+              "model": null,
+              "updatedAt": null,
+              "staleMs": null,
+              "errorNode": null,
+              "runViewPath": null,
+              "viewable": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -13,6 +13,9 @@
      containers (cards/panels) that float on top, exactly like the reference. */
   --canvas: #f1f1f3;                /* grey field — the page floor */
   --canvas-soft: #e9e9ec;           /* a touch greyer — sunken bands / wells */
+  --node-ground: #ededed;           /* studio grey baked into the node tiles —
+                                       the card surface matches it so the art
+                                       reads as the card itself, not a rectangle */
 
   /* Foreground — Geist ink ladder, never pure #000 */
   --fg: #171717;                    /* ink — primary text */
@@ -48,6 +51,19 @@
   --shadow-sm: 0 0 0 1px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 0 0 1px rgba(0, 0, 0, 0.05), 0 8px 20px -8px rgba(0, 0, 0, 0.12);
   --shadow-lg: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 22px 48px -16px rgba(0, 0, 0, 0.18);
+}
+
+/* Section-scoped accent remap — pages 3 (composition) & 4 (presentation)
+   spark BLUE instead of orange (the first two pages stay orange). Overrides
+   the accent family for the subtree, so every var(--accent) mark + the
+   focus ring re-resolves to blue. */
+.theme-blue {
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-60: rgba(37, 99, 235, 0.6);
+  --accent-30: rgba(37, 99, 235, 0.3);
+  --accent-glow: rgba(37, 99, 235, 0.16);
+  --accent-subtle: #eef2ff;
 }
 
 /* Map tokens into the Tailwind v4 theme so utilities can reach them. */
@@ -98,7 +114,9 @@
 
 html {
   background: var(--canvas);
-  scroll-behavior: smooth;
+  /* NOTE: no `scroll-behavior: smooth` — it fights GSAP ScrollToPlugin /
+     ScrollTrigger (the hero CTA + the pinned product section drive their
+     own smooth scroll). CSS smooth here makes those mis-land. */
 }
 body {
   background: var(--canvas);
@@ -260,6 +278,30 @@ body {
 .iso-glow { filter: drop-shadow(0 0 7px var(--accent-30)) drop-shadow(0 0 2px var(--accent-60)); }
 
 /* ============================================================
+   Node illustration — the per-card art. The card background is set
+   (per node, --card-ground) to that tile's OWN sampled studio grey,
+   so the object and its ground are one inseparable surface — no
+   rectangle, no edge. At rest the art is fully GREY; the orange
+   BLOOMS when the card (its .group) is hovered or keyboard-focused,
+   so only the active node carries the spark. No mask, no contrast
+   shift — the rest-state grey must equal --card-ground exactly, or a
+   seam reappears. Guarded to hover-capable pointers: touch shows full
+   colour, since there is no hover to bloom it.
+   ============================================================ */
+@media (hover: hover) and (pointer: fine) {
+  .node-art {
+    filter: grayscale(1);
+    transition: filter 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+                transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .group:hover .node-art,
+  .group:focus-within .node-art {
+    filter: grayscale(0) saturate(1.06);
+    transform: scale(1.015);
+  }
+}
+
+/* ============================================================
    Buttons — the action system. PRIMARY is ink (grey/black/white),
    never orange; SECONDARY is a hairline ghost. Orange stays
    rationed to marks & status, so the page reads grey & white.
@@ -349,6 +391,35 @@ body {
 }
 .hud-corner--tl { top: 10px; left: 10px; border-right: none; border-bottom: none; }
 .hud-corner--br { bottom: 10px; right: 10px; border-left: none; border-top: none; }
+
+/* Node hover cursor — the custom angular grid-box (NodeCursor) replaces the
+   native pointer over a node card, but ONLY once it's actually live (the JS
+   adds .node-cursor-active on fine-pointer, motion-safe desktop). Without
+   that class the cards keep cursor:pointer, so touch / reduced-motion / no-JS
+   never lose a cursor. */
+.node-cursor-active [data-node-trigger] { cursor: none; }
+
+/* ============================================================
+   View Transitions — gallery (#agents cards) ⇄ /product/[id].
+   The App Router wraps navigations in the View Transitions API
+   (experimental.viewTransition); the shared `node-<id>` name morphs
+   the card title into the detail page while the rest cross-fades.
+   We only retune the timing; under reduced motion the nav is an
+   instant cut (no animated transition).
+   ============================================================ */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-group(*) {
+    animation-duration: 460ms;
+    animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
 
 /* ============================================================
    Motif — recolor an external SVG via alpha-mask + tint bg, then
@@ -455,7 +526,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .aurora, .flow, .blur-in, .caret, .station-glow { animation: none !important; }
-  .exp-card, .lift { transition: none !important; }
+  .exp-card, .lift, .node-art { transition: none !important; }
 }
 
 /* ============================================================
@@ -489,3 +560,94 @@ body {
 .doc-content table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 1.25rem; display: block; overflow-x: auto; }
 .doc-content th, .doc-content td { border: 1px solid var(--hairline); padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
 .doc-content th { color: var(--fg); background: var(--surface-2); font-weight: 600; }
+
+/* ============================================================
+   Intro copy — the personal paragraph's "delicate overlay": soft
+   blurred gradient streaks behind key phrases + a frosted glass
+   word, with blue-grey inline links. Purely static (no keyframes),
+   so it is reduced-motion-safe by construction. Scoped under
+   .intro-copy so the generic class names never leak.
+   ============================================================ */
+.intro-copy {
+  --io-green: #4d9900;
+  --io-green-soft: #b8d78c;
+  --io-orange: #ffc079;
+  --io-cream: #f3e9de;
+  /* EXACT same font as the composition heading (Geist Sans · 600 · tracking
+     -0.03em · leading 1.2) so the scrubbed cross-fade morph lands seamlessly. */
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+.intro-copy strong { font-weight: 700; color: var(--fg); }
+
+/* Hover SPOTLIGHT — the longer intro paragraph rests in faint grey with ONE
+   sentence in ink (the resting highlight); hovering any sentence moves the ink
+   to it while the rest stay grey. Pure CSS, COLOR-ONLY (never reflows). Gated to
+   hover-capable pointers so touch / mobile show every sentence in full ink —
+   there's no hover there to bloom a greyed sentence back to readable. */
+@media (hover: hover) and (pointer: fine) {
+  .intro-reveal > span {
+    color: var(--fg-faint);
+    /* slow, eased glide so the ink melts from sentence to sentence */
+    transition: color 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .intro-reveal > span:first-child { color: var(--fg); }   /* resting highlight  */
+  .intro-reveal:hover > span { color: var(--fg-faint); }    /* dim all on hover…  */
+  .intro-reveal:hover > span:hover { color: var(--fg); }    /* …except the hovered */
+}
+
+/* floating blurred gradient streak set behind a phrase (decorative) */
+.io-fx {
+  position: relative;
+  display: inline-block;
+  width: var(--w, 2.6em);
+  height: 1em;
+  margin: 0 -0.08em;
+  vertical-align: -0.16em;
+  pointer-events: none;
+}
+.io-fx::before, .io-fx::after {
+  content: "";
+  position: absolute;
+  inset: 0.08em 0;
+  /* the angular clip-path mask (your .angular variant) — echoes the HUD bevels */
+  clip-path: polygon(8% 0, 100% 0, 92% 100%, 0 100%);
+  filter: blur(7px);
+  opacity: 0.82;
+  transform: translate(var(--x, 0), var(--y, 0)) rotate(var(--r, 0deg));
+}
+.io-fx::after { inset: 0.16em 0.18em; clip-path: polygon(10% 0, 100% 0, 86% 100%, 0 100%); filter: blur(14px); opacity: 0.34; }
+.io-fx--green::before { background: linear-gradient(90deg, var(--io-green-soft), var(--io-green)); }
+.io-fx--green::after  { background: var(--io-green); }
+.io-fx--warm::before  { background: linear-gradient(90deg, var(--io-orange), var(--io-cream), rgba(255,255,255,0.7)); }
+.io-fx--warm::after   { background: var(--io-orange); }
+.io-fx--mix::before   { background: linear-gradient(90deg, var(--io-orange), var(--io-cream) 48%, var(--io-green-soft) 68%, var(--io-green)); }
+.io-fx--mix::after    { background: linear-gradient(90deg, var(--io-orange), var(--io-green)); }
+
+/* frosted glass behind a word */
+.io-glass { position: relative; display: inline-block; padding: 0 0.08em; z-index: 1; }
+.io-glass::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: -0.08em; right: -0.08em; top: 0.08em; bottom: 0.02em;
+  border-radius: 0.22em;
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* blue-grey inline links — the icon rides inline with the label */
+.io-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  color: #5f82a6;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(95, 130, 166, 0.32);
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.io-link:hover { color: #3f6594; border-bottom-color: rgba(63, 101, 148, 0.6); }
+.io-link svg { width: 0.82em; height: 0.82em; flex: none; }
