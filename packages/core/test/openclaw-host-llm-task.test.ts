@@ -181,7 +181,7 @@ describe('hostOpenClawTool — S3: real llm-task driven through the pi-bound run
   // Drives the REAL llm-task → real nested `pi -p --mode json …` and asserts a real, non-empty payload text
   // (the model's actual JSON answer). If pi or the provider isn't usable here, this SKIPS with the reason.
   const probe = piLiveProbe();
-  it.skipIf(!probe.runnable)(
+  it.skipIf(!(probe.runnable && process.env.PIFLOW_LIVE))(
     `GATED LIVE: real llm-task → real nested pi (${probe.provider}/${probe.model}) → real payload text`,
     async () => {
       const mod = await import(LLM_TASK_ENTRY);

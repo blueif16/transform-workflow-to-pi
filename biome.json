@@ -1,0 +1,91 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.1/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/.pi",
+      "!**/.piflow",
+      "!**/.next",
+      "!gui/dist",
+      "!**/*.tsbuildinfo",
+      "!vendor/**",
+      "!.claude/**",
+      "!pnpm-lock.yaml",
+      "!site-piflow/public/**",
+      "!**/*.min.js",
+      "!**/test/fixtures/**",
+      "!**/fixtures/**",
+      "!**/*.css"
+    ]
+  },
+  "formatter": {
+    "enabled": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 120,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "off"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "a11y": {
+        "preset": "none"
+      },
+      "suspicious": {
+        "noAssignInExpressions": "off",
+        "noExplicitAny": "off",
+        "noDoubleEquals": "off",
+        "noImplicitAnyLet": "off",
+        "useIterableCallbackReturn": "off",
+        "noThenProperty": "off",
+        "noArrayIndexKey": "off",
+        "noControlCharactersInRegex": "off"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "off"
+      },
+      "complexity": {
+        "noCommaOperator": "off",
+        "useOptionalChain": "off",
+        "useArrowFunction": "off",
+        "useLiteralKeys": "off"
+      },
+      "style": {
+        "noNonNullAssertion": "off",
+        "useTemplate": "off",
+        "useImportType": "off",
+        "useExponentiationOperator": "off"
+      },
+      "correctness": {
+        "noInnerDeclarations": "off",
+        "noInvalidUseBeforeDeclaration": "off",
+        "useExhaustiveDependencies": "off",
+        "noSelfAssign": "off",
+        "noVoidTypeReturn": "off"
+      }
+    }
+  }
+}

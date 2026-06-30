@@ -5,30 +5,41 @@
   "type": "module",
   "description": "Pi Flow — a self-designing, durable, self-improving orchestration substrate (TypeScript SDK).",
   "license": "MIT",
-  "workspaces": [
-    "packages/*",
-    "apps/*",
-    "tui"
-  ],
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "lint": "biome check .",
+    "pack-verify": "node scripts/pack-verify.mjs",
+    "smoke:cli": "node scripts/cli-smoke.mjs",
+    "test": "vitest run --project default",
+    "test:watch": "vitest --project default",
+    "test:live": "vitest run --project live",
+    "test:all": "vitest run",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "npm run build && changeset publish"
+    "release": "pnpm run build && changeset publish"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.4",
+    "@biomejs/biome": "^2.5.1",
     "@changesets/cli": "^2.31.0",
     "@modelcontextprotocol/server-everything": "^2026.1.26",
     "@modelcontextprotocol/server-memory": "^2026.1.26",
     "@types/node": "^24.0.0",
     "openclaw": "^2026.6.9",
+    "publint": "^0.3.21",
     "typescript": "^5.7.0",
     "vitest": "^4.0.0"
   },
   "engines": {
     "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "overrides": {
+      "zod": "^3.25"
+    }
   }
 }

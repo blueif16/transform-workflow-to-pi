@@ -12,12 +12,15 @@ The canonical runbook for **when** and **how** we publish. Read it before any pu
 |---|---|---|
 | `@piflow/core` | yes (public) | — |
 | `@piflow/cli` | yes (public) | **`piflowctl`** |
-| `@piflow/langgraph` | yes (public) | — |
 | `@piflow/tool-bridge` | yes (public) | — |
-| `@piflow/tui` | **no** (`private`) | `piflow-tui` (dev `npm link` only) |
+| `@piflow/langgraph` | yes (public) | — |
+| `@piflow/e2b` | yes (public) | — |
+| `@piflow/daytona` | yes (public) | — |
+| `@piflow/tui` | **no** (`private`) | `piflow-tui` (dev `pnpm link` only) |
+| `gui` | **no** (`private`) | — |
 | root `piflow-monorepo` | **no** (`private`) | — |
 
-Scope `@piflow` is ours (npm org; owner `blueif23`). All four publishable packages carry
+Scope `@piflow` is ours (npm org; owner `blueif23`). All six publishable packages carry
 `publishConfig.access=public`. The CLI bin is `piflowctl`, **not** `piflow` (the bare name collides with the
 unrelated `@arche-sh/piflow`; see `docs/research/arche-sh-piflow.md`).
 
@@ -38,37 +41,51 @@ Never publish to "save progress," to share with yourself, or from a feature bran
 
 After any consumer-facing change, while it's fresh:
 ```bash
-npm run changeset     # pick affected packages + bump (patch/minor/major); one-sentence summary.
+pnpm run changeset    # pick affected packages + bump (patch/minor/major); one-sentence summary.
                       # commit the .md it writes ALONGSIDE the code change.
 ```
 Changesets are cheap and accumulate; many batch into one release. No changeset ⇒ no release for that change.
 
-## The release loop (RELEASE) — from `main`, clean tree
+## The release loop (RELEASE) — via CI, no token
 
-1. `git switch main && git pull` — release only from up-to-date `main`.
-2. `npm run version-packages` — consumes pending changesets: bumps versions, **rewrites internal `^x.y.z`
-   ranges**, updates CHANGELOGs. Review the diff, then commit (`chore(release): version packages`).
-3. **Run the pre-release gate (next section). Stop on any red.**
-4. `npm run release` — runs `build` then `changeset publish` (publishes in dependency order
-   core → tool-bridge → cli/langgraph, `--access public`, creates git tags).
-5. `git push --follow-tags`.
-6. Verify: `npm view @piflow/core version` shows the new version; smoke-install in a scratch dir
-   (`npm i @piflow/cli && piflowctl --help`).
+Steady-state releases run through **CI with npm OIDC trusted publishing** (no long-lived token anywhere). See
+[`CI.md`](./CI.md) for the why; the human steps are just:
 
-2FA is `auth-and-writes`, so step 4 needs an **OTP** (interactive) **or** an npm **Automation token** in
-`~/.npmrc` (`//registry.npmjs.org/:_authToken=npm_…`) for a headless/CI run.
+1. **Land changesets on `main`** as part of normal work (the MAINTAIN loop above).
+2. `release.yml` (push to `main`) runs `changesets/action`, which opens/updates a **"Version Packages" PR** —
+   it consumes pending changesets, bumps versions, **rewrites internal ranges**, updates CHANGELOGs.
+3. **Review that PR**, run the pre-release gate (next section), then **merge it**.
+4. On merge, `release.yml` runs again and **publishes** the changed packages — `pnpm run release`
+   (`build` → `changeset publish`, dependency order, `--access public`, git tags), authed via OIDC under
+   `environment: release` with **provenance on**.
+5. Verify: `npm view @piflow/core version` shows the new version; smoke-install in a scratch dir
+   (`pnpm add @piflow/cli && piflowctl --help`).
+
+> **First publish only — manual bootstrap.** OIDC needs the package to already exist on npm to attach a
+> Trusted Publisher, and there is no pending-publisher configured. So the **very first** release is manual:
+> `npm login` as a `piflow`-org member → `pnpm run release` locally → then on npmjs.com configure a **Trusted
+> Publisher** per package (org/user `blueif16`, repo `PiFlow`, workflow `release.yml`, environment `release`;
+> tick the post-May-2026 "npm publish" allowed action). After that, **all** releases go through CI/OIDC — never
+> a stored token again. Full bootstrap rationale in [`CI.md`](./CI.md).
 
 ## Pre-release gate (ALL must pass)
 
+These are the same gates `ci.yml` runs (see [`CI.md`](./CI.md) for what each uniquely catches); confirm green
+on the "Version Packages" PR before merging.
+
 - [ ] On `main`, working tree clean, pulled.
-- [ ] `npm run build` green (`tsc -b`).
-- [ ] `npm test` green — or every failure is a **known, documented env-only** one (today: the `game-omni`
-      fixture tests and `gated-live` tests that need a real model; these are not regressions).
-- [ ] `npx changeset status` clean — no unconsumed changesets (i.e. step 2 ran + committed).
-- [ ] `npm pack --dry-run -w packages/<each>` reviewed: `dist` present, no stray/secret files, sane size.
+- [ ] `pnpm lint` green (Biome).
+- [ ] `pnpm run build` green (`tsc -b`).
+- [ ] `pnpm test` green — the `default` project (no creds). `live` tests are opt-in and not part of the gate.
+- [ ] `pnpm pack-verify` green — per publishable package: publint + `@arethetypeswrong/cli` + the
+      tarball-content assertion (`dist` present, no stray/secret files).
+- [ ] `pnpm smoke:cli` green — packs + installs `@piflow/cli` with its workspace deps and runs
+      `piflowctl --version` / `--help`.
+- [ ] `pnpm changeset status` clean — no unconsumed changesets (i.e. the Version Packages PR consumed them).
 - [ ] CLI: bin is `piflowctl`; `piflowctl --help` matches reality; README/docs command surface in sync.
 - [ ] Target versions are NOT already on the registry.
-- [ ] OTP ready, or automation token in `~/.npmrc`.
+- [ ] Publishing via CI/OIDC (no token needed) — or, for the **first** publish only, you're `npm login`'d as a
+      `piflow`-org member (see the bootstrap note above).
 
 ## Versioning policy (we are pre-1.0)
 
@@ -82,10 +99,10 @@ Changesets are cheap and accumulate; many batch into one release. No changeset �
 
 To test a build (e.g. "fixtures rolling out", early integration feedback) without burning the stable version:
 ```bash
-npx changeset pre enter next     # enter pre-release mode
-npm run version-packages         # -> e.g. 0.2.0-next.0
-npm run release                  # publishes under the `next` dist-tag:  npm i @piflow/core@next
-npx changeset pre exit           # LEAVE pre mode before the real release
+pnpm changeset pre enter next    # enter pre-release mode
+pnpm run version-packages        # -> e.g. 0.2.0-next.0
+pnpm run release                 # publishes under the `next` dist-tag:  pnpm add @piflow/core@next
+pnpm changeset pre exit          # LEAVE pre mode before the real release
 ```
 The stable `latest` tag is untouched until you exit pre mode and do a normal release.
 
