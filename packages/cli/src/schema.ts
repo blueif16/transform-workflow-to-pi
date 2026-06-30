@@ -147,7 +147,7 @@ export const CLI_TOPICS = {
       'run <templateDir>         drive a template run (--dry-run for free).',
       'inspect <templateDir>     per-node RESOLVED view (sandbox · tools · ops · prompt).',
       'init                      interactive setup wizard for ~/.piflow (model tiers + executors).',
-      'skills                    manage the ~/.piflow skills lane.',
+      'skills install [dir]      copy the workflow-authoring skills into a repo\'s .claude/skills/.',
     ],
   },
 } as const satisfies Record<string, CliTopic>;
