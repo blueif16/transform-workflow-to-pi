@@ -71,6 +71,12 @@ export interface NodeOpts {
   promote?: { from: string; to: string; merge?: 'set' | 'append' | 'deepMerge' }[];
   /** registryProject: project a registry record's op-map over a frozen source — `{ source, mapRef, key }`. */
   registryProject?: { source: string; mapRef: string; key: string };
+  /** EXECUTION GATE(s) → a POST `op.run` whose non-zero exit BLOCKS the node (test/build/lint). `{ cmd, args?, cwd? }`. */
+  gateRun?: { cmd: string; args?: string[]; cwd?: string }[];
+  /** (M4) Escalate to a stronger tier/model on failure → `op.action{kind:'escalate', via}` (→ io.escalate.tier). */
+  escalate?: string;
+  /** (M3) Bounded reroute back to an upstream node on failure → `op.action{kind:'rerouteTo', node, max}`. */
+  reroute?: { node: string; max: number };
   /** Per-node external MCP servers (loader REJECTS a literal secret — use $VAR refs in values). */
   mcp?: McpServers;
   /** Which agent ENGINE runs this node: 'pi' (default fleet) or 'claude-code' (headless local Claude). */
@@ -240,37 +246,54 @@ export function buildNode(opts: NodeOpts): Record<string, unknown> {
     ...(opts.schema ? { schema: opts.schema } : {}),
     ...(opts.returnMode ? { returnMode: opts.returnMode } : {}),
   };
-  // (G13) The canonical `op[]` envelope for the DERIVE hooks. Authoring `op[]` short-circuits the loader's
-  // alias-lowering (`lower.ts:48` — `if (def.op) return def.op`), so a node WITH derive hooks must ALSO carry
-  // its `inject` here (folded as PRE read-ops) or it would be dropped; `checks`/`policy` stay below (the
-  // loader reads them independently). The derives RUN because `op[]` is the SOLE derive rep (the legacy
-  // `node.ops` + its back-fill were retired in U6) and the runner reads each family off `op[]` via
-  // `derivesFromOp`. Order is canonical pre→post: inject reads · seed · project · registryProject · merge · promote.
-  const derive: Record<string, unknown>[] = [];
+  // (G13) The canonical `op[]` envelope. It carries the DERIVE hooks (seed/project/registryProject/merge/
+  // promote), EXECUTION GATES (op.run), and CONTROL ACTIONS (escalate/reroute) — ONE ordered list. Authoring
+  // `op[]` short-circuits the loader's alias-lowering (`lower.ts` — `if (def.op) return def.op`), so a node
+  // WITH any op MUST ALSO carry its `inject` here (folded as PRE read-ops) or it would be dropped; `checks`/
+  // `policy` stay below (the loader reads them independently via collectChecks/toPolicy). The derives RUN
+  // because `op[]` is the SOLE derive rep (legacy `node.ops` retired in U6); the runner reads each family off
+  // `op[]` (`derivesFromOp`/`runOpsFromOp`/`lowerActions`). Canonical order: pre reads · seed · project ·
+  // registryProject · merge · promote (post derives) · execution gates (post) · control actions (on-failure).
+  const ops: Record<string, unknown>[] = [];
   for (const s of opts.seed ?? []) {
-    derive.push({ when: 'pre', writes: [s.to], transform: { kind: 'seed', from: s.from } });
+    ops.push({ when: 'pre', writes: [s.to], transform: { kind: 'seed', from: s.from } });
   }
   for (const p of opts.project ?? []) {
     const reads = Array.isArray(p.from) ? p.from : [p.from];
-    derive.push({ when: 'post', writes: [p.to], reads, transform: { kind: 'project', from: p.from } });
+    ops.push({ when: 'post', writes: [p.to], reads, transform: { kind: 'project', from: p.from } });
   }
   if (opts.registryProject) {
     const { source, mapRef, key } = opts.registryProject;
-    derive.push({ when: 'post', transform: { kind: 'projectRegistry', source, mapRef, key } });
+    ops.push({ when: 'post', transform: { kind: 'projectRegistry', source, mapRef, key } });
   }
   if (opts.mergeRun?.length) {
-    const ops = opts.mergeRun.map((r) => ({
+    const mergeOps = opts.mergeRun.map((r) => ({
       run: { cmd: r.cmd, ...(r.args?.length ? { args: r.args } : {}), ...(r.cwd ? { cwd: r.cwd } : {}) },
     }));
-    derive.push({ when: 'post', transform: { kind: 'merge', ops } });
+    ops.push({ when: 'post', transform: { kind: 'merge', ops: mergeOps } });
   }
   for (const p of opts.promote ?? []) {
-    derive.push({ when: 'post', transform: { kind: 'promote', from: p.from, to: p.to, ...(p.merge ? { reducer: p.merge } : {}) } });
+    ops.push({ when: 'post', transform: { kind: 'promote', from: p.from, to: p.to, ...(p.merge ? { reducer: p.merge } : {}) } });
   }
-  if (derive.length) {
-    node.op = [...(opts.inject ?? []).map((p) => ({ when: 'pre', reads: [p] })), ...derive];
+  // EXECUTION GATE — a POST `op.run`; a non-zero exit BLOCKS the node (`onFailure:'block'`; node-lifecycle
+  // partitions blocking op-failures). Distinct from `--merge-run` (a `transform.merge` data-derive, no verdict).
+  for (const g of opts.gateRun ?? []) {
+    ops.push({
+      when: 'post',
+      run: { cmd: g.cmd, ...(g.args?.length ? { args: g.args } : {}), ...(g.cwd ? { cwd: g.cwd } : {}) },
+      onFailure: 'block',
+    });
+  }
+  // CONTROL ACTIONS (on failure) — escalate `via` lowers to io.escalate.tier (M4); reroute `node` lowers to
+  // io.reroute.onFail (M3 bounded self-fix; `node` must be a strict ancestor — expandReroute is the oracle).
+  if (opts.escalate) ops.push({ when: 'on-failure', action: { kind: 'escalate', via: opts.escalate } });
+  if (opts.reroute) {
+    ops.push({ when: 'on-failure', action: { kind: 'rerouteTo', node: opts.reroute.node, max: opts.reroute.max } });
+  }
+  if (ops.length) {
+    node.op = [...(opts.inject ?? []).map((p) => ({ when: 'pre', reads: [p] })), ...ops];
   } else if (opts.inject?.length) {
-    node.inject = opts.inject; // no derive hooks ⇒ inject stays the legacy alias (the loader lowers it).
+    node.inject = opts.inject; // no op[] entries ⇒ inject stays the legacy alias (the loader lowers it).
   }
   // DETECTION (§4) — the full `$defs/check` shape in BOTH lanes (pre over staged inputs, post over produced
   // artifacts). `collectChecks` (render.ts) folds kind/path/param/severity onto the runtime `io.checks`, so a
@@ -529,6 +552,18 @@ function parseMergeRun(entry: string): NonNullable<NodeOpts['mergeRun']>[number]
   return { cmd, ...(args.length ? { args } : {}), ...(cwd ? { cwd } : {}) };
 }
 
+/** Parse `--reroute node[:max]` → a bounded reroute back to an upstream node (default max 1). `node` is the
+ *  LHS of the FIRST `:`; the optional RHS is the attempt budget. The target must be a strict ancestor —
+ *  `expandReroute` is the run-path oracle (loadTemplate alone accepts any id). */
+function parseReroute(entry: string): NonNullable<NodeOpts['reroute']> {
+  const colon = entry.indexOf(':');
+  if (colon < 0) return { node: entry, max: 1 };
+  const node = entry.slice(0, colon);
+  const max = Number(entry.slice(colon + 1));
+  if (!node || !Number.isFinite(max)) throw new Error(`piflowctl: --reroute expects node[:max] (got "${entry}")`);
+  return { node, max };
+}
+
 /** Parse `--registry-project source=…,mapRef=…,key=…` → a POST registryProject (all three required). */
 function parseRegistryProject(entry: string): NonNullable<NodeOpts['registryProject']> {
   const fields: Record<string, string> = {};
@@ -551,6 +586,7 @@ const ADD_USAGE =
   '[--owns <glob>]... [--read <p>]... [--tool <t>]... [--deny <t>]... [--inject <p>]... ' +
   '[--seed <to=from>]... [--promote <from=to[:reducer]>]... [--project <to=from[,from2]>]... ' +
   '[--merge-run <cmd[:args][@cwd]>]... [--registry-project <source=,mapRef=,key=>] ' +
+  '[--gate-run <cmd[:args][@cwd]>]... [--escalate <tier|model>] [--reroute <node[:max]>] ' +
   '[--mcp <name=url>]... [--check <kind[:path[:severity[:param]]]>]... [--check-pre <kind[:path[:severity[:param]]]>]... ' +
   '[--agent-type <id>] [--executor pi|claude-code] [--model <m>] [--provider <g>] [--tier <t>] ' +
   '[--timeout <ms>] [--retries <n>] [--return-mode optional|required] [--schema <p>] [--skill <p>] ' +
@@ -624,6 +660,9 @@ export async function runAddNodeCli(argv: string[]): Promise<void> {
     registryProject: flags['registry-project']?.[0]
       ? parseRegistryProject(flags['registry-project'][0])
       : undefined,
+    gateRun: (flags['gate-run'] ?? []).map(parseMergeRun), // same cmd[:args][@cwd] grammar; emitted as a gate
+    escalate: flags.escalate?.[0],
+    reroute: flags.reroute?.[0] ? parseReroute(flags.reroute[0]) : undefined,
     mcp: parseMcp(flags.mcp),
     executor: flags.executor?.[0] as NodeOpts['executor'],
     model: flags.model?.[0],

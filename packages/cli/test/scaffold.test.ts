@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadTemplate, compile, derivesFromOp } from '@piflow/core';
+import { loadTemplate, compile, derivesFromOp, expandReroute } from '@piflow/core';
 import { scaffoldNew, scaffoldAddNode, runNewCli, runAddNodeCli } from '../src/scaffold.js';
 
 // The scaffolder EMITS schema-valid meta.json + node.json from flags so an agent only Writes prose
@@ -453,6 +453,84 @@ describe('scaffold — judge gate (materialized) + checkpoint (G5 HITL)', () => 
     });
     expect(node.prompt).toEqual({ file: 'prompt.md' }); // still a prompt block (not programmatic)
     await expect(loadTemplate(DIR)).resolves.toBeDefined();
+  });
+});
+
+// EXECUTION GATE + CONTROL ACTIONS — the op[] beyond derives. An execution gate is a POST `op.run` whose
+// non-zero exit BLOCKS the node (node-lifecycle); escalate/reroute are `op.action` bodies the loader lowers
+// to the M4/M3 NodeIO primitives (via→io.escalate.tier, node→io.reroute.onFail; lower.ts lowerActions).
+// All three ride the SAME `node.op[]` the scaffolder builds for derives — and once `op[]` exists, `inject`
+// MUST fold into it (the legacy alias is dead once `def.op` is present, lower.ts). These assert the LOWERED
+// runtime fields (not just the emitted JSON), so a wrong field name (e.g. `tier` instead of `via`) reddens.
+describe('scaffold — execution gate + escalate/reroute control actions (op[])', () => {
+  it('--gate-run emits a POST op.run gate (onFailure:block) and loadTemplate accepts it', async () => {
+    await scaffoldNew(DIR, { name: 'g', description: 'exec gate' });
+    await runAddNodeCli([DIR, '--id', 'verify', '--artifact', 'verify/report.json', '--gate-run', 'npm:test']);
+    await writeProse('verify');
+
+    const node = await readJson(path.join(DIR, 'nodes', 'verify', 'node.json'));
+    expect(node.op).toEqual([{ when: 'post', run: { cmd: 'npm', args: ['test'] }, onFailure: 'block' }]);
+    await expect(loadTemplate(DIR)).resolves.toBeDefined();
+  });
+
+  it('--escalate <tier> emits an on-failure escalate action that lowers to io.escalate.tier', async () => {
+    await scaffoldNew(DIR, { name: 'e', description: 'escalate' });
+    await runAddNodeCli([DIR, '--id', 'verify', '--artifact', 'r.json', '--escalate', 'deep']);
+    await writeProse('verify');
+
+    const node = await readJson(path.join(DIR, 'nodes', 'verify', 'node.json'));
+    // Author `via` (NOT `tier`) — lowerActions reads `via` and IGNORES a `tier` key; this is the anti-drift trap.
+    expect(node.op).toEqual([{ when: 'on-failure', action: { kind: 'escalate', via: 'deep' } }]);
+
+    // The load-bearing round-trip: lowerActions flips via→tier onto io.escalate. RED if buildNode emitted `tier`.
+    const spec = await loadTemplate(DIR);
+    const verify = spec.nodes.find((n) => n.label === 'verify')!;
+    expect(verify.io.escalate).toMatchObject({ tier: 'deep' });
+  });
+
+  it('--reroute <node[:max]> emits a bounded rerouteTo that lowers to io.reroute and survives expandReroute', async () => {
+    await scaffoldNew(DIR, { name: 'r', description: 'reroute' });
+    await scaffoldAddNode(DIR, { id: 'produce', artifacts: ['work/draft.md'], owns: ['work/**'] });
+    await runAddNodeCli([DIR, '--id', 'verify', '--dep', 'produce', '--artifact', 'verify/report.json', '--reroute', 'produce:2']);
+    await writeProse('produce');
+    await writeProse('verify');
+
+    const node = await readJson(path.join(DIR, 'nodes', 'verify', 'node.json'));
+    expect(node.op).toEqual([{ when: 'on-failure', action: { kind: 'rerouteTo', node: 'produce', max: 2 } }]);
+
+    // loadTemplate lowers node→onFail; expandReroute then validates `produce` is a strict ancestor (it is).
+    // RED if buildNode mis-named the field or the target weren't a real upstream node.
+    const spec = await loadTemplate(DIR);
+    const verify = spec.nodes.find((n) => n.label === 'verify')!;
+    // reroute lowers to the INTENT-level `reroute` (top-level, like checkpoint/fusion), NOT io.reroute —
+    // expandReroute consumes it pre-compile (loader.ts:188; op-action-lower.test.ts:64). Escalate, by
+    // contrast, lowers to io.escalate. Asserting the wrong surface is exactly the drift this cross-references.
+    expect((verify as { reroute?: unknown }).reroute).toMatchObject({ onFail: 'produce', max: 2 });
+    expect(() => expandReroute(spec)).not.toThrow(); // the ancestor constraint holds
+  });
+
+  it('a gate-only node (no derive hooks) still folds inject INTO op[] (the alias is dead once op[] exists)', async () => {
+    await scaffoldNew(DIR, { name: 'g', description: 'gate + inject' });
+    await runAddNodeCli([
+      DIR,
+      '--id', 'verify',
+      '--artifact', 'verify/report.json',
+      '--inject', '{{RUN}}/spec.md',
+      '--gate-run', 'npm:test',
+    ]);
+    await writeProse('verify');
+    await fs.writeFile(path.join(DIR, 'spec.md'), 'spec\n');
+
+    const node = await readJson(path.join(DIR, 'nodes', 'verify', 'node.json'));
+    // RED if buildNode only folds inject when DERIVE hooks are present (the old `if (derive.length)` gate):
+    // a gate-only node would have left inject as a dead alias under an authored op[].
+    expect(node.op).toEqual([
+      { when: 'pre', reads: ['{{RUN}}/spec.md'] },
+      { when: 'post', run: { cmd: 'npm', args: ['test'] }, onFailure: 'block' },
+    ]);
+    expect(node.inject).toBeUndefined();
+    const spec = await loadTemplate(DIR);
+    expect(spec.nodes.find((n) => n.label === 'verify')!.io.reads).toContain('spec.md');
   });
 
   // The CLI STRING layer (`runAddNodeCli`) parses each derive flag's value-grammar (design §3) into the same
