@@ -221,6 +221,9 @@ function splice(text, block) {
 }
 
 // ---- main ----
+const allKeys = readdirSync(HERE).filter(f => f.endsWith('.md')).map(f => f.replace(/\.md$/, ''));
+const unknown = only.filter(k => !allKeys.includes(k));
+if (unknown.length) { console.error(`unknown card key(s): ${unknown.join(', ')} — known: ${allKeys.join(', ')}`); process.exit(2); }
 const cards = readdirSync(HERE).filter(f => f.endsWith('.md') && (!only.length || only.includes(f.replace(/\.md$/, ''))));
 let drift = 0;
 for (const file of cards) {
