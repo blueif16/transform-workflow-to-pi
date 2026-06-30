@@ -531,6 +531,107 @@ describe('runWorkflow — claude-code executor dispatch composes end-to-end (off
   });
 });
 
+// ── claude-code verdict: derive node status from parseClaudeResult, NOT the pi return protocol ─────
+//   BUG: a successful claude-code node lands `gap`, not `ok`. The verdict ladder runs the PI return-
+//   protocol parser (`lastJsonBlock`) over claude's `--output-format stream-json` stdout, which is NDJSON.
+//   One event is a benign `rate_limit_event` whose payload is `{status:"allowed",...}`; `lastJsonBlock`
+//   greedily matches THAT balanced `{…}` and treats `status:"allowed"` as the node's structured return →
+//   a non-ok, non-gap/blocked self-report → defaults to `gap`. The pi return protocol DOES NOT APPLY to
+//   claude's stream-json; the claude verdict is `parseClaudeResult(stdout)` (ok=true, isError=false on the
+//   same bytes). These tests drive the REAL captured fixture (authoritative for claude v2.1.175).
+
+describe('runWorkflow — claude-code node derives its verdict from parseClaudeResult, not lastJsonBlock', () => {
+  // The REAL captured `claude -p --output-format stream-json` stdout: 23 NDJSON events incl. the
+  // `rate_limit_event` ({status:"allowed"}) the pi parser misreads, and one `result` event
+  // (subtype:"success", is_error:false). `lastJsonBlock(fixture).status === "allowed"` (the misread);
+  // `parseClaudeResult(fixture)` → ok=true, isError=false. Secret-free.
+  const fixturePath = path.join(__dirname, 'fixtures', 'claude-stream-json-sample.ndjson');
+
+  /** A claude-code run on InMemory: write the declared artifact, emit `stdout`, exit `code`. */
+  function claudeRun(g: ReturnType<typeof compile>, outDir: string, stdout: string, code = 0) {
+    let createOutputDir: string | undefined;
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = {
+      kind: 'inmemory',
+      async create(opts: CreateOpts): Promise<Sandbox> {
+        createOutputDir = opts.outputDir;
+        return base.create(opts);
+      },
+    };
+    const execRunner: ExecRunner = async (sandbox, _cmd, _opts) => {
+      // Write each declared artifact so the artifact gate passes (a real claude run wrote its files).
+      for (const a of g.nodes.fix.io.artifacts) {
+        await sandbox.writeFile(`${createOutputDir}/${a.path}`, 'claude-wrote-this');
+      }
+      return { result: { stdout, stderr: '', code }, killed: null };
+    };
+    return runWorkflow(g, {
+      run: 'cc-verdict', outDir, provider, execRunner,
+      secretResolver: (name: string) => (name === 'CLAUDE_CODE_OAUTH_TOKEN' ? 'test-oauth-token' : undefined),
+    });
+  }
+
+  it('a successful claude-code node (exit 0, result.is_error=false, artifact present) reports `ok` — the rate_limit `{status:"allowed"}` misread does NOT downgrade it to `gap`', async () => {
+    const fixture = await fs.readFile(fixturePath, 'utf8');
+    const g = compile(wf([n('Fix', [], ['fix.txt'], { executor: 'claude-code' })]));
+    const outDir = await tmpOut();
+    const { status } = await claudeRun(g, outDir, fixture);
+    // The crux: WITHOUT the fix this is 'gap' (lastJsonBlock matched rate_limit `status:"allowed"`).
+    expect(status.nodes.fix.status).toBe('ok');
+    expect(status.ok).toBe(true);
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a claude-code node whose `result` event is_error=true (exit 0) reports a FAILURE (`error`), surfacing claude\'s error — never `ok`', async () => {
+    // A minimal, realistic stream-json: a system init + a result event with subtype:error / is_error:true.
+    const errStdout = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1' }),
+      JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, session_id: 's1', result: 'boom: tool failed', num_turns: 1 }),
+    ].join('\n');
+    const g = compile(wf([n('Fix', [], ['fix.txt'], { executor: 'claude-code' })]));
+    const outDir = await tmpOut();
+    const { status } = await claudeRun(g, outDir, errStdout, 0);
+    expect(status.nodes.fix.status).toBe('error');
+    // claude's self-reported error is surfaced on the node issues (not swallowed).
+    expect((status.nodes.fix.issues ?? []).join(' ')).toContain('boom: tool failed');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('the driver-verified gate STILL beats the claude self-report: a claude-code node with a MISSING required artifact is `blocked`, even on a success-fixture stdout', async () => {
+    const fixture = await fs.readFile(fixturePath, 'utf8');
+    const g = compile(wf([n('Fix', [], ['fix.txt'], { executor: 'claude-code' })]));
+    const outDir = await tmpOut();
+    // execRunner that emits the SUCCESS fixture but writes NO artifact → the missing-artifact gate fires.
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = { kind: 'inmemory', create: (o) => base.create(o) };
+    const execRunner: ExecRunner = async () => ({ result: { stdout: fixture, stderr: '', code: 0 }, killed: null });
+    const { status } = await runWorkflow(g, {
+      run: 'cc-blocked', outDir, provider, execRunner,
+      secretResolver: (name: string) => (name === 'CLAUDE_CODE_OAUTH_TOKEN' ? 'test-oauth-token' : undefined),
+    });
+    expect(status.nodes.fix.status).toBe('blocked');
+    expect((status.nodes.fix.issues ?? []).join(' ')).toContain('missing');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
+  it('a claude-code node with NO declared artifact (returnMode defaults to `required`) that succeeded is `ok` — the success satisfies the claude handshake, NOT falsely `error`ed by the no-return-block clause', async () => {
+    const fixture = await fs.readFile(fixturePath, 'utf8');
+    // No produces ⇒ no artifact ⇒ returnMode defaults to 'required'. A pi node here would NEED a return
+    // block; a claude node proves its handshake via parseClaudeResult (ok), so it must be `ok`, not `error`.
+    const g = compile(wf([n('Fix', [], [], { executor: 'claude-code' })]));
+    const outDir = await tmpOut();
+    const base = new InMemorySandboxProvider();
+    const provider: SandboxProvider = { kind: 'inmemory', create: (o) => base.create(o) };
+    const execRunner: ExecRunner = async () => ({ result: { stdout: fixture, stderr: '', code: 0 }, killed: null });
+    const { status } = await runWorkflow(g, {
+      run: 'cc-noartifact', outDir, provider, execRunner,
+      secretResolver: (name: string) => (name === 'CLAUDE_CODE_OAUTH_TOKEN' ? 'test-oauth-token' : undefined),
+    });
+    expect(status.nodes.fix.status).toBe('ok');
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+});
+
 // ── command builder (the production default's flag shape) ────────────────────────────────────────
 
 describe('defaultPiCommand — production headless flags', () => {

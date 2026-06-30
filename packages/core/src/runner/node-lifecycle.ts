@@ -45,6 +45,7 @@ import {
   writeJournalEntry,
 } from './journal.js';
 import { lastJsonBlock } from './return-parse.js';
+import { parseClaudeResult } from './claude-result.js';
 import {
   CLOUD_KINDS,
   IN_PLACE_KINDS,
@@ -551,7 +552,21 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
     // The status ladder (run.mjs 1876–1883): kill/nonzero ⇒ error; then the driver-verified contract
     // breaches (missing → schema-invalid → blocking integrity check), each beating any self-report; then
     // a non-ok self-report is honored; then a MISSING handshake errors ONLY when it was required; else ok.
-    let parsed = lastJsonBlock(result.stdout);
+    //
+    // EXECUTOR-AWARE SELF-REPORT: the pi RETURN PROTOCOL (a fenced `{status,summary,issues}` tail recovered
+    // by `lastJsonBlock`) is a PI convention — it DOES NOT APPLY to a claude-code node, whose stdout is
+    // `--output-format stream-json` NDJSON. Running `lastJsonBlock` over that NDJSON MISREADS a benign
+    // `rate_limit_event` ({status:"allowed",…}) as the node's structured return → a non-ok, non-gap/blocked
+    // self-report → a false `gap`. For a claude-code node we therefore (a) NEUTER the pi `parsed` self-report
+    // (so the return-protocol clauses below — the self-report, the no-handshake, the return-schema gate, the
+    // G8 re-parse, the `parsed.issues` carry — can never fire on the stream-json misread) and (b) derive the
+    // claude verdict from `parseClaudeResult` instead: `isError ⇒ error` (claude self-reported a failure on
+    // exit 0); else the driver-verified gates alone decide (success ⇒ ok). The driver gates (missing/schema/
+    // integrity/op breaches above the self-report clause) are executor-agnostic and STILL beat the claude
+    // self-report — a claude success with a missing required artifact still blocks.
+    const isClaude = node.executor === 'claude-code';
+    const claudeVerdict = isClaude ? parseClaudeResult(result.stdout) : undefined;
+    let parsed = isClaude ? null : lastJsonBlock(result.stdout);
 
     // POST-NODE RETURN-SCHEMA GATE (mirrors the artifact schema gate, runner.ts above): a node's authored
     // `returnSchema` (node.json top-level `return`) constrains the SHAPE of its structured result. We
@@ -629,7 +644,7 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
         artifacts = await Promise.all(node.io.artifacts.map((a) => artifactState(path.resolve(ctx.outDir, a.path), a.path)));
         missing = artifacts.filter((a) => !a.exists).map((a) => a.path);
         schema = await validateArtifactSchemas(node.io.artifacts, { outDir: ctx.outDir, roots: [ctx.outDir, scope.root], validate: ctx.validateSchema });
-        parsed = lastJsonBlock(result.stdout);
+        parsed = isClaude ? null : lastJsonBlock(result.stdout); // claude: never re-introduce the stream-json misread
         returnSchemaInvalid = validateReturn();
         returnSchemaBreach = returnSchemaInvalid.length > 0 && returnMode === 'required';
       }
@@ -677,9 +692,23 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
     } else if (returnSchemaBreach) {
       st = 'blocked';
       issues.push(`contract breach — return violates the declared returnSchema: ${returnSchemaInvalid.join('; ')}`);
+    } else if (claudeVerdict?.isError && claudeVerdict.subtype !== undefined) {
+      // CLAUDE SELF-REPORT (replaces the pi self-report clause for a claude-code node): the `result` event
+      // was PRESENT and reported a failure on a CLEAN exit 0 (e.g. error_during_execution / error_max_turns).
+      // The exec is formally a success, but claude says it failed → `error`, surfacing claude's reason.
+      // GATED on `subtype !== undefined` so this honors only an ACTUAL `result` event: `parseClaudeResult`
+      // ALSO returns isError=true when NO result event is found (empty/truncated stdout) — but that is an
+      // ABSENT handshake, NOT a claude self-report. The driver gates own the produced-nothing case (a real
+      // empty run fails the artifact gate above); a result-less exit-0 node with its artifact on disk stays
+      // the pi-parity `ok`. (Exit-nonzero is already handled at the top of the ladder.) `parsed` is null for
+      // claude, so the pi clauses below are dead — a claude success (isError=false) falls straight to `ok`.
+      st = 'error';
+      issues.push(`claude reported an error (${claudeVerdict.subtype})${claudeVerdict.text ? `: ${claudeVerdict.text}` : ''}`);
     } else if (parsed?.status && parsed.status !== 'ok') {
       st = parsed.status === 'gap' || parsed.status === 'blocked' ? parsed.status : 'gap';
-    } else if (!parsed && returnMode === 'required') {
+    } else if (!parsed && returnMode === 'required' && !isClaude) {
+      // The pi handshake (a return-protocol block is REQUIRED when the node declares no artifact) does NOT
+      // apply to a claude-code node — its handshake is the `result` event, already verified above (isError).
       st = 'error';
       issues.push('no return-protocol block parsed from output (return:required)');
     } else {
