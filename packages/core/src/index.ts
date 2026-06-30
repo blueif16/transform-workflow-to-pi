@@ -377,3 +377,15 @@ export type {
   NodeScore, Tier0Signal, Tier1Result, Tier1Check, Tier1Gate, Defect, DefectBucket, Confidence,
   CriteriaEntry, CriteriaFixture, ScoreInput, ScoreRunOpts, TriageOpts, RoutingMeta,
 } from './optimize/index.js';
+// The FIX→GATE→LAND overlord (§6) + the §5.1 replay+scoring harness + its mining half. Lifted to the ROOT so
+// a PRODUCT-side binding (game-omni's live oracle module) can import makeReplayStages + the replay/driver
+// TYPES from the package root — it cannot reach into src/optimize/. All product-agnostic; no product concept
+// enters core (the live oracle/copyScope it injects stay product-side).
+export {
+  evaluateGate, runFixGate, writeStagingManifest, adoptFile, makeReplayStages, mineTaskFromTrace, gameOmniNodeToMilestone,
+} from './optimize/index.js';
+export type {
+  GateInput, GateVerdict, LandPolicy, Fixer, ReplayScore, PrepareCandidate, BaseScore, CandidateEdit,
+  FixGateStages, FixGateOpts, FixGateRecord, FixGateResult, StageOpts,
+  CheckableTask, ReplayOracle, MineTask, CopyScope, ReplayDeps, ReplayStages, MineOpts,
+} from './optimize/index.js';
