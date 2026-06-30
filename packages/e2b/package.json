@@ -38,10 +38,10 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@piflow/core": "^0.1.0"
+    "@piflow/core": "workspace:*"
   },
   "peerDependencies": {
     "e2b": ">=2 <3"

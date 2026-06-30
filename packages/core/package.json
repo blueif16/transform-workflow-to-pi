@@ -46,10 +46,15 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@piflow/tool-bridge": "^0.1.0",
+    "@piflow/tool-bridge": "workspace:*",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "esbuild": "^0.28.1"
+  },
+  "devDependencies": {
+    "zod": "^3.25"
   }
 }

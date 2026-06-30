@@ -5,11 +5,6 @@
   "type": "module",
   "description": "Pi Flow — a self-designing, durable, self-improving orchestration substrate (TypeScript SDK).",
   "license": "MIT",
-  "workspaces": [
-    "packages/*",
-    "apps/*",
-    "tui"
-  ],
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b",
@@ -17,7 +12,7 @@
     "test:watch": "vitest",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "npm run build && changeset publish"
+    "release": "pnpm run build && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
@@ -30,5 +25,13 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "overrides": {
+      "zod": "^3.25"
+    }
   }
 }

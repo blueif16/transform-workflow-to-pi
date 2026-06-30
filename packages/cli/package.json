@@ -39,13 +39,13 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@piflow/core": "^0.1.0"
+    "@piflow/core": "workspace:*"
   },
   "optionalDependencies": {
-    "@piflow/daytona": "^0.1.0",
-    "@piflow/e2b": "^0.1.0"
+    "@piflow/daytona": "workspace:*",
+    "@piflow/e2b": "workspace:*"
   }
 }
