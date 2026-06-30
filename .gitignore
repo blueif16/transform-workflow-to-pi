@@ -39,3 +39,8 @@ out/
 .claude/worktrees/
 .claude/workflows/
 .tasks/HANDOFF-*.md
+
+# Generated build artifact: `piflowctl skills install` ships the workflow-authoring trio, bundled into the
+# CLI tarball by the package's `prepack` (packages/cli/scripts/bundle-skills.mjs) from the canonical repo-root
+# .claude/skills/. Never a committed duplicate — the canonical source is the ONE editable copy (no drift).
+packages/cli/skills/
