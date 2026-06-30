@@ -1,4 +1,4 @@
-// `piflowctl optimize --fix --binding <module> [--staging-dir <d>] [--auto-adopt] [--edit-budget n] [--token-budget n]`
+// `piflowctl optimize --fix --binding <module> [--node <substr>] [--staging-dir <d>] [--auto-adopt] [--edit-budget n] [--token-budget n]`
 // — the FIX→GATE→LAND driver surfaced on the CLI (piflow-memory-v1.5 §6). It INVENTS the product→optimizer
 // injection convention (none existed): a PRODUCT binding module supplies the LIVE stages that cannot live in
 // @piflow/core — `oracle` (the product's runMilestoneVerify2 + build), `copyScope`, `fixer` — and the CLI
@@ -33,6 +33,8 @@ export interface ParsedOptimizeFixArgs {
   autoAdopt: boolean;
   editBudget?: number;
   tokenBudget?: number;
+  /** substring filter on the worklist — process ONLY defects whose node id contains it (cost/safety scope). */
+  node?: string;
 }
 
 export interface OptimizeFixDeps {
@@ -52,6 +54,7 @@ export function parseOptimizeFixArgs(argv: string[]): ParsedOptimizeFixArgs {
     else if (k === '--auto-adopt') out.autoAdopt = true;
     else if (k === '--edit-budget') out.editBudget = Number(argv[++i]);
     else if (k === '--token-budget') out.tokenBudget = Number(argv[++i]);
+    else if (k === '--node') out.node = argv[++i];
     else if (k.startsWith('--')) { /* ignore unknown flags */ }
     else positionals.push(k);
   }
@@ -91,7 +94,10 @@ export async function runOptimizeFixCli(argv: string[], deps: OptimizeFixDeps = 
 
   // SCORE → TRIAGE: the worklist (reuses the read path; scoreRun injectable for tests).
   const { scores, digest } = await (deps.scoreRun ?? coreScoreRun)(args.dir);
-  const defects = triage(scores, digest);
+  // `--node <substr>` scopes the worklist to one node — the live oracle is expensive (build + browser per
+  // candidate) and a degenerate incumbent (e.g. a bound-exhausted stub scoring 0) can make any edit look like
+  // an improvement, so a targeted first run is both the cost bound and the safety scope.
+  const defects = triage(scores, digest).filter((d) => (args.node ? d.node.includes(args.node) : true));
 
   // Compose the binding's LIVE stages with the product-agnostic core driver. The driver decides/bounds/stages.
   const binding = await loadBinding(args.binding);

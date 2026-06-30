@@ -45,9 +45,10 @@ USAGE
   piflowctl optimize <rundir> [--json] [--archetype <n>]  out-of-band Score + Triage of a FINISHED run:
                                             folds Tier-0 (telemetry) × Tier-1 (verify outcome) → the
                                             four-way (LAPSE/SKILL/FUNCTIONALITY/ARCH) worklist. Read-only.
-  piflowctl optimize --fix <rundir> --binding <module> [--auto-adopt] [--staging-dir <d>] [--edit-budget n]
-                                            drive FIX→GATE with a PRODUCT binding (oracle/copyScope/fixer);
-                                            strict-improvement gate on a candidate copy → STAGES a manifest.
+  piflowctl optimize --fix <rundir> --binding <module> [--node <substr>] [--auto-adopt] [--staging-dir <d>]
+                                            [--edit-budget n]  drive FIX→GATE with a PRODUCT binding
+                                            (oracle/copyScope/fixer); strict-improvement gate on a candidate
+                                            copy → STAGES a manifest. --node scopes the worklist to one node.
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
   piflowctl model   [list | set <tier> <modelId> | activate | deactivate]  the model-tier config
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)

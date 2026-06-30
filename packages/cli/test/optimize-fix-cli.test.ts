@@ -41,6 +41,16 @@ describe('parseOptimizeFixArgs', () => {
     expect(a.editBudget).toBeUndefined();
     expect(a.tokenBudget).toBeUndefined();
   });
+
+  it('parses --node as a worklist filter (target one node; the cost/safety scope)', () => {
+    const a = parseOptimizeFixArgs(['runs/gs01', '--binding', './b.mjs', '--node', 'm3']);
+    expect(a.node).toBe('m3');
+  });
+
+  it('leaves --node unset when not given (whole worklist)', () => {
+    const a = parseOptimizeFixArgs(['runs/gs01', '--binding', './b.mjs']);
+    expect(a.node).toBeUndefined();
+  });
 });
 
 describe('loadBinding — the dynamic-import seam', () => {
@@ -93,5 +103,30 @@ describe('runOptimizeFixCli — composition smoke (scoreRun injected)', () => {
     expect(manifest.summary.accepted).toBe(1); // base 0 → candidate 1.0 (fake oracle passes) → strict improvement
     expect(manifest.records[0].node).toBe('w4-execute-m2');
     expect(manifest.records[0].landed).toBe('staged'); // auto-adopt OFF → the win stages for the human
+  });
+
+  it('with --node, processes ONLY the matching node(s) from the worklist', async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), 'optfix-run-'));
+    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'optfix-stage-'));
+    // two incumbents recorded → without a filter, triage yields two FUNCTIONALITY defects.
+    await fs.mkdir(path.join(runDir, 'verify'), { recursive: true });
+    await fs.writeFile(path.join(runDir, 'verify', 'report.M1.json'), JSON.stringify({ milestoneId: 'M1', marker: 'VALIDATION_FAILED', passed: false, fixOutcome: 'exhausted' }));
+    await fs.writeFile(path.join(runDir, 'verify', 'report.M3.json'), JSON.stringify({ milestoneId: 'M3', marker: 'VALIDATION_FAILED', passed: false, fixOutcome: 'exhausted' }));
+
+    const digest: RunDigest = {
+      run: 'tmp', done: true, ok: true, durationMs: 1,
+      totals: { nodes: 2, ok: 2, failed: 0, inputTokens: 0, outputTokens: 0, cost: 0, contextPeak: 0, modelCalls: 0, toolCalls: 0 },
+      nodes: [dnode('w4-execute-m1'), dnode('w4-execute-m3')], anomalies: [], rootCauses: [],
+    };
+    const tier1ByNode = new Map([
+      ['w4-execute-m1', t1('M1', [{ id: 'M1-A1', gate: 'fidelity', passed: false }])],
+      ['w4-execute-m3', t1('M3', [{ id: 'M3-A3', gate: 'fidelity', passed: false }])],
+    ]);
+    const fakeScoreRun = async () => ({ scores: scoreNodes({ digest, tier1ByNode }), digest });
+
+    await runOptimizeFixCli(['--fix', runDir, '--binding', FAKE, '--staging-dir', stagingDir, '--node', 'm3'], { scoreRun: fakeScoreRun, print: () => {} });
+
+    const manifest = JSON.parse(await fs.readFile(path.join(stagingDir, 'manifest.json'), 'utf8'));
+    expect(manifest.records.map((r: { node: string }) => r.node)).toEqual(['w4-execute-m3']); // m1 filtered OUT
   });
 });
