@@ -78,6 +78,10 @@ export function readVerifyReport(report: unknown, opts: { reportPath?: string } 
     (isObject(r.perturbation) && r.perturbation.ran === false) ||
     (r.escalation != null && r.escalation !== false);
 
+  // ── runtime crash signal: carry consoleErrors through (string entries only) — it is the DOMINATING cause
+  // when an uncaught error wedges the loop and masks the per-check failures; the fixer needs to SEE it. ──────
+  const consoleErrors = asArray(r.consoleErrors).filter((e): e is string => typeof e === 'string');
+
   return {
     milestoneId,
     marker,
@@ -86,6 +90,7 @@ export function readVerifyReport(report: unknown, opts: { reportPath?: string } 
     checks,
     scalar,
     ...(opts.reportPath !== undefined ? { reportPath: opts.reportPath } : {}),
+    ...(consoleErrors.length ? { consoleErrors } : {}),
   };
 }
 

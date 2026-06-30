@@ -38,6 +38,20 @@ describe('triage — the four-way projector', () => {
     expect(d.evidence.join(' ')).toContain('M2-A3');
   });
 
+  it('surfaces the Tier-1 consoleErrors into a FUNCTIONALITY defect evidence (so the fixer sees the runtime crash)', () => {
+    // The masking-crash signal lives in consoleErrors, not the per-check arrays. Without this the fixer patches
+    // the wrong thing (gs01 M3: 7 candidates, all 0.5455, none fixed the actual TypeError).
+    const scores: NodeScore[] = [{
+      node: 'w4-execute-m3', tier0: cleanTier0, abstained: false, scalar: 0.55,
+      tier1: t1({ milestoneId: 'M3',
+        checks: [{ id: 'M3-A1', gate: 'fidelity', passed: false }],
+        consoleErrors: ["TypeError: Cannot read properties of undefined (reading 'entries')"] }),
+    }];
+    const [d] = triage(scores, digestWith([]));
+    expect(d.bucket).toBe('FUNCTIONALITY');
+    expect(d.evidence.join('\n')).toContain("TypeError: Cannot read properties of undefined (reading 'entries')");
+  });
+
   it('an ABSTAINED node is NOT a defect (route to re-measure / human, never to a fixer)', () => {
     const scores: NodeScore[] = [{
       node: 'w4-execute-m3', tier0: cleanTier0, abstained: true, scalar: null,

@@ -70,11 +70,16 @@ function functionalityDefect(s: NodeScore, t1: Tier1Result): Defect {
   const symptom = first
     ? `${t1.milestoneId}: ${failed.length}/${t1.checks.length} checks failed — ${first.id}${first.message ? ` (${first.message})` : ''}`
     : `${t1.milestoneId}: verify FAILED (${t1.marker})`;
+  // Runtime crashes lead the evidence: an uncaught error that wedges the loop is the DOMINATING root cause and
+  // masks the per-check failures (gs01 M3: a TypeError froze update(), failing 4 fidelity + completability at
+  // once). The fixer must trace THIS first, not patch a downstream symptom.
+  const consoleErrors = (t1.consoleErrors ?? []).map((e) => `runtime-console-error: ${e}`);
   return {
     node: s.node,
     bucket: 'FUNCTIONALITY',
     symptom,
     evidence: [
+      ...consoleErrors,
       ...failed.map((c) => `check:${c.id}`),
       `fix-surface: product code in ${s.node}'s owns/readScope (owner traced by the fixer)`,
     ],

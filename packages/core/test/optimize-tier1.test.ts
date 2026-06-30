@@ -48,6 +48,28 @@ describe('readVerifyReport — the rich six-gate report (M3)', () => {
   it('scalar = passed/total over checks that ran (6/11)', () => {
     expect(r.scalar).toBeCloseTo(6 / 11, 5);
   });
+
+  it('captures the runtime consoleErrors (the masking TypeError) so the fixer can SEE the crash', () => {
+    // M3 fails because an uncaught `TypeError ...'entries'` wedges the update loop, masking 4 fidelity +
+    // completability. That signal lives ONLY in consoleErrors — the per-check arrays never name it — so the
+    // reader must carry it through, or the fixer is sent in blind (the cause of 7 identical 0.5455 candidates).
+    expect(r.consoleErrors).toBeDefined();
+    expect(r.consoleErrors).toHaveLength(1);
+    expect(r.consoleErrors!.join(' ')).toContain("Cannot read properties of undefined (reading 'entries')");
+  });
+});
+
+describe('readVerifyReport — consoleErrors hygiene', () => {
+  const base = { milestoneId: 'M9', marker: 'VALIDATION_FAILED', passed: false };
+
+  it('omits consoleErrors entirely when the report has none (no empty-array noise in evidence)', () => {
+    expect('consoleErrors' in readVerifyReport(base)).toBe(false);
+  });
+
+  it('drops non-string entries defensively (a malformed field never throws)', () => {
+    const r = readVerifyReport({ ...base, consoleErrors: ['real error', 42, null, { x: 1 }] });
+    expect(r.consoleErrors).toEqual(['real error']);
+  });
 });
 
 describe('readVerifyReport — the degraded report (M2: self-fix exhausted, no per-check arrays)', () => {

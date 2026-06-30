@@ -49,6 +49,12 @@ export interface Tier1Result {
   scalar: number;
   /** absolute path to the source report, when read from disk. */
   reportPath?: string;
+  /**
+   * Uncaught runtime errors the harness captured (verify report `consoleErrors`). NOT a check — but the
+   * DOMINATING signal when a crash wedges the run loop and masks the per-check failures. Surfaced into the
+   * fixer's evidence so it can trace the real root cause; omitted entirely when the report has none.
+   */
+  consoleErrors?: string[];
 }
 
 // ── Tier-0: the deterministic trace gate (v1.5 §4d, §7) ────────────────────────────────────────────────
