@@ -7,7 +7,7 @@
 > `hermes-skill-system/references/hermes-agent-research-2026-06-08.md` (skills · Curator · GEPA · the
 > four surfaces) and `…/research/agent-memory-without-bloat-2026-06-18.md` (four-layer · exclusion
 > list · git-as-memory · Library Drift caps). **Status: v1 structure agreed; two-leg + Tier-0↔Tier-1
-> framing added 2026-06-28; §10 tracks the remaining opens.**
+> framing added 2026-06-28; the §2 SCAFFOLD slice SHIPPED 2026-06-29 (§11); §10 tracks the remaining opens.**
 
 ## 0. The decision in one line
 
@@ -245,3 +245,24 @@ commit).
 6. **Codegraph build/host + proof-before-promote** — which tool builds the per-product graph
    (`okf-claude` generators?), where the SQLite + `okf/` live (product repo, never `@piflow/core`), and
    the token/tool-call win to measure on one product before Tier 1 goes from opt-in to default.
+
+## 11. Implementation status
+
+**SHIPPED — the §2 scaffold slice (2026-06-29; branch `worktree-memory`).** SDK-first: the layer is a
+**`@piflow/core`** feature; the CLI is its thin accessor (the established pattern). The two legs are
+**separate modules**:
+- **Leg A — `packages/core/src/memory/`** (the customizable, growing one): facade `index.ts` over
+  `skeleton.ts` (`buildNodeMemory` §4 · `buildSystemMemory` §2.4) + `seed.ts` (create-if-absent writers).
+- **Leg B — `packages/core/src/code-map.ts`** (separate, self-contained): `buildNodeCodeMap` (Tier-0 OKF
+  slice) + `seedNodeCodeMap`.
+- **CLI accessor** (`packages/cli/src/scaffold.ts`): `new` seeds the template `memory.md`; `add-node`
+  seeds each node's `memory.md` + `code-map.md`; `piflowctl memory scaffold <dir>` backfills an older
+  template. ALL **create-if-absent** (never clobber curated content — the `prompt.md` discipline).
+- **Invariants baked into every seed header:** OPTIMIZER-FACING · **NEVER injected into a node's runtime
+  prompt** (a node must not see its own failure history). The maintenance contract (caps/exclusion list)
+  lives ONCE in the optimizer skill, not per file. Loader untouched — sidecars are invisible to the §8
+  compile gate. Test-first (RED→GREEN + a create-if-absent mutation proven to redden).
+
+**NOT YET BUILT (the next slices):** the §7 optimizer meta-DAG (triage→per-node fixer→reconcile) that
+READS + UPDATES these files from run traces — the actual self-correction loop; cap/freshness enforcement
+(§9); Tier-1 codegraph (§5b). The scaffold gives the optimizer its substrate; the optimizer is the work.
