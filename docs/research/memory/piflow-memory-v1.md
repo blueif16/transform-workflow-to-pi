@@ -8,6 +8,12 @@
 > four surfaces) and `…/research/agent-memory-without-bloat-2026-06-18.md` (four-layer · exclusion
 > list · git-as-memory · Library Drift caps). **Status: v1 structure agreed; two-leg + Tier-0↔Tier-1
 > framing added 2026-06-28; the §2 SCAFFOLD slice SHIPPED 2026-06-29 (§11); §10 tracks the remaining opens.**
+>
+> **→ SUPERSEDED IN PART by `piflow-memory-v1.5.md` (2026-06-29):** v1's §7 triage ("ROUTES ONLY — assigns
+> each defect to a node") is sharpened there into a **FOUR-way** credit-assignment (LAPSE / SKILL /
+> FUNCTIONALITY / ARCH), the "human-gated" approval is split into the *within-run* vs *across-run optimization*
+> gate, and **scoring** (the signal both the gate and §10.1 retirement need) is named as the open question.
+> Read v1 for the substrate + two legs; read v1.5 for the triage + gate + scoring layer on top.
 
 ## 0. The decision in one line
 
