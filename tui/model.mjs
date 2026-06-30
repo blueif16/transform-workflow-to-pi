@@ -93,6 +93,21 @@ export function overlayRichTelemetry(view, rich) {
     if (rn.provider != null) row.provider = rn.provider;
     if (rn.toolCalls) row.toolCalls = rn.toolCalls;
     if (rn.toolBreakdown && Object.keys(rn.toolBreakdown).length) row.toolBreakdown = rn.toolBreakdown;
+    if (rn.thinkingChars) row.thinking = { chars: rn.thinkingChars }; // the live fold (foldLiveIntoModel) wins for the running node
+    // HEALTH / ANOMALY signals — the GUI's anomaly lens, surfaced verbatim so the inspector can WARN:
+    // rate-limit retries, a token-capped (truncated) stop, a tool/model loop, and slow-vs-baseline timing.
+    row.retries = rn.retries || 0;
+    row.stopReason = rn.stopReason ?? null;
+    row.truncated = !!rn.truncated;
+    row.modelCalls = rn.modelCalls || 0;
+    row.maxToolRepeat = rn.maxToolRepeat || 0;
+    row.repeatedTool = rn.repeatedTool ?? null;
+    if (rn.expectedMs != null) row.expectedMs = rn.expectedMs;
+    if (rn.priorSamples != null) row.priorSamples = rn.priorSamples;
+    if (rn.agentType) row.agentType = rn.agentType;
+    if (rn.summary) row.summary = rn.summary;
+    if (rn.issues && rn.issues.length) row.issues = rn.issues;
+    if (rn.checkpoint) row.checkpoint = rn.checkpoint; // (G5) the human-gate payload (prompt/kind/reply)
     // Real Gantt window from the rich view's timestamps (the lean snapshot carries none).
     const s = rn.startedAt ? Date.parse(rn.startedAt) : NaN;
     const e = rn.endedAt ? Date.parse(rn.endedAt) : NaN;
@@ -237,7 +252,8 @@ export function adaptModel(model, run) {
       id: n.id,
       label: n.label || n.id,
       phase: n.phase || null,
-      agentType: null,
+      // (G6) the agent-preset label — verbatim from the shared model (was dropped to null).
+      agentType: n.agentType || null,
       hasSchema: false,
       stageIndex: n.stageIndex || null,
       lane: n.lane || 0,
@@ -249,10 +265,23 @@ export function adaptModel(model, run) {
       startMs: null, endMs: null,
       // Live cosmetics accumulated from the node-event stream (subscribeRun), not re-read from files.
       tokens: null,
+      contextWindow: null,
       toolCalls: 0,
       toolBreakdown: null,
       thinking: null,
       eventCount: 0,
+      // HEALTH signals — the GUI's anomaly lens; null/0 here, filled by overlayRichTelemetry when the rich
+      // view is available (the lean snapshot carries none), so a no-dist run just shows no warnings.
+      retries: 0,
+      stopReason: null,
+      truncated: false,
+      modelCalls: 0,
+      maxToolRepeat: 0,
+      repeatedTool: null,
+      expectedMs: null,
+      priorSamples: null,
+      // (G5) the parked human-checkpoint payload — present (from the shared NodeView) iff a marker exists.
+      checkpoint: n.checkpoint || null,
       // artifact verification IS in the shared model — surface verified/total + the missing set.
       artifactsVerified: n.artifactsVerified ?? 0,
       artifactsTotal: n.artifactsTotal ?? 0,
