@@ -23,6 +23,7 @@ import { runRunCli } from './run.js';
 import { runNodeCli } from './node.js';
 import { runInspectCli } from './inspect.js';
 import { runTelemetryCli } from './telemetry.js';
+import { runOptimizeCli } from './optimize.js';
 import { runGuiCli } from './gui.js';
 
 const HELP = `piflowctl — drive + observe a pi-flow run over the .pi/ run layout
@@ -40,6 +41,9 @@ USAGE
   piflowctl telemetry <rundir> [nodeId] [--watch] [--verbose] [--json]  agent-facing digest:
                                             verdicts · cost spine · loop signals · anomaly worklist ·
                                             failure-onset root cause. --watch = live stream then record.
+  piflowctl optimize <rundir> [--json] [--archetype <n>]  out-of-band Score + Triage of a FINISHED run:
+                                            folds Tier-0 (telemetry) × Tier-1 (verify outcome) → the
+                                            four-way (LAPSE/SKILL/FUNCTIONALITY/ARCH) worklist. Read-only.
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
   piflowctl model   [list | set <tier> <modelId> | activate | deactivate]  the model-tier config
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
@@ -183,6 +187,9 @@ async function main(): Promise<void> {
       break;
     case 'telemetry':
       await runTelemetryCli(rest);
+      break;
+    case 'optimize':
+      await runOptimizeCli(rest);
       break;
     case 'logs':
       await runLogsCli(rest);

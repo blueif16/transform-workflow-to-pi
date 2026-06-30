@@ -365,3 +365,15 @@ export { buildNodeMemory, buildSystemMemory, seedNodeMemory, seedSystemMemory } 
 export type { MemorySeedResult } from './memory/index.js';
 export { buildNodeCodeMap, seedNodeCodeMap } from './code-map.js';
 export type { CodeMapSeedResult } from './code-map.js';
+
+// The OPTIMIZE layer (piflow-memory-v1.5 §7) — the out-of-band Score + Triage pass. Pure, read-only,
+// post-run; NEVER an in-DAG node. scoreRun folds Tier-0 (telemetry disqualifier) × Tier-1 (the product's
+// outcome/checkable signal) → NodeScore[]; triage projects the four-way worklist (LAPSE/SKILL/FUNCTIONALITY/
+// ARCH); renderRouting emits the proven HERMES-ROUTING.md shape. The fixer/gate/land steps build on this.
+export {
+  scoreNodes, scoreRun, triage, parseCriteria, readVerifyReport, renderRouting,
+} from './optimize/index.js';
+export type {
+  NodeScore, Tier0Signal, Tier1Result, Tier1Check, Tier1Gate, Defect, DefectBucket, Confidence,
+  CriteriaEntry, CriteriaFixture, ScoreInput, ScoreRunOpts, TriageOpts, RoutingMeta,
+} from './optimize/index.js';
