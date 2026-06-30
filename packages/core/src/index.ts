@@ -353,3 +353,15 @@ export type {
   SnapshotProduct,
   Snapshot,
 } from './observe/index.js';
+
+// The MEMORY layer (piflow-memory-v1 §2) — the per-node + per-template self-correction surface the Hermes
+// optimizer/reconcile node READS + UPDATES from run traces. Two SEPARATE legs:
+//   • Leg A (memory/) — SELF/history: the node's standing behavior + generalized failure LESSONS + the git
+//     pointer to its `skillsys(<id>)` log; plus the template reconcile summary. The customizable, growing one.
+//   • Leg B (code-map.ts) — WORLD/code: the Tier-0 OKF reference slice of the product code in the node's scope.
+// Both are OPTIMIZER-FACING data — NEVER injected into a node's runtime prompt — and seeded create-if-absent
+// so curated content never gets clobbered. The DATA lives in the product template; only this LOGIC is in core.
+export { buildNodeMemory, buildSystemMemory, seedNodeMemory, seedSystemMemory } from './memory/index.js';
+export type { MemorySeedResult } from './memory/index.js';
+export { buildNodeCodeMap, seedNodeCodeMap } from './code-map.js';
+export type { CodeMapSeedResult } from './code-map.js';
