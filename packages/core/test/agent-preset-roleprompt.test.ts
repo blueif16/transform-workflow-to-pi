@@ -154,7 +154,7 @@ describe('eval #10 — deterministic role-prompt bars: each seed keeps its requi
 const probe = piLiveProbe();
 
 describe('eval #10 — gated-live smoke: market-research seed produces non-empty output covering ≥2 dimensions', () => {
-  it.skipIf(!probe.runnable)(
+  it.skipIf(!(probe.runnable && process.env.PIFLOW_LIVE))(
     `GATED LIVE: market-research seed → real nested pi (${probe.provider}/${probe.model}) → ≥2 required dimensions present`,
     () => {
       // Build the expanded prompt
