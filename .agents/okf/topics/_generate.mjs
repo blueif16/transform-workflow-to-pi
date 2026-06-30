@@ -41,6 +41,20 @@ const sh = (cmd, args, opts = {}) => {
 const isNoise = p => NOISE.some(n => p.includes(n));
 const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// codegraph exact-name lookup (memoized) — used ONLY to explain WHERE a missing anchor symbol moved;
+// degrades to null when codegraph is unavailable, so the line:symbol gate still runs deterministically.
+const NO_CG = !!process.env.OKF_NO_CODEGRAPH || !CFG.codegraph;
+const _symCache = new Map();
+function cgFind(name) {
+  if (NO_CG || !name) return null;
+  if (_symCache.has(name)) return _symCache.get(name);
+  let hits = [];
+  const out = sh(CFG.codegraph, ['query', name, '--json', '--limit', '25']);
+  if (out) { try { hits = JSON.parse(out).map(r => r.node).filter(n => n && n.name === name); } catch { /* not JSON */ } }
+  _symCache.set(name, hits); return hits;
+}
+const fileLines = p => { try { return readFileSync(join(REPO, p), 'utf8').split('\n'); } catch { return null; } };
+
 // ---- frontmatter (tiny YAML subset: scalars + inline [a, b] arrays) ----
 function parseCard(text) {
   const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
@@ -125,14 +139,46 @@ function deriveAnchors(spec) {
   return anchors;
 }
 
-// ---- HEALTH: every repo path referenced in the card must exist (the drift detector) ----
-function healthCheck(card) {
+// ---- HEALTH: the §4 tier-0 drift gate, line:symbol-accurate (not just filename-existence). ----
+// Two checks, deterministic-first: (1) every SEED file exists; (2) every structured ANCHOR
+// (`path:line` — `symbol`) resolves — the file exists AND the cited line (±WINDOW) still carries the
+// symbol/snippet. When the line check fails, codegraph (if present) says whether the symbol moved
+// lines (line drift) or files (moved); without codegraph the line check alone still catches it.
+// Free prose paths are intentionally NOT scanned — anchors + seeds are the slice's contract, and
+// scanning prose produced benign false positives on abbreviated/negative references.
+function healthCheck(card, spec) {
   const issues = [];
-  const paths = new Set();
-  for (const m of card.matchAll(/[`(\s]((?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z0-9]+)/g)) paths.add(m[1]);
-  for (const p of paths) {
-    if (p.includes('*') || p.startsWith('http') || p.startsWith('~') || isNoise(p)) continue;
-    if (!existsSync(join(REPO, p))) issues.push(`referenced path missing: ${p}`);
+  const WINDOW = 3;
+  for (const s of spec.seeds || []) if (!isNoise(s) && !existsSync(join(REPO, s))) issues.push(`seed missing: ${s}`);
+  const rx = /`([\w./@-]+\.[A-Za-z0-9]+):(\d+)`\s*[—-]+\s*`([^`]+)`/g;
+  for (const m of card.matchAll(rx)) {
+    const [, path, lineStr, sym] = m;
+    if (path.startsWith('http') || path.startsWith('~') || isNoise(path)) continue;
+    const line = parseInt(lineStr, 10);
+    const lines = fileLines(path);
+    if (!lines) { issues.push(`anchor path missing: ${path} (\`${sym}\`)`); continue; }
+    const toks = [...new Set((sym.match(/[A-Za-z_$][\w$]*/g) || []).filter(t => t.length >= 3))];
+    const nearLine = t => { for (let d = 0; d <= WINDOW; d++) { const a = lines[line - 1 - d], b = lines[line - 1 + d]; if ((a && a.includes(t)) || (b && b.includes(t))) return true; } return false; };
+    const blob = lines.join('\n');
+    const inFile = t => new RegExp(`\\b${reEsc(t)}\\b`).test(blob);
+    // (1) DEFINITION anchor: a significant token is DEFINED in this file (codegraph span) — validate line ∈ span.
+    let drift = null; // a line-drift issue string if a def anchor's line is wrong
+    let pass = false;
+    for (const t of toks.filter(t => t.length >= 5)) {
+      const nodes = (cgFind(t) || []).filter(n => n.filePath === path && n.startLine);
+      if (!nodes.length) continue;
+      if (nodes.some(n => line >= n.startLine && line <= n.endLine) || nearLine(t)) { pass = true; break; }
+      const n = nodes[0];
+      drift = drift || `anchor line drift: ${path}:${line} \`${t}\` — defined :${n.startLine}-${n.endLine} (re-author the anchor)`;
+    }
+    if (pass) continue;
+    if (drift) { issues.push(drift); continue; }
+    // (2) CALL-SITE / field / codegraph-unindexed: the symbol token must still be present in the cited file.
+    if (toks.some(inFile)) continue;
+    // (3) Not in the file → renamed/moved/deleted. codegraph (if present) says where it went.
+    let moved = null;
+    for (const t of toks.filter(t => t.length >= 5)) { const e = (cgFind(t) || []).find(n => n.filePath !== path); if (e) { moved = `anchor moved: \`${t}\` cited ${path}:${line}, now ${e.filePath}:${e.startLine}`; break; } }
+    issues.push(moved || `anchor unresolved: ${path}:${line} \`${sym}\` — symbol not found in file`);
   }
   return issues;
 }
@@ -184,7 +230,7 @@ for (const file of cards) {
   const spec = { key: fm.key || file.replace(/\.md$/, ''), aliases: fm.aliases || [], seeds: fm.seeds || [], symbols: fm.symbols || [], memoryHub: fm.memoryHub };
   const data = { arc: deriveArc(spec), files: deriveFiles(spec), lessons: deriveLessons(spec), anchors: process.env.OKF_NO_CODEGRAPH ? null : deriveAnchors(spec) };
   const next = splice(text, render(spec, data));
-  const health = healthCheck(next.split(START)[0]); // curated region only — the auto block's exists-column IS the data
+  const health = healthCheck(next.split(START)[0], spec); // curated region only — the auto block's exists-column IS the data
   const tag = `[${spec.key}]`;
 
   if (mode === 'write') {
