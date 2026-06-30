@@ -1,0 +1,19 @@
+{
+  "milestoneId": "M2",
+  "marker": "VALIDATION_FAILED",
+  "passed": false,
+  "summary": "self-fix bound (3) exhausted — a second projectile-enemy overlap does NOT change score (idempotent, respawn-safe) (expected score to be unchanged; before=1 after=121); M2-A1 diverged under permutation (playerSpawn.x 216→224, playerSpawn.y 720→730): real build invariant, this build not",
+  "assertions": [],
+  "buildHealth": {
+    "greenOnEntry": true
+  },
+  "fixCycles": 3,
+  "fixOutcome": "exhausted",
+  "advisoryVlm": {
+    "ran": false,
+    "flag": "skipped"
+  },
+  "screenshots": [],
+  "durationMs": 0,
+  "startedAt": "2026-06-25T21:43:22.482Z"
+}
