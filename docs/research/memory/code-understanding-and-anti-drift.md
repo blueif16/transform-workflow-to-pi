@@ -15,18 +15,23 @@ _started 2026-06-30 • the dedicated design + experiment doc for the WORLD/CODE
 - **The unit we actually want is a FUNCTION/VERTICAL LIFECYCLE slice**, not the per-node keyword stub the SDK
   seeds today (§1).
 - **Correction (do not repeat):** there is NO "anti-drift tier-3 = external EXA/Reddit research." That was never
-  in the design; it was a framing error. The anti-drift cascade is **internal + deterministic-first** (§3). (The
+  in the design; it was a framing error. The anti-drift cascade is **internal + deterministic-first** (§4). (The
   only "Tier 3" in the canon is `v1.5 §4d` abstain-to-human, part of the SCORING cascade — unrelated.) Web
   research stays a one-off tool for US (it produced `anti-drift-sota-2026-06-30.md`), never a system component.
 
 ## 1. The unit — a function/vertical lifecycle slice
-A slice traces ONE functionality across its whole lifecycle, not a symbol lookup. Three slice grains exist; we
-are building the **middle** one:
+A slice traces ONE functionality along its **spine** — from its ORIGIN (where it's declared/defined) to its
+TERMINAL EFFECT (where its consequence lands: a rendered pixel, a jailed syscall, a committed edit, a written
+artifact). It is NOT a symbol lookup, and the stages are **emergent per vertical, NOT a fixed template.**
+`define→…→render` fits a *presentation* feature like `base-agent-types`, but `optimize` ends at a committed edit
+(SCORE→TRIAGE→GATE→LAND), `sandbox` at a jailed process (SCOPE→PLAN→ENFORCE), `memory-leg` at *nothing yet*
+(DEFINED→SEEDED→CONSUMED-**absent**). Trace the spine wherever it goes — "render" is one possible terminal, not
+a law. Three slice grains exist; we are building the **middle** one:
 
 | Grain | What | Status |
 |---|---|---|
 | per-node Tier-0 `code-map.md` | one node's scope, self-contained | scaffolded stub (`code-map.ts`), no reader |
-| **per-vertical lifecycle slice** (subsystem) | a feature traced def→derive→consume→observe→render | **the target — unbuilt in piflow** |
+| **per-vertical lifecycle slice** (subsystem) | a feature traced along its spine (origin→terminal effect) | **the target — unbuilt in piflow** |
 | product-global OKF index (Tier-1) | all verticals + codegraph anchors | hand-built only in game-omni (`.agents/okf/`) |
 
 **Worked example — `base-agent-types` (traced live on piflow 2026-06-30).** The lifecycle spans 4 verticals:
@@ -48,17 +53,59 @@ verticals: core · (cli) · observe · gui
 agents/`; (b) two memories claim a `piflowctl --agent-type` CLI flag, but the trace found only the `node.json`
 field — a claimed capability the code may no longer back (verify).
 
-## 2. What a slice records (two halves)
+## 2. Slice discovery — the repeatable, per-repo procedure (confident sources, no guessing)
+**The slice set is a PROJECTION of the live graph, not a hand-guess** — each slice traces to a place a human
+DECLARED a unit. Which source answers which question (validated on piflow 2026-06-30):
+
+| Question | Authoritative source | NOT |
+|---|---|---|
+| Which slices exist NOW? (membership) | codegraph: files **reachable from the live entry points** (each package `index.ts`/`bin` + each app `main`) | git history — it remembers dead concerns forever |
+| How important? (ranking) | codegraph: current cross-file **centrality** (fan-in) | git cumulative commit count (churn ≠ importance) |
+| What's it named? | the commit **scope** / spec that last touched the cluster | — |
+| Live or dormant? | git **recency** (last-touched) per slice | git **frequency** |
+
+**Procedure (deterministic, per repo):** ① **Roots** = every entry point from the manifests (`*/src/index.ts`
+exports, each `bin`, each app `main`). ② **Membership** = codegraph reachability closure (BFS along outgoing
+edges) from roots — removed code can't be reached, so it drops out automatically (proven: `transformWorkflow`
+is gone → absent; its 17 commits never resurrect it). ③ **Cluster** = bucket reachable files by module/dir (the
+authored boundary); a file referenced across many modules = a cross-cutting **thread** slice (base-agent-types,
+the op protocol), the rest = **subsystem** slices. ④ **Rank** by summed centrality. ⑤ **Name** by the scope/spec
+that last touched it. ⑥ **Liveness** = git last-touched → old = dormant flag (never auto-include by churn).
+
+**Validated candidate set (piflow SDK, by live centrality, 2026-06-30):** core/(root, split) · core/runner(26f) ·
+core/workflow(30f) · core/tools · core/optimize · core/observe · core/sandbox · core/catalog · core/names ·
+core/memory · core/hooks · pkg/{cli,tool-bridge,e2b,daytona,langgraph}. This GROUNDED list replaces the hand-guess
+— it shows `runner`+`workflow` need splitting into sub-slices and surfaced modules the guess missed (`names`, `hooks`).
+
+**Rolling maintenance (why it's lifecycle, not one-shot):** re-run post-merge / on a cadence — a cluster that
+LEAVES the reachable set → **retire** (human-gated); a new reachable cluster + fresh scope → **add**;
+reachable-but-old → **dormant flag**. Membership (reachability) and liveness (recency) are the SAME primitives the
+anti-drift cascade (§4) uses → discovery and maintenance are ONE machinery at two moments; the slice set tracks
+the architecture by construction.
+
+**PROVEN vs NOT-YET (record only what works):** ✅ reachability-membership + centrality-rank + module-cluster +
+scope-name + recency-liveness — on **TS/SDK** code (computed clean above). ⚠️ KNOWN LIMIT (proven failure):
+codegraph traces TS import/call graphs but **not React/JSX composition** — every `gui/src/components/*` showed
+false-"unreachable" (gui centrality 4); for frontends, root from the app `main`/html and fall back to
+directory-as-cluster, and remember reachability is only as complete as the ROOT SET (a missing entry = false
+dead-code). 🔬 NOT-YET: sub-directory community detection, auto-split of the big buckets, auto-retire (today =
+human-gated flag).
+
+**Repo-agnostic:** every step reads only manifests + codegraph + git — no piflow-specific knowledge — so the same
+procedure stands up the slice set for ANY repo; the slices live in that repo's `.agents/okf/` (the SDK stays
+product-agnostic, per [[sdk-data-boundaries]]).
+
+## 3. What a slice records (two halves)
 Same shape as game-omni's working cards (`_generate.mjs`): a curated half an agent authors, an auto-derived half
 the substrates fill. Curated is the *understanding*; derived is the *evidence*.
 - **Curated:** frontmatter (`key`, `aliases`, `seeds`, `symbols`, `tracks?`, `resource`) + prose (Why / how the
   lifecycle works / Invariant / Gotchas) + an **Anchors** list (`path:line — symbol — role`, grouped by stage).
 - **Derived (below an `auto` marker):** evolution arc (git), file set (seeds or grep touch-frequency), memory
-  lessons (hub cluster), code anchors / blast-radius (codegraph), and a `Freshness` line = the §3 drift signals.
+  lessons (hub cluster), code anchors / blast-radius (codegraph), and a `Freshness` line = the §4 drift signals.
 - **Law (from `v1 §5b`):** pointers + semantics, NEVER a copy; **OPTIMIZER-FACING, never injected into a node's
   runtime prompt**; one OKF reader serves Tier-0 (one slice) and Tier-1 (indexed) — codegraph is a pure upgrade.
 
-## 3. Anti-drift — internal, deterministic-first cascade
+## 4. Anti-drift — internal, deterministic-first cascade
 Detect cheap & often (machine); author expensive & gated (agent); NEVER auto-rewrite curated prose. Each tier
 maps to a different substrate; only tier 0 is a hard gate, tiers 1–2 are advisory flags that batch into the
 optimizer's between-run review (`v1.5 §6`). Grounded in `anti-drift-sota-2026-06-30.md` (mechanism #s cited).
@@ -74,14 +121,15 @@ Two lessons that shape this (SOTA): **deterministic-first** — every battle-tes
 positive layer first and demotes the LLM to a hint; **don't front-load** — static context rots mid-session, so
 the fixer pulls the slice just-in-time and validates after (matches "never injected into the runtime prompt").
 
-## 4. Build + experiment backlog — "which way works best"
+## 5. Build + experiment backlog — "which way works best"
 Each is a HYPOTHESIS with a falsifiable success bar (test-discipline: the check must fail when the approach is
 wrong). The hand-trace in §1 is our **ground truth** for base-agent-types. Status: [ ] todo · [~] running · [x] done.
 
-- [ ] **E0 · Coverage / dogfood.** Enumerate piflow's verticals (runtime · optimize · observe · memory+code-map ·
-  sandbox · catalog · tools/tool-bridge · checks/hooks · cli · gui · cloud · base-agent-types). Author one
-  lifecycle slice each. **Win:** `--check` green (every anchor resolves) AND the slice set names every vertical
-  with no gap. *This is the "grasp of all functionalities" deliverable.*
+- [~] **E0 · Coverage / dogfood.** Slice set now DERIVED via the §2 procedure (not guessed) — validated candidate
+  list computed + 11 first-pass cards under `.agents/okf/topics/`. Remaining: reconcile the first-pass cards to the
+  §2 set (split `runner`/`workflow`; add `names`/`hooks`; fix guessed names, e.g. `checks-hooks`→`node-action-protocol`),
+  then run the generator. **Win:** every reachable high-centrality module maps to a slice AND `--check` is green.
+  *The "grasp of all functionalities" deliverable.*
 - [ ] **E1 · Slice grain.** per-node Tier-0 code-map vs per-vertical lifecycle slice, for the base-agent-types
   scope. **Win:** a fixer-agent answers "where do I change X?" correctly from ONLY the slice; compare which grain
   yields fewer wrong/again-read-the-repo answers.
@@ -103,7 +151,7 @@ wrong). The hand-trace in §1 is our **ground truth** for base-agent-types. Stat
   (git slice) vs Tier-1 (codegraph). **Win:** a measured token/latency delta that justifies (or kills) Tier-1 on
   piflow — the gate for promoting codegraph from opt-in to default.
 
-## 5. Decisions pending (forks to resolve as experiments land)
+## 6. Decisions pending (forks to resolve as experiments land)
 1. **One-off dogfood vs port into the SDK.** Reuse game-omni's `_generate.mjs` in a scratch dir first, or build
    `piflowctl okf build|check` into `@piflow/core` with tests? (Recommend: dogfood E0–E3 first, then port.)
 2. **Build vs adopt** the drift gate: port `_generate.mjs --check`, or take `docdrift`/`Staleguard` as deps
