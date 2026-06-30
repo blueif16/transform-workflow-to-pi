@@ -48,10 +48,14 @@ RENDERED       gui/src/data/runView.ts:371  toFlowGraph() resolves agentType →
                gui/src/components/NodeModeStrip.tsx:85    renders the base-agent chip
 verticals: core · (cli) · observe · gui
 ```
-**Two drifts this trace already caught (the anti-drift case-in-point):** (a) project memory said presets live in
-`packages/core/src/seeds/`, but that dir holds only `calc.ts` — real home is `fusion/presets.ts` + `~/.piflow/
-agents/`; (b) two memories claim a `piflowctl --agent-type` CLI flag, but the trace found only the `node.json`
-field — a claimed capability the code may no longer back (verify).
+**Two findings from this trace:** (a) a REAL drift — project memory said presets live in `packages/core/src/seeds/`,
+but that dir holds only `calc.ts`; real home is `packages/core/src/workflow/fusion/presets.ts` + `~/.piflow/agents/`.
+(b) a FALSE drift, now corrected — the trace (run on branch `feat/optimize-prove-landing`, ~62 commits behind `main`)
+"found only the node.json field" and flagged the memories' `piflowctl --agent-type` flag as unbacked. It is in fact
+backed on `main` (`packages/cli/src/scaffold.ts:623`, merged `fc73095`); the memories were right and the trace was
+branch-stale. **Lesson (the slice-vs-branch confound):** a slice's anchors track the branch it was derived on — an
+"absent capability" must be checked against `main` before being called drift; tier-0 (§4) resolves symbols within a
+tree, it does not reconcile branches.
 
 ## 2. Slice discovery — the repeatable, per-repo procedure (confident sources, no guessing)
 **The slice set is a PROJECTION of the live graph, not a hand-guess** — each slice traces to a place a human
@@ -110,25 +114,51 @@ Detect cheap & often (machine); author expensive & gated (agent); NEVER auto-rew
 maps to a different substrate; only tier 0 is a hard gate, tiers 1–2 are advisory flags that batch into the
 optimizer's between-run review (`v1.5 §6`). Grounded in `anti-drift-sota-2026-06-30.md` (mechanism #s cited).
 
-| Tier | Detector | Substrate | Trigger | SOTA grounding |
+| Tier | Detector | Substrate | Trigger | Status · SOTA grounding |
 |---|---|---|---|---|
-| 0 · existence | every anchor path/symbol the slice cites resolves | git tree + codegraph resolve | pre-commit (blocking) | #8 Staleguard L1, `_generate.mjs` health |
-| 1 · content/provenance | `slice@sha` ≠ HEAD, or tracked **method-body AST-hash** changed | git + tree-sitter | post-merge | #1/#4/#10 docdrift, agents-remember, Cursor merkle |
-| 2 · dependency | change's blast-radius hits the slice's anchors (outside its own seeds) | codegraph `impact`/`affected` | post-merge (graph sync) | #5 Glean fanout, vitest-affected |
-| (advisory) | LLM finds a *quotable* prose↔code contradiction; silent otherwise | LLM, evidence-gated | only on slices past 0–2 | #11 Doc-Drift, Staleguard L2 |
+| 0 · anchor resolution | every seed exists AND every anchor `path:line:symbol` resolves — def-anchor `line ∈ symbol span`, call-site/field symbol-present-in-file | git tree + codegraph `query` (spans) | pre-commit (blocking) | ✅ **BUILT** (`_generate.mjs --check`) · #8 Staleguard L1 |
+| 1 · content/provenance | `slice@sha` ≠ HEAD, or tracked **method-body AST-hash** changed | git + tree-sitter | post-merge | 🔬 designed (E4) · #1/#4/#10 docdrift, agents-remember, Cursor merkle |
+| 2 · dependency | change's blast-radius hits the slice's anchors (outside its own seeds) | codegraph `impact`/`affected` | post-merge (graph sync) | 🔬 designed (E5) · #5 Glean fanout, vitest-affected |
+| (advisory) | LLM finds a *quotable* prose↔code contradiction; silent otherwise | LLM, evidence-gated | only on slices past 0–2 | 🔬 designed · #11 Doc-Drift, Staleguard L2 |
 
 Two lessons that shape this (SOTA): **deterministic-first** — every battle-tested doc tool puts a zero-false-
 positive layer first and demotes the LLM to a hint; **don't front-load** — static context rots mid-session, so
 the fixer pulls the slice just-in-time and validates after (matches "never injected into the runtime prompt").
 
+### 4.1 When are slices maintained, and how accurate is the blast? (the granularity ladder)
+Two questions decide the maintenance lifecycle: **WHEN** a slice is re-checked, and at **WHAT granularity** its
+"blast" is measured. They are not one thing — blast is a **ladder**, each rung matched to a cadence, deterministic-
+first. What is BUILT today vs DESIGNED (record-only-proven):
+
+| Granularity | "Blast" = | Cadence | Catches | Status |
+|---|---|---|---|---|
+| **file-existence** | a referenced file is gone | pre-commit | deleted/renamed file | ✅ built (was the only check) |
+| **symbol-in-file + line∈span** | an anchor's symbol left its file, or a *definition* anchor's line fell outside the symbol's span | pre-commit (blocking) | renamed · moved-to-another-file · def-anchor line drift | ✅ **built** — `--check` now resolves each anchor via codegraph `query` spans; call-site/field anchors fall back to symbol-present-in-file (zero-FP on the semantic-anchor convention where the cited line is a body line, not the decl) |
+| **method-body / paragraph** | the AST-hash of a *tracked function* (`mergePreset`, `resolveNodeModel`) changed — ignoring formatting | post-merge (advisory) | the semantics a slice DESCRIBES shifted, even with no file/line move | 🔬 designed = E4 (needs tree-sitter + a `slice@sha`/body-hash pin; neither exists yet) — **this is the "accurate to paragraph of code" rung** |
+| **symbol-impact (call graph)** | a change's blast-radius reaches a slice's anchors via a dependency *outside its own seeds* | post-merge (advisory) | upstream-type changes a file/line/body check structurally can't see | 🔬 designed = E5 (codegraph `impact` exists; not wired as a trigger — the per-symbol caller list IS already rendered into each card, descriptive only) |
+
+So the answer to "accurate to paragraph or just filename?": **today the gate is symbol-accurate — file + `line∈span`
+for definition anchors, symbol-in-file for call-sites — strictly more than filename, but NOT yet paragraph.**
+Paragraph-accuracy is the method-body-hash rung (E4), deliberately advisory/post-merge because it is the layer
+most prone to false positives and needs tree-sitter. Why the ladder and not one rung: a slice like `runner` spans
+27 files — a filename-level trigger would re-flag it on nearly every commit (cry-wolf), whereas a method-body hash
+over its ~8 anchored functions fires only when the spine it describes actually shifts. **Coarse granularity is why
+a drift gate gets ignored; matching granularity to cadence is what keeps it trusted.** Maintenance IS partly
+blast-determined — tiers 1–2 are literally "did this commit's blast reach the slice" — but only the pre-commit
+existence/resolution rung is wired today; the post-merge re-derive (a flagged slice → the optimizer's between-run
+review re-authors the curated half) and the rolling §2 re-discovery (add/retire/dormant) remain DESIGNED.
+
 ## 5. Build + experiment backlog — "which way works best"
 Each is a HYPOTHESIS with a falsifiable success bar (test-discipline: the check must fail when the approach is
 wrong). The hand-trace in §1 is our **ground truth** for base-agent-types. Status: [ ] todo · [~] running · [x] done.
 
-- [~] **E0 · Coverage / dogfood.** Slice set now DERIVED via the §2 procedure (not guessed) — validated candidate
-  list computed + 11 first-pass cards under `.agents/okf/topics/`. Remaining: reconcile the first-pass cards to the
-  §2 set (split `runner`/`workflow`; add `names`/`hooks`; fix guessed names, e.g. `checks-hooks`→`node-action-protocol`),
-  then run the generator. **Win:** every reachable high-centrality module maps to a slice AND `--check` is green.
+- [x] **E0 · Coverage / dogfood.** DONE. The 11 first-pass cards were RECONCILED to the §2 set (14 cards):
+  `checks-hooks`→`node-action-protocol` (absorbs the one-file `core/hooks`); `runtime-core` split into
+  `workflow-compile` (template→DAG) + `runner` (DAG→artifacts) at the `Workflow` seam; added `names` and
+  `per-node-routing-and-fusion` (the graph-flagged 128-fan-in `runner/model-routing.ts`, prior uncovered). The
+  generator ran git-only (E0) and WITH codegraph (E2 = a per-symbol caller/blast section git-only lacks). **Win
+  met:** every reachable high-centrality module maps to a slice AND the upgraded `--check` is green (the 5 reconciled
+  cards clean; the only remaining flags were the loose prose-path FPs the §4.1 gate upgrade then eliminated).
   *The "grasp of all functionalities" deliverable.*
 - [ ] **E1 · Slice grain.** per-node Tier-0 code-map vs per-vertical lifecycle slice, for the base-agent-types
   scope. **Win:** a fixer-agent answers "where do I change X?" correctly from ONLY the slice; compare which grain
@@ -136,8 +166,14 @@ wrong). The hand-trace in §1 is our **ground truth** for base-agent-types. Stat
 - [ ] **E2 · Derivation substrate.** git-only (`OKF_NO_CODEGRAPH`) vs codegraph-anchored. Build the
   base-agent-types slice both ways; diff derived file-set + anchors against §1 ground truth. **Win:**
   precision/recall of files surfaced; quantifies what codegraph adds for a *lifecycle thread* (def→use).
-- [ ] **E3 · Tier-0 detector.** port `_generate.mjs --check` vs adopt `Staleguard`. Move a real anchored file
-  (reproduce the `run.mjs→legacy/` drift). **Win:** drift caught, ZERO false positives on an unrelated commit.
+- [~] **E3 · Tier-0 detector.** `_generate.mjs --check` was UPGRADED from filename-existence to line:symbol
+  resolution (def-anchor `line ∈ codegraph span`; call-site/field symbol-in-file; degrades to symbol-in-file
+  without codegraph). **Win demonstrated:** ZERO false positives on the 14 real cards (incl. the semantic-anchor
+  convention where the cited line is a body line), and synthetic drift caught in all three classes — renamed symbol
+  (`symbol not found`), wrong definition line (`line ∈ span` violated), moved-to-another-file (codegraph locates it).
+  Cost: a full `--check` ≈ 30s (a codegraph `query` per significant token, memoized). REMAINING: reproduce a real
+  historical drift (`run.mjs→legacy/`), decide pre-commit-hook vs CI placement, and whether to adopt `Staleguard`
+  for tier-1 rather than extend this. The "run --write" advice is wrong for a stale curated anchor (re-author it).
 - [ ] **E4 · Tier-1 granularity.** file-level `slice@sha` vs tree-sitter **method-body hash** (docdrift).
   Formatting-only change vs semantic change to `mergePreset`. **Win:** method-body hash fires ONLY on the
   semantic change (fewer false re-derive triggers).
