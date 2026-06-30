@@ -16,6 +16,7 @@
 import { runLogsCli, ensurePiflowHome } from '@piflow/core';
 import { runNewCli, runAddNodeCli } from './scaffold.js';
 import { runModelCli } from './model.js';
+import { runClaudeCodeCli } from './claude-code.js';
 import { runStatusCli } from './status.js';
 import { runWatchCli } from './watch.js';
 import { runExtractCli } from './extract.js';
@@ -40,7 +41,8 @@ USAGE
                                             verdicts · cost spine · loop signals · anomaly worklist ·
                                             failure-onset root cause. --watch = live stream then record.
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
-  piflowctl model   [list | set <tier> <modelId> | activate | deactivate]  the model-tier config
+  piflowctl model   [list | set <tier> <modelId> [--claude] | activate | deactivate]  the model-tier config
+  piflowctl claude-code [connect [--token <t>] | status]  OPTIONAL credential for the claude-code executor
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
 
 RUN
@@ -129,7 +131,16 @@ MODEL
   list (or bare)            print the tier map (~/.piflow/model-tiers.json) + active + the canonical keys.
   set <tier> <modelId>      map a tier alias → a model id AND set active:true (written atomically). Canonical
                             tiers: fast | balanced | deep; a free product name is allowed (warns, never fails).
+  set <tier> <modelId> --claude  map the tier in the PARALLEL claude-code map (Claude ids/aliases:
+                            opus|sonnet|haiku|claude-*) — what an --executor claude-code node resolves.
   activate / deactivate     flip whether tier references resolve (precedence: node.model > tier > --model).
+
+CLAUDE-CODE  (OPTIONAL — a node runs on a headless local Claude session via 'node --executor claude-code')
+  connect [--token <t>]     persist the subscription OAuth token → ~/.piflow/claude-code.json (chmod 600).
+                            Token: --token, else $CLAUDE_CODE_OAUTH_TOKEN. Mint one with: claude setup-token.
+  status                    show whether the explicit credential is configured + if the claude CLI is found.
+  SKIPPABLE: on macOS an existing 'claude' login is used automatically; the file is the portable layer for
+  Linux/cloud. The runner resolves env → ~/.piflow/claude-code.json → local login (runner/claude-executor.ts).
 
 LOGS (from @piflow/core)
   -f --follow · --node <id> · --summary · --raw · --poll <ms>   (see 'piflowctl logs --help' semantics)
@@ -178,6 +189,9 @@ async function main(): Promise<void> {
       break;
     case 'model':
       await runModelCli(rest);
+      break;
+    case 'claude-code':
+      await runClaudeCodeCli(rest);
       break;
     case 'gui':
       await runGuiCli(rest);
