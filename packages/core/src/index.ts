@@ -383,9 +383,11 @@ export type {
 // enters core (the live oracle/copyScope it injects stay product-side).
 export {
   evaluateGate, runFixGate, writeStagingManifest, adoptFile, makeReplayStages, mineTaskFromTrace, gameOmniNodeToMilestone,
+  renderOptimizeEvent,
 } from './optimize/index.js';
 export type {
   GateInput, GateVerdict, LandPolicy, Fixer, ReplayScore, PrepareCandidate, BaseScore, CandidateEdit,
   FixGateStages, FixGateOpts, FixGateRecord, FixGateResult, StageOpts,
   CheckableTask, ReplayOracle, MineTask, CopyScope, ReplayDeps, ReplayStages, MineOpts,
+  OptimizeEvent, OptimizeEventSink,
 } from './optimize/index.js';

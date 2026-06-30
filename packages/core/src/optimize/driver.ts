@@ -12,6 +12,7 @@
 
 import type { Defect, DefectBucket } from './types.js';
 import { evaluateGate, type GateVerdict } from './gate.js';
+import type { OptimizeEventSink } from './events.js';
 
 /** What a context-isolated fixer reports after editing the candidate copy. It PROPOSES; it never lands. */
 export interface CandidateEdit {
@@ -23,8 +24,12 @@ export interface CandidateEdit {
   summary?: string;
 }
 
-/** The injected fixer stage — context-isolated; edits the candidate COPY at ctx.candidateRef. */
-export type Fixer = (defect: Defect, ctx: { candidateRef: string }) => Promise<CandidateEdit>;
+/**
+ * The injected fixer stage — context-isolated; edits the candidate COPY at ctx.candidateRef. `ctx.emit` is an
+ * OPAQUE sub-trace channel: the fixer may surface progress crumbs through it and the driver re-emits them as
+ * `fixer-trace` events verbatim (core never inspects the payload). It is optional so a fixer can ignore it.
+ */
+export type Fixer = (defect: Defect, ctx: { candidateRef: string; emit?: (payload: Record<string, unknown>) => void }) => Promise<CandidateEdit>;
 /** The injected scorer — re-scores the candidate on the held-out VAL slice (null = abstained/unmeasurable). */
 export type ReplayScore = (node: string, candidateRef: string) => Promise<number | null>;
 /** Make a candidate COPY for this defect and return its ref (NEVER the live path). */
@@ -48,6 +53,8 @@ export interface FixGateOpts {
   autoAdopt?: boolean;
   /** dead-edit keys — skipped (never re-proposed) and added to on reject. Mutated in place. */
   rejectedBuffer?: Set<string>;
+  /** optional LIVE progress sink — fire-and-forget; a throwing sink is swallowed so it never breaks the loop. */
+  onEvent?: OptimizeEventSink;
 }
 
 export interface FixGateRecord {
@@ -85,6 +92,15 @@ export async function runFixGate(defects: Defect[], stages: FixGateStages, opts:
   let tokens = 0;
   let stoppedReason: FixGateResult['stoppedReason'] = 'complete';
 
+  // Fire-and-forget the progress event: a throwing sink (e.g. a broken stdout) must NEVER break the loop —
+  // the loop is the source of truth, the stream is only a projection. No sink ⇒ a no-op.
+  const safeEmit: OptimizeEventSink = (event) => {
+    if (!opts.onEvent) return;
+    try { opts.onEvent(event); } catch { /* swallow — the stream never gates the loop */ }
+  };
+
+  safeEmit({ type: 'triaged', defectCount: defects.length });
+
   for (const d of defects) {
     if (buffer.has(defectKey(d))) continue; // dead edit — don't re-propose
     if (attempted >= editBudget) { stoppedReason = 'edit-budget'; break; }
@@ -92,12 +108,16 @@ export async function runFixGate(defects: Defect[], stages: FixGateStages, opts:
 
     // PROPOSE on a candidate COPY — never the live file.
     const candidateRef = await stages.prepareCandidate(d);
-    const edit = await stages.fixer(d, { candidateRef });
+    safeEmit({ type: 'candidate-prepared', node: d.node, bucket: d.bucket, candidateRef });
+    safeEmit({ type: 'fixer-started', node: d.node, bucket: d.bucket });
+    const edit = await stages.fixer(d, { candidateRef, emit: (payload) => safeEmit({ type: 'fixer-trace', node: d.node, payload }) });
+    safeEmit({ type: 'fixer-done', node: d.node, editsApplied: edit.editsApplied, tokensSpent: edit.tokensSpent ?? 0 });
     attempted++;
     tokens += edit.tokensSpent ?? 0;
 
     // SCORE the candidate on the held-out VAL slice, then GATE (pure arithmetic).
     const candidate = await stages.replayScore(d.node, candidateRef);
+    safeEmit({ type: 'scored', node: d.node, baseScore: stages.baseScore(d.node), candidateScore: candidate });
     const verdict = evaluateGate({
       bucket: d.bucket,
       base: stages.baseScore(d.node),
@@ -105,6 +125,7 @@ export async function runFixGate(defects: Defect[], stages: FixGateStages, opts:
       editsApplied: edit.editsApplied,
       ...(edit.candidatePassedProductChecks !== undefined ? { candidatePassedProductChecks: edit.candidatePassedProductChecks } : {}),
     });
+    safeEmit({ type: 'gated', node: d.node, verdict });
 
     // DECIDE the landing (land.ts applies it physically): adopt iff accepted AND eligible AND the flag is set.
     let landed: FixGateRecord['landed'];
@@ -120,7 +141,9 @@ export async function runFixGate(defects: Defect[], stages: FixGateStages, opts:
     }
 
     records.push({ node: d.node, bucket: d.bucket, candidateRef, editsApplied: edit.editsApplied, verdict, landed, tokensSpent: edit.tokensSpent ?? 0 });
+    safeEmit({ type: 'landed', node: d.node, decision: landed });
   }
 
+  safeEmit({ type: 'stopped', reason: stoppedReason });
   return { records, attempted, accepted, stoppedReason };
 }

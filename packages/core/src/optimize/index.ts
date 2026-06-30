@@ -25,6 +25,12 @@ export type {
 export { writeStagingManifest, adoptFile } from './land.js';
 export type { StageOpts } from './land.js';
 
+// The LIVE progress surface for the FIX→GATE loop — its OWN dedicated event sink (NOT the runner's EventSink):
+// the driver emits one typed OptimizeEvent per phase boundary, fire-and-forget, and `renderOptimizeEvent` is
+// the pure one-line projection the `--watch` CLI prints.
+export { renderOptimizeEvent } from './events.js';
+export type { OptimizeEvent, OptimizeEventSink } from './events.js';
+
 // The held-out replay+scoring harness (v1.5 §5.1) — the KEYSTONE that makes baseScore/replayScore REAL off a
 // product oracle. Product-agnostic: folds whatever verify report the injected oracle emits (via readVerifyReport),
 // enforcing abstain→null and VAL-hygiene. The product (game-omni) supplies oracle · mineTask · copyScope.
