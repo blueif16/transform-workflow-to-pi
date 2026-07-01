@@ -1,6 +1,6 @@
 # Observe live path — one enriched SSE source (retire the 3 s replay poll)
 
-**Status:** REVIEWED (adversarial review folded in 2026-07-01 — see §15) · not yet implemented · **Owner:** observe surface
+**Status:** REVIEWED (adversarial review folded in 2026-07-01 — see §15) · **P0a→P4a LANDED** on `feat/observe-live-sse-source` (build log §16; server single source built + shadow-diff harness, default `poll`) · P4-live + P5 remain (human-gated — see `observe-live-sse-single-source-HANDOFF.md`) · **Owner:** observe surface
 **Depends on / converges with:** `docs/design/agent-executor-interface.md`, `docs/design/agent-executor-surface.md` (the AgentDriver registry — Thrust 3), `docs/specs/remaining-telemetry-features.md` (Tasks 1–6, landed), memo `observe-single-data-path`.
 **Prereq landed:** the GUI now computes nothing on any render path — the dead SSE browser-fold + the `.mjs` reducer fork were deleted (`refactor(gui): render server derived only`, `chore(gui): kill the stale .mjs reducer fork`). This doc is the *next* step that direction pointed at.
 
@@ -310,3 +310,17 @@ Each phase: **files · change · acceptance (mutation-checkable) · scope fence 
 
 ## 15. Review log (2026-07-01)
 Adversarially reviewed across four lenses (correctness-vs-code, architecture/robustness, migration/revertability, completeness/gaps) against the real source. Core thesis upheld — *fold-in-`watchRun`, share `assembleNode`/`nodeTokenSpine`/`deriveNode`, demote-not-delete the poll behind a flag* — no finding undermined the direction. Confirmed (code-verified) findings folded in: **B1** non-destructive `snapshot()` (else `finalize()` corrupts live derived) → DR2; **B2** register `node-enriched` in the CLI allowlist → DR7/§6/P1/Risk 3; **B3** split P0 into pure P0a + behavior-changing P0b → §10; **M1** node-lifecycle fold contract → §9; **M2** accumulator byte-alignment invariants → DR3/§6/P2; **M3** `RunDigestPanel`'s second replay loop → §2/§6/DR5/P5; **M4** the delta carries the **full** node → DR3; **M5** shadow-diff over the full rendered field key → DR7/P4. Wording folded: client-only flag (D2), reconcile = model replace (D3), hash excludes clock (D4), dead `recent`/context fate (D5), reconnect-from-0 open-span reconstruction (D1→DR6), per-connect replay note (D6), re-scoped open questions (D7).
+
+---
+
+## 16. Build log
+Landed on `feat/observe-live-sse-source` (not yet merged; full gate green + adversarial mutation-probe at each):
+- `5bd120e` — **P0a** pure extraction: `nodeTokenSpine` + `assembleNode` + non-destructive `acc.snapshot()` twin of `finalize()`.
+- `3881e46` — **P0b** `resolveStructure`: `readRunModel` now prefers `.pi/workflow.json` → edge/stage parity with `buildRunView`.
+- `bd9803e` — **P1** widened wire: optional `tokens`/`derived`/`tokenTotal`, the `node-enriched` `RunUpdate` kind, and the CLI `RUN_UPDATE_KINDS` allowlist.
+- `9f75bb8` — **P2** `watchRun` folds telemetry incrementally + emits `node-enriched` deltas — the server-side single source (mirror-tested vs `buildRunView` over pi + Claude + reused + awaiting-input nodes).
+- `8f1cd7e` — **P3** GUI renders the graph from the enriched `live.model` behind the `liveSource` flag (default `poll`).
+- `f19b3c4` — **P4a** dev-only shadow-diff parity harness (`?shadow=1`).
+- `67beeb0` — stages fix: `liveModelToRunView` carries the SSE snapshot stages (clean `SSE≡/run-view` parity).
+
+Default is `poll`, so this is zero behavior change and ships safely as-is. **P4-live** (prove shadow-diff clean on a full + a parallel run, then flip the default to `sse`) and **P5** (demote the two 3 s replay loops) remain and are **human-gated** — the runbook is `docs/design/observe-live-sse-single-source-HANDOFF.md`.
