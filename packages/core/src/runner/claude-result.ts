@@ -13,8 +13,11 @@ export interface ClaudeRunResult {
   sessionId?: string;   // session_id
   text?: string;        // the `result` summary text
   model?: string;       // the single key of `modelUsage` (the model that actually ran), if present
-  numTurns?: number;    // num_turns
+  numTurns?: number;    // num_turns — the REAL invocation count (NOT the count of `assistant` lines)
   durationMs?: number;  // duration_ms
+  ttftMs?: number;      // ttft_ms — time-to-first-token, native on the result event
+  stopReason?: string;  // stop_reason (e.g. 'end_turn') — the model-turn stop, distinct from `subtype`
+  contextWindow?: number; // modelUsage[model].contextWindow — the per-run context cap the model actually had
   cost?: { usd?: number; inputTokens?: number; outputTokens?: number; cacheRead?: number; cacheCreation?: number };
 }
 
@@ -34,11 +37,20 @@ export function parseClaudeResult(stdout: string): ClaudeRunResult {
   if (typeof result.result === 'string') out.text = result.result;
   if (typeof result.num_turns === 'number') out.numTurns = result.num_turns;
   if (typeof result.duration_ms === 'number') out.durationMs = result.duration_ms;
+  if (typeof result.ttft_ms === 'number') out.ttftMs = result.ttft_ms;
+  if (typeof result.stop_reason === 'string') out.stopReason = result.stop_reason;
 
   const modelUsage = result.modelUsage;
   if (modelUsage && typeof modelUsage === 'object') {
     const keys = Object.keys(modelUsage as Record<string, unknown>);
-    if (keys.length > 0) out.model = keys[0];
+    if (keys.length > 0) {
+      out.model = keys[0];
+      // the per-run context cap the model actually had — the authoritative denominator for context-pressure.
+      const mu = (modelUsage as Record<string, unknown>)[keys[0]];
+      if (mu && typeof mu === 'object' && typeof (mu as Record<string, unknown>).contextWindow === 'number') {
+        out.contextWindow = (mu as Record<string, unknown>).contextWindow as number;
+      }
+    }
   }
 
   const cost = buildCost(result);

@@ -37,6 +37,20 @@ describe('parseClaudeResult — stream-json stdout parser', () => {
     expect(r.cost?.outputTokens).toBe(169);
     expect(r.cost?.cacheRead).toBe(0);
     expect(r.cost?.cacheCreation).toBe(68268);
+    // (spine) the result event carries these natively — lift them so the observe surface can source them.
+    expect(r.ttftMs).toBe(1712);
+    expect(r.stopReason).toBe('end_turn');
+  });
+
+  it('(a2) lifts the per-run context window from modelUsage[model].contextWindow', () => {
+    // A real result line whose modelUsage block carries the context window (+ max output) as Claude emits.
+    const withCaps =
+      '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"Done.","stop_reason":"end_turn","session_id":"s1","total_cost_usd":0.013,"usage":{"input_tokens":18,"cache_creation_input_tokens":4790,"cache_read_input_tokens":17172,"output_tokens":337},"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":18,"outputTokens":337,"cacheReadInputTokens":17172,"cacheCreationInputTokens":4790,"costUSD":0.013,"contextWindow":200000,"maxOutputTokens":32000}}}';
+    const r = parseClaudeResult(withCaps);
+    expect(r.model).toBe('claude-haiku-4-5-20251001');
+    expect(r.contextWindow).toBe(200000);
+    // num_turns is the REAL invocation count — never a per-assistant-line count.
+    expect(r.numTurns).toBe(2);
   });
 
   it('(b) finds the result even when it is NOT the last line (trailing system event)', () => {
