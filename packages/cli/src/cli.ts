@@ -29,6 +29,7 @@ import { runTelemetryCli } from './telemetry.js';
 import { runOptimizeCli } from './optimize.js';
 import { runOptimizeFixCli } from './optimize-fix.js';
 import { runGuiCli } from './gui.js';
+import { runContextCli } from './context.js';
 import { runServeCli } from '@piflow/server';
 import { runTuiCli } from './tui.js';
 import { runSkillsCli } from './skills.js';
@@ -71,6 +72,11 @@ USAGE
                                             built GUI) on THIS machine — the \`local\` context's server, the SAME
                                             binary a cloud control VM runs. Long-lived; Ctrl-C stops. Serves gui/dist
                                             (build it: cd gui && npm run build) + POST /api/runs/start.
+  piflowctl context [use <name> | ls | add <name> --url <baseUrl> [--token <t>] | rm <name> | current]
+                                            switch the CLI/GUI between named control-plane endpoints
+                                            (local ⇄ cloud \`serve\`), stored in ~/.piflow/contexts.json.
+                                            Active-context ladder: --context flag > PIFLOW_CONTEXT env >
+                                            the \`use\` pointer > the implicit \`local\` (${'http://127.0.0.1:5273'}).
   piflowctl tui     [<rundir>] [--every <s>]  launch the terminal run viewer, scoped to the project at cwd
   piflowctl skills  install [targetDir] [--force] [--with <id>|--all|--wizard]  install the authoring skills (+ add-ons) into a repo
   piflowctl --version                       print the piflowctl version
@@ -271,6 +277,9 @@ async function main(): Promise<void> {
       break;
     case 'gui':
       await runGuiCli(rest);
+      break;
+    case 'context':
+      await runContextCli(rest);
       break;
     case 'serve':
       await runServeCli(rest);
