@@ -85,7 +85,8 @@ that is how a silent, wrong workflow gets built.
     `--reroute <node[:max]>` (on failure, loop back to an upstream node — the target MUST be a strict ANCESTOR).
   - **Topology** — `--fusion <moa|best-of-n>` (+ `--fusion-n/-panel/-judge/-obligations/-no-verify`: panel/
     best-of-n + judge expansion) · `--subworkflow <ref>` (inline a sub-template as a sub-DAG in place of the node).
-  - **Contract** — `--full-access` (per-node jail-off, LOCAL only) · `--fill-sentinel <s>` · `--schema <p>` ·
+  - **Contract** — `--full-access` (per-node jail-off, LOCAL only) · `--fill-sentinel <s>` · `--artifact-schema <p>`
+    (per-ARTIFACT output validation → `contract.schema`; NOT the structured-RETURN handshake) ·
     `--return-mode required` (the zero-artifact gate-node idiom). These ride INSIDE `contract`.
 
 > **The per-run shape (designed, partially confident — not a separate "store" to build).** There is no

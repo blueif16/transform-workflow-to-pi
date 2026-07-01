@@ -45,12 +45,14 @@ live run in which every hook fires and every declared artifact lands on disk.** 
 over-block), but the run is INCOMPLETE until you build them. Construct each, per node, from the source `.js`'s
 intent (`enrich-contract.md` is the per-target how-to, with a worked exemplar):
 
-1. **Hooks (the largest construct — the whole deterministic-derive layer).** Every `DRIVER-SEED` (pre) and
-   `DRIVER-PROJECT`/`DRIVER-MERGE`/`DRIVER-SEED-CONTRACT` (post) marker in the source is a `Hook` the text port
-   drops. Re-express each as node.json `hooks` DATA — `seed` (stage inputs), `registryProject`/`project`
-   (derive a runtime file from a frozen spec), `merge` (`fold`/`concat`/`reconcile`/`run`) — with
-   `{{WORKSPACE}}`/`{{RUN}}`/`{{state.*}}`/`{project}` tokens. **Point every `run`-op cmd at the CURRENT code
-   path** (e.g. a relocated script), never the path the old `.js` used.
+1. **op[] (the largest construct — the whole deterministic-action layer).** Every `DRIVER-SEED` (pre) and
+   `DRIVER-PROJECT`/`DRIVER-MERGE`/`DRIVER-SEED-CONTRACT` (post) marker in the source is a deterministic action
+   the text port drops. Re-express each as an entry in the node's canonical **`op[]`** array — a `pre`/`post`
+   `transform` (seed/project/projectRegistry/merge/promote), a `run` (shell side-effect: top-level `run` +
+   `onFailure:"block"` for a GATE, else a `transform:merge` for a no-verdict derive), or a bare `reads` (a
+   forced read) — with `{{WORKSPACE}}`/`{{RUN}}`/`{{state.*}}`/`{project}` tokens. See `enrich-contract.md §1`
+   for the full source-marker → `op[]` table (and the legacy `hooks`/`inject` alias each replaces). **Point
+   every `run`-op cmd at the CURRENT code path** (e.g. a relocated script), never the path the old `.js` used.
 2. **State promotion.** Any `{{state.X}}` token a downstream seed/project resolves against needs a node that
    PROMOTES it (e.g. w0 classify → `promote` archetype → `state.archetype`). The port has no state-channel
    awareness; add the `promote` on the establishing node or every downstream token resolves to nothing.
