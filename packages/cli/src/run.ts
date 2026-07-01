@@ -23,8 +23,8 @@ import {
   compile,
   seededRegistry,
   SUBMIT_RESULT_TOOL,
-  defaultPiCommand,
-  resolveNodeModel,
+  dispatchCommand,
+  effectiveModel,
   loadModelTiers,
   loadModelsIndex,
   expandFusion,
@@ -50,6 +50,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { readdirSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { resolveRemote, startRemoteRun, streamUrlFor, type StartRemoteResult, type RemoteOpts } from './remote.js';
+import type { ContextEntry } from './context-store.js';
 
 /**
  * List the run-NAME basenames already present under a runs home (the canonical `.piflow/<wf>/runs/`), so
@@ -107,6 +109,16 @@ export interface RunDeps {
     apiKey?: string;
     stageHome?: Record<string, string>;
   }) => Promise<SandboxProvider>;
+  /**
+   * Factory for the `--sandbox docker` LOCAL container provider (injectable so a test asserts the instance
+   * WITHOUT a real Docker daemon). The default DYNAMICALLY `import('@piflow/docker')`s the CHOOSE-TO-INSTALL
+   * extension and calls its `createDockerProvider({ image: DOCKER_IMAGE, stageHome })`; on an absent package
+   * it throws a clear `npm i @piflow/docker` message (async because the import is lazy).
+   */
+  makeDockerProvider?: (opts: {
+    image?: string;
+    stageHome?: Record<string, string>;
+  }) => Promise<SandboxProvider>;
   /** Mint a memorable run name not in `existing` (default: core `generateRunName`; a test injects a stub). */
   generateName?: (existing: string[]) => string;
   /** List the run-name basenames already present under a runs home (default: read the dir; '' if absent). */
@@ -129,11 +141,27 @@ export interface RunDeps {
  *     with OPEN egress by default (the unblock for heterogeneous/remote MCP). Requires the CHOOSE-TO-INSTALL
  *     extension `@piflow/e2b` (`npm i @piflow/e2b`); the CLI loads it DYNAMICALLY only on `--sandbox e2b`. Reads
  *     `E2B_API_KEY`/`E2B_TEMPLATE` from env; the pi gateway credential crosses in exactly like daytona.
+ *   - `docker` = real `pi` exec inside a LOCAL Docker container (one container per run, nodes subtree-namespaced)
+ *     — the OFFLINE, FREE mirror of the cloud path: the SAME pi node-runtime image, credential injection, and
+ *     tool binding as daytona/e2b, run on the host daemon instead of a cloud VM (NOT a stronger isolation tier
+ *     than `local` seatbelt). Requires the CHOOSE-TO-INSTALL extension `@piflow/docker` (`npm i @piflow/docker`);
+ *     loaded DYNAMICALLY only on `--sandbox docker`. The pi node-runtime image is AUTO-BUILT on first use (no
+ *     setup); `DOCKER_IMAGE` overrides with a pre-built tag. The pi gateway credential crosses in exactly like
+ *     the cloud backends.
  */
-export type SandboxChoice = 'inmemory' | 'local' | 'danger-full-access' | 'daytona' | 'e2b';
+export type SandboxChoice = 'inmemory' | 'local' | 'danger-full-access' | 'daytona' | 'e2b' | 'docker';
 
 /** The accepted `--sandbox` values — a typo (e.g. `seatbelt`) must error loudly, not silently degrade to inmemory. */
-export const SANDBOX_CHOICES: readonly SandboxChoice[] = ['inmemory', 'local', 'danger-full-access', 'daytona', 'e2b'];
+export const SANDBOX_CHOICES: readonly SandboxChoice[] = ['inmemory', 'local', 'danger-full-access', 'daytona', 'e2b', 'docker'];
+
+/** The accepted `--executor` values — a typo must error loudly (never silently pick the wrong agent binary). */
+export const EXECUTOR_CHOICES: readonly ['pi', 'claude-code'] = ['pi', 'claude-code'];
+
+/** Validate + narrow a `--executor` value; throws loudly on a typo (so a mistyped executor never silently degrades). */
+function parseExecutorValue(v: string, ctxLabel: string): 'pi' | 'claude-code' {
+  if ((EXECUTOR_CHOICES as readonly string[]).includes(v)) return v as 'pi' | 'claude-code';
+  throw new Error(`piflowctl run: unknown --executor ${ctxLabel}"${v}" (expected one of ${EXECUTOR_CHOICES.join(', ')}).`);
+}
 
 /** The parsed `run` argv. `args` carries the repeated `--arg k=v` pairs (and the run id, mirrored in). */
 export interface ParsedRunArgs {
@@ -167,6 +195,17 @@ export interface ParsedRunArgs {
   thinking?: string;
   /** Optional model pin → `pi --model <m>`. */
   model?: string;
+  /**
+   * Run-level EXECUTOR default — `--executor pi|claude-code` (no `=`): pick the executor for EVERY node at
+   * run start WITHOUT editing the template. A per-node `--executor <nodeId>=…` entry wins over this.
+   */
+  executor?: 'pi' | 'claude-code';
+  /**
+   * PER-NODE executor overrides — `--executor <nodeId>=pi|claude-code` (repeatable): pick the executor for
+   * SPECIFIC nodes at run start. A per-node entry wins over the run-level `executor` default and the node's
+   * authored `executor`.
+   */
+  executorOverride?: Record<string, 'pi' | 'claude-code'>;
   /** Max node processes in-flight at once (the G2 concurrency cap) → runner `maxConcurrent`. Default 8, clamped [1,16]. */
   maxConcurrent?: number;
   /**
@@ -176,6 +215,12 @@ export interface ParsedRunArgs {
    * detach the PROCESS. Omit ⇒ ATTENDED: a checkpoint parks for the courier reply.
    */
   detach?: boolean;
+  /**
+   * (P7) `--context <name>` — pick the control plane to run against. Omit/`local` ⇒ run in-process on THIS
+   * host (the unchanged local path). A REMOTE context ⇒ POST `/api/runs/start` to that serve, which launches
+   * the run there; the CLI prints the returned run id + stream URL (observe it via the same remote context).
+   */
+  context?: string;
 }
 
 /** Parse the flat `run` argv → `ParsedRunArgs`. First positional = the template dir. */
@@ -196,7 +241,21 @@ export function parseRunArgs(argv: string[]): ParsedRunArgs {
     else if (k === '--cloud-secret') out.cloudSecret = argv[++i];
     else if (k === '--thinking') out.thinking = argv[++i];
     else if (k === '--model') out.model = argv[++i];
+    else if (k === '--executor') {
+      // TWO forms, both repeatable: `--executor claude-code` (run-level default) and
+      // `--executor <nodeId>=claude-code` (per-node override, wins over the default). A per-node form has an
+      // '=' AFTER the first char (a run-level value never does); validate both loudly.
+      const raw = argv[++i] ?? '';
+      const eq = raw.indexOf('=');
+      if (eq > 0) {
+        const nodeId = raw.slice(0, eq);
+        (out.executorOverride ??= {})[nodeId] = parseExecutorValue(raw.slice(eq + 1), `for node "${nodeId}": `);
+      } else {
+        out.executor = parseExecutorValue(raw, '');
+      }
+    }
     else if (k === '--max-concurrent') out.maxConcurrent = Number(argv[++i]);
+    else if (k === '--context') out.context = argv[++i];
     else if (k === '--detach' || k === '--unattended') out.detach = true;
     else if (k === '--arg') {
       const kv = argv[++i] ?? '';
@@ -221,12 +280,16 @@ export interface DryRunPlanOpts {
   thinking?: string;
   /** Active profile name → noted in the header (so the plan shows WHICH reduced DAG it reflects). */
   profile?: string;
+  /** Run-level executor default (mirrors the LIVE run-start override) — pick pi vs claude-code for every node. */
+  executor?: 'pi' | 'claude-code';
+  /** Per-node executor overrides (keyed by node id) — win over `executor`, mirroring the LIVE run. */
+  executorOverride?: Record<string, 'pi' | 'claude-code'>;
 }
 
 /**
  * Render the realized per-node `pi` command(s) for a compiled workflow — the dry-run preview. PURE: it
  * resolves each node's toolset (the SEEDED registry the canonical run path now assembles via
- * `assembleRunTools`) and builds the headless command via `defaultPiCommand`, but spawns NOTHING. A node
+ * `assembleRunTools`) and builds the headless command via `dispatchCommand` (executor-aware), but spawns NOTHING. A node
  * whose declared tools are not in the catalog still renders — its unresolved tools are NOTED rather than
  * crashing the free preview. (G11) Seeding here stops the free preview from falsely reporting `oc.*`/`mcp.*`
  * as unresolved.
@@ -259,15 +322,21 @@ export function dryRunPlan(wf: Workflow, opts: DryRunPlanOpts = {}): string {
         resolved = { piTools: [] as string[] };
         note = `  # NOTE: tools unresolved at preview (${(e as Error).message})`;
       }
-      // Resolve THIS node's effective model/provider (precedence in core's model-routing.ts). An
-      // unresolvable tier is NOTED in the preview rather than crashing the free dry-run.
+      // Run-start executor override (mirrors the LIVE resolveExecutor precedence: per-node → run-level →
+      // authored) so the free preview shows the SAME agent binary the live run will spawn — never lie.
+      const effExec = opts.executorOverride?.[id] ?? opts.executor ?? node.executor;
+      const eNode = effExec === node.executor ? node : { ...node, executor: effExec };
+      // Resolve THIS node's effective model/provider (precedence in core's model-routing.ts, executor-aware:
+      // a claude-code node resolves via the parallel `claude` tier block). An unresolvable tier is NOTED in
+      // the preview rather than crashing the free dry-run.
       let eff: { model?: string; provider?: string } = { model: opts.model, provider };
       try {
-        eff = resolveNodeModel(node, { model: opts.model, provider, tiers, modelsIndex });
+        eff = effectiveModel(eNode, { model: opts.model, provider, tiers, modelsIndex });
       } catch (e) {
         note += `  # NOTE: model routing — ${(e as Error).message}`;
       }
-      const cmd = defaultPiCommand(node, resolved, { promptFile, provider: eff.provider ?? provider, model: eff.model }, { thinking: opts.thinking });
+      // dispatchCommand routes pi vs claude-code off `eNode.executor` (the same seam the runner uses).
+      const cmd = dispatchCommand(eNode, resolved, { promptFile, provider: eff.provider ?? provider, model: eff.model }, { thinking: opts.thinking });
       lines.push(`    [${id}] ${cmd}${note}`);
     }
   }
@@ -385,6 +454,19 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
       }
       return mod.createE2bProvider(o);
     });
+  // The local-Docker backend is a CHOOSE-TO-INSTALL extension (`@piflow/docker`), NOT a core dependency —
+  // loaded with a DYNAMIC import only on `--sandbox docker`, an absent package becoming a clear install message.
+  const makeDockerProvider =
+    deps.makeDockerProvider ??
+    (async (o: { image?: string; stageHome?: Record<string, string> }) => {
+      let mod: typeof import('@piflow/docker');
+      try {
+        mod = await import('@piflow/docker');
+      } catch {
+        throw new Error('--sandbox docker requires the @piflow/docker extension — run: npm i @piflow/docker');
+      }
+      return mod.createDockerProvider(o);
+    });
   const generateName = deps.generateName ?? ((existing: string[]) => generateRunName(existing));
   const listExistingRuns = deps.listExistingRuns ?? listExistingRunNames;
   const print = deps.print ?? ((s: string) => process.stdout.write(s + '\n'));
@@ -472,7 +554,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     await writeStatus(outDir, dryStatus);
     // reference the actual realized prompt path the run materialized (engine-owned layout helper).
     const samplePromptDir = nodePromptFile(outDir, '<id>').replace(/\/<id>\/prompt\.md$/, '');
-    print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: parsed.provider ?? 'cp', model: parsed.model, thinking: parsed.thinking, profile: parsed.profile }));
+    print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: parsed.provider ?? 'cp', model: parsed.model, thinking: parsed.thinking, profile: parsed.profile, executor: parsed.executor, executorOverride: parsed.executorOverride }));
     print(`piflowctl run: dry-run materialized a viewable plan at ${outDir} (open it: piflowctl gui / piflowctl status ${outDir}). Nodes are status "dry" — no model ran.`);
     return undefined;
   }
@@ -573,6 +655,38 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
         ? `piflowctl run: cloud (e2b) — ${stageHome ? `staged ~/.pi/agent/models.json[${parsed.provider}] + ` : ''}forwarding ${credList} into the sandbox (allowlisted; the raw value never leaves the resolver seam).`
         : `piflowctl run: ⚠ cloud (e2b) — no provider config/credential resolved for --provider "${parsed.provider ?? '(default)'}"; add a custom gateway to ~/.pi/agent/models.json, or declare the key with --cloud-secret NAME, or pi in the sandbox will have no model key.`,
     );
+  } else if (parsed.sandbox === 'docker') {
+    // Real pi exec inside a LOCAL Docker container — the offline mirror of the cloud path. The managed pi
+    // node-runtime image is AUTO-BUILT on first use (zero setup); `DOCKER_IMAGE` overrides with a pre-built
+    // tag. The `@piflow/docker` extension is loaded DYNAMICALLY by `makeDockerProvider` — an absent package
+    // gives the `npm i @piflow/docker` install message.
+    // A container inherits NO host env (docker is a CLOUD_KIND), so — exactly like daytona/e2b — a CUSTOM
+    // gateway from ~/.pi/agent/models.json is staged into the container home and its cred var(s) cross via
+    // the allowlist. A built-in provider has no entry → no staging.
+    const pi = loadPiProviderConfig(parsed.provider);
+    const stageHome = pi.config ? { '.pi/agent/models.json': pi.config } : undefined;
+    const image = process.env.DOCKER_IMAGE;
+    provider = await makeDockerProvider({
+      ...(image ? { image } : {}),
+      ...(stageHome ? { stageHome } : {}),
+    });
+    // Forward the pi gateway credential into the container (SAME allowlist/resolver path as the cloud backends).
+    const fallback = providerCredVar(parsed.provider);
+    cloudSecrets = parsed.cloudSecret
+      ? [parsed.cloudSecret]
+      : pi.credVars.length
+        ? pi.credVars
+        : fallback
+          ? [fallback]
+          : [];
+    const credList = cloudSecrets.join(', ');
+    const bootFrom = image ? `image ${image}` : 'the auto-built pi node-runtime image (built on first use)';
+    print(`piflowctl run: local (docker) — booting one container per run from ${bootFrom}; egress OPEN by default.`);
+    print(
+      cloudSecrets.length
+        ? `piflowctl run: local (docker) — ${stageHome ? `staged ~/.pi/agent/models.json[${parsed.provider}] + ` : ''}forwarding ${credList} into the container (allowlisted; the raw value never leaves the resolver seam).`
+        : `piflowctl run: ⚠ local (docker) — no provider config/credential resolved for --provider "${parsed.provider ?? '(default)'}"; add a custom gateway to ~/.pi/agent/models.json, or declare the key with --cloud-secret NAME, or pi in the container will have no model key.`,
+    );
   }
   // (G7) `--detach` ⇒ UNATTENDED: take each (G5) checkpoint's declared default so a backgrounded run never
   // hangs on a human gate. The run is already durable; the caller backgrounds the process (`&`/harness).
@@ -595,6 +709,11 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     providerName: parsed.provider,
     thinking: parsed.thinking,
     model: parsed.model,
+    // Run-start executor selection (run-level default + per-node overrides) — pick pi vs claude-code WITHOUT
+    // editing the template. Threaded through RunOptions (executor/executorOverride) to node-lifecycle's
+    // resolveExecutor. Omitted when absent so a run with no --executor stays byte-identical.
+    ...(parsed.executor ? { executor: parsed.executor } : {}),
+    ...(parsed.executorOverride ? { executorOverride: parsed.executorOverride } : {}),
     ...(parsed.maxConcurrent !== undefined ? { maxConcurrent: parsed.maxConcurrent } : {}),
     ...(parsed.detach ? { checkpointReply: 'default' as const } : {}),
     ...(provider ? { provider } : {}),
@@ -622,12 +741,86 @@ export function runFailureReport(status: RunResult['status'], runDir: string): s
   return lines.join('\n');
 }
 
-/** `piflowctl run <templateDir> [--dry-run] [--run <id>] [--arg k=v ...]` — the bin body. */
+/**
+ * (P7) Map the parsed `run` argv → the `POST /api/runs/start` StartBody the remote serve accepts. PURE (no
+ * I/O) so the mapping is unit-tested. The `templateDir` is sent ABSOLUTE (the server resolves it against its
+ * own filesystem / allow-list). Only the flags the server understands are forwarded; local-only concerns
+ * (workspace/out/from/until/no-resume/max-concurrent) are NOT — the remote run owns its own layout. Fields
+ * are omitted when unset so the JSON stays minimal (and byte-stable across runs with no such flag).
+ */
+export function remoteStartBody(parsed: ParsedRunArgs): Record<string, unknown> {
+  return {
+    templateDir: path.resolve(parsed.templateDir),
+    ...(parsed.run ? { run: parsed.run } : {}),
+    ...(Object.keys(parsed.args).length ? { args: parsed.args } : {}),
+    // `inmemory` is the parser default (no `--sandbox`); forward a sandbox only when the user actually chose one.
+    ...(parsed.sandbox !== 'inmemory' ? { sandbox: parsed.sandbox } : {}),
+    ...(parsed.profile ? { profile: parsed.profile } : {}),
+    ...(parsed.provider ? { provider: parsed.provider } : {}),
+    ...(parsed.thinking ? { thinking: parsed.thinking } : {}),
+    ...(parsed.model ? { model: parsed.model } : {}),
+    ...(parsed.dryRun ? { dryRun: true } : {}),
+    ...(parsed.detach ? { detach: true } : {}),
+    ...(parsed.executor ? { executor: parsed.executor } : {}),
+    ...(parsed.executorOverride ? { executorOverride: parsed.executorOverride } : {}),
+  };
+}
+
+/** Injectable seam for the remote-run path (default = the real `startRemoteRun` + stdout), so a test spies it. */
+export interface RemoteRunDeps {
+  startRemoteRun?: (entry: ContextEntry, body: object, opts?: RemoteOpts) => Promise<StartRemoteResult>;
+  print?: (line: string) => void;
+}
+
+/**
+ * (P7) LAUNCH a run on a REMOTE serve: POST the mapped StartBody to the active context's `/api/runs/start`,
+ * then surface the RETURNED run id + how to observe it (via the SAME remote context). The run lives on the
+ * remote host — this never touches the local filesystem. Returns the parsed 202 body (for the caller/tests).
+ */
+export async function runTemplateRemote(
+  entry: ContextEntry,
+  contextName: string,
+  parsed: ParsedRunArgs,
+  deps: RemoteRunDeps = {},
+): Promise<StartRemoteResult> {
+  const start = deps.startRemoteRun ?? startRemoteRun;
+  const print = deps.print ?? ((s: string) => process.stdout.write(s + '\n'));
+  const res = await start(entry, remoteStartBody(parsed));
+  print(`piflowctl run: launched on context "${contextName}" (${entry.baseUrl}) — run "${res.run}".`);
+  // Prefer the server-returned streamUrl (absolute-ized against the base); else derive the canonical one.
+  const streamUrl = res.streamUrl
+    ? `${entry.baseUrl.replace(/\/$/, '')}${res.streamUrl}`
+    : streamUrlFor(entry, res.run);
+  print(`  → observe: piflowctl watch ${res.run} --context ${contextName}   (stream: ${streamUrl})`);
+  print(`  → status:  piflowctl status ${res.run} --context ${contextName}`);
+  return res;
+}
+
+/** `piflowctl run <templateDir> [--dry-run] [--run <id>] [--arg k=v ...] [--context <name>]` — the bin body. */
 export async function runRunCli(argv: string[]): Promise<void> {
   const parsed = parseRunArgs(argv);
   if (!parsed.templateDir) {
     process.stderr.write('piflowctl run: a template directory is required (piflowctl run <templateDir>)\n');
     process.exitCode = 1;
+    return;
+  }
+  // (P7) REMOTE context ⇒ launch on that serve (POST /api/runs/start) and surface the returned run id — NOT a
+  // local run. LOCAL/unset ⇒ the unchanged in-process path below. An unknown --context surfaces loudly.
+  let remote: ReturnType<typeof resolveRemote>;
+  try {
+    remote = resolveRemote(parsed.context);
+  } catch (e) {
+    process.stderr.write(`${(e as Error).message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  if (remote) {
+    try {
+      await runTemplateRemote(remote.entry, remote.name, parsed);
+    } catch (e) {
+      process.stderr.write(`${(e as Error).message}\n`);
+      process.exitCode = 1;
+    }
     return;
   }
   const result = await runTemplate(parsed);

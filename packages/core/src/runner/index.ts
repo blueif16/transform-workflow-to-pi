@@ -1,8 +1,13 @@
 // @piflow/core/runner — the M1 execution loop + its injection seams. Barrel for the parent to wire
 // into src/index.ts (the parent owns the public-export edit; this file only collects the runner API).
 
-export { runWorkflow, defaultExecRunner, defaultCheckpointWait, lastJsonBlock, selectedBridgedTool, buildNodeConfig } from './runner.js';
+export { runWorkflow, defaultExecRunner, defaultCheckpointWait, lastJsonBlock, selectedBridgedTool, buildNodeConfig, summarizeGates } from './runner.js';
 export type { RunOptions, RunResult, ExecRunner, ExecWatchdogOpts, CheckpointWaiter } from './runner.js';
+// P6 — mid-run migration: the single-writer lease + the freeze-at-node-boundary signal + run-dir bundle.
+export { acquireLease, readLease, LeaseHeldError, lockFile } from './lease.js';
+export type { Lease, LeaseInfo, AcquireOpts } from './lease.js';
+export { requestFreeze, clearFreeze, freezeFile, defaultFreezeSignal, packRunDir, unpackRunDir, BUNDLE_EXCLUDE } from './migrate.js';
+export type { PackOpts } from './migrate.js';
 // (op⊖ops) derivesFromOp / gatesFromOp / runOpsFromOp — the SINGLE OpSpec→executor-input adapter home (the
 // SOLE derive rep is `op[]`). Surfaced so consumers (the CLI inspector) render derives from `op[]` instead of
 // the retired `node.ops`; gatesFromOp/runOpsFromOp unify the gate/run reads the runner inlined per lane (C2).
@@ -10,6 +15,13 @@ export { derivesFromOp, gatesFromOp, runOpsFromOp, actionsFromOp } from './op-di
 // In-place exec location — the seam that anchors a `local` (in-place) node's cwd + output to the run dir
 // (so a relative artifact write lands under {{RUN}}); isolated kinds keep their throwaway workspace + out/<id>.
 export { effectiveSandboxLocation } from './env-staging.js';
+// Cloud-cred minting seam (M1): resolve a declared provider-cred var through the SecretResolver with
+// `isCloud:true` (mint-not-forward). `piflowctl cloud up` reuses it to stage a Fly secret. CLOUD_KINDS gates it.
+export { cloudCredEnvAdditions, CLOUD_KINDS } from './env-staging.js';
+// The §7.2 claude-code credential resolver — the LAYERED host-side OAuth-token lookup (env → ~/.piflow file →
+// local login). `piflowctl cloud up` reuses it to stage the subscription token as a Fly secret (never an API key).
+export { resolveClaudeOAuthToken, defaultClaudeCodeCredFile } from './claude-executor.js';
+export type { ClaudeTokenSources } from './claude-executor.js';
 export type { DerivedExecInputs, ProjectOp, RegistryProject, PromoteInput, RunnableOp, RejectedRunOp, ActionOps } from './op-dispatch.js';
 // G5 — HUMAN CHECKPOINT (HITL): the marker/reply schemas, the question hash, and the reply validator (the
 // runner's authority). The Vite courier + the console write the reply file; observe surfaces the marker.
@@ -41,7 +53,7 @@ export type { ConfigArgs, LoadConfigInput, ResolvedRunOpts } from './config.js';
 // alongside the runner finds it here too).
 export { defaultSecretResolver } from '../types.js';
 export type { SecretResolver } from '../types.js';
-export { defaultPiCommand } from './command.js';
+export { defaultPiCommand, claudeCommand, dispatchCommand } from './command.js';
 export type { CommandBuilder, CommandContext } from './command.js';
 export { validateArtifactSchemas, defaultSchemaValidator } from './schema.js';
 export type { SchemaValidator, SchemaCheckResult } from './schema.js';
@@ -90,6 +102,9 @@ export type { NodeToolAudit } from './audit.js';
 // G1 — per-node model/provider routing: the single home of the override order.
 export {
   resolveNodeModel,
+  effectiveModel,
+  resolveClaudeModel,
+  isClaudeModel,
   ModelRoutingError,
   loadModelTiers,
   writeModelTiers,

@@ -47,10 +47,12 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@piflow/core": "workspace:*"
+    "@piflow/core": "workspace:*",
+    "@piflow/server": "workspace:*"
   },
   "optionalDependencies": {
     "@piflow/daytona": "workspace:*",
-    "@piflow/e2b": "workspace:*"
+    "@piflow/e2b": "workspace:*",
+    "@piflow/docker": "workspace:*"
   }
 }

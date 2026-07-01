@@ -3,9 +3,11 @@
   "files": [],
   "references": [
     { "path": "./packages/core" },
+    { "path": "./packages/server" },
     { "path": "./packages/cli" },
     { "path": "./packages/langgraph" },
     { "path": "./packages/daytona" },
-    { "path": "./packages/e2b" }
+    { "path": "./packages/e2b" },
+    { "path": "./packages/docker" }
   ]
 }

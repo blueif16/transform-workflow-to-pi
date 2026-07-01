@@ -33,6 +33,8 @@ import {
   type NodeStatusRecord,
   type ArtifactState,
   type NodeConfig,
+  type GateSummary,
+  type GateSummaryEntry,
   nowISO,
   writeStatus,
   artifactState,
@@ -76,6 +78,17 @@ export interface AttemptOverride {
    * persists across attempts (in-place/local); ignored elsewhere so cloud/inmemory stay cold.
    */
   resumeSessionId?: string;
+}
+
+/**
+ * The SINGLE choke point for the run-start executor override: pick `pi` vs `claude-code` for THIS node
+ * WITHOUT editing the template. PRECEDENCE: `ctx.executorOverride[node.id]` (per-node) → `ctx.executorDefault`
+ * (run-level) → `node.executor` (the authored value). Both ctx fields absent ⇒ the authored executor, so a
+ * run with no override is byte-identical. The caller clones `{ ...node, executor: <this> }` and threads the
+ * clone to BOTH `effectiveModel` and `ctx.buildCommand` (which already branch on `node.executor`).
+ */
+function resolveExecutor(node: NodeSpec, ctx: RunContext): NodeSpec['executor'] {
+  return ctx.executorOverride?.[node.id] ?? ctx.executorDefault ?? node.executor;
 }
 
 // Exported as the lifecycle seam: ./retry.ts drives the retry/escalate loop around `runNode`.
@@ -171,6 +184,11 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
   try {
     node = {
       ...srcNode,
+      // Run-start executor override (the SINGLE choke point): fold the effective executor into the SAME
+      // resolved clone the runner consumes downstream, so EVERY `node.executor` read below — the claude
+      // credential-env injection, `effectiveModel`, both `buildCommand` sites (first exec + G8 repair), and
+      // the `isClaude` verdict path — sees the resolved value uniformly. Absent override ⇒ the authored value.
+      executor: resolveExecutor(srcNode, ctx),
       io: {
         ...srcNode.io,
         artifacts: srcNode.io.artifacts.map((a) => ({ ...a, path: resolveTokens(a.path, resolveCtx) })),
@@ -831,6 +849,48 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
  * location and OMITTED when absent (no `undefined` keys, so the on-disk slice stays minimal). `sandbox` here is
  * per-node SCOPING (workspace/readScope/owns), NOT the chosen backend — that is run-level (`status.sandbox`).
  */
+/**
+ * (POLICY channel) Distill a node's authored post-node consequence chain from its canonical `op[]` (+ the G5
+ * `checkpoint`) into the LEGIBLE `GateSummary` the single observe path mirrors. PURE (no I/O). Folds each op
+ * body in authored order — `run`→exec, `gate`→check, `action`→its control kind (`rerouteTo`→reroute) — then
+ * appends the human checkpoint LAST (cost-ladder: a person is spent last). TRANSFORM ops (seed/project/merge/
+ * promote) are plumbing, not gates → excluded. Returns undefined when there is nothing to show (the minimal-
+ * slice rule: a gate-less node's config stays byte-identical to before).
+ */
+export function summarizeGates(node: NodeSpec): GateSummary | undefined {
+  const entries: GateSummaryEntry[] = [];
+  for (const op of node.op ?? []) {
+    const when = op.when ?? 'post';
+    if (op.gate) {
+      const tail = op.gate.path ? ` ${op.gate.path.split('/').pop()}` : '';
+      entries.push({
+        kind: 'check',
+        label: `${op.gate.kind}${tail}`,
+        when,
+        onFail: op.onFailure ?? 'block',
+        ...(op.gate.advisory ? { advisory: true } : {}),
+      });
+    } else if (op.run) {
+      const label = 'cmd' in op.run ? [op.run.cmd, ...(op.run.args ?? [])].join(' ').slice(0, 48) : `fn:${op.run.fn}`;
+      entries.push({ kind: 'exec', label, when, onFail: op.onFailure ?? 'block' });
+    } else if (op.action) {
+      const a = op.action;
+      if (a.kind === 'rerouteTo') entries.push({ kind: 'reroute', label: `reroute→${a.node}${a.max ? ` ×${a.max}` : ''}`, when });
+      else if (a.kind === 'retry') entries.push({ kind: 'retry', label: `retry${a.max ? ` ×${a.max}` : ''}${a.scope ? ` (${a.scope})` : ''}`, when });
+      else if (a.kind === 'escalate') entries.push({ kind: 'escalate', label: `escalate: ${a.via}`, when });
+      else if (a.kind === 'notify') entries.push({ kind: 'notify', label: `notify: ${a.channel}`, when });
+    }
+    // transform ops are plumbing (derive/seed/merge/promote) — never a gate; skipped.
+  }
+  let checkpoint: GateSummary['checkpoint'];
+  if (node.checkpoint) {
+    checkpoint = node.checkpoint.kind;
+    entries.push({ kind: 'human', label: node.checkpoint.kind, when: 'post' });
+  }
+  if (entries.length === 0) return undefined;
+  return { entries, ...(checkpoint ? { checkpoint } : {}) };
+}
+
 export function buildNodeConfig(node: NodeSpec): NodeConfig {
   const cfg: NodeConfig = {};
   if (node.model !== undefined) cfg.model = node.model;                 // types.ts: NodeSpec.model
@@ -860,6 +920,10 @@ export function buildNodeConfig(node: NodeSpec): NodeConfig {
     if (sandbox.write !== undefined) sb.owns = sandbox.write;              // types.ts: SandboxSpec.write
     if (Object.keys(sb).length) cfg.sandbox = sb;
   }
+  // (POLICY channel) The authored post-node consequence chain, distilled from op[] + checkpoint. Omitted when
+  // the node has no gates/actions/checkpoint (minimal-slice rule) so a gate-less node's slice is unchanged.
+  const gates = summarizeGates(node);
+  if (gates) cfg.gates = gates;
   return cfg;
 }
 

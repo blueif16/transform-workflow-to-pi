@@ -5,11 +5,31 @@
 import type { FlowNode, FlowNodeData, NodeStatus } from "../components/WorkflowNode";
 import type { DirEntry } from "../components/DirectoryPanel";
 import type { Edge } from "@xyflow/react";
+import { apiFetch, apiUrl } from "./apiBase";
 
 export type ScopeKind = "run" | "skill" | "template" | "package" | "repo";
 
 /** (SKIN channel) The sandbox BACKEND kind — mirrors core `SandboxProviderKind` (types.ts). */
 export type SandboxProviderKind = "inmemory" | "local" | "seatbelt" | "worktree" | "daytona" | "e2b";
+
+/** (POLICY channel) One entry in a node's authored post-node consequence chain — mirrors core
+ *  `GateSummaryEntry` (runner/status.ts). A LEGIBLE fold of the node's op[] the GUI renders as "what happens
+ *  after this node", never the raw op envelope. */
+export interface GateSummaryEntry {
+  kind: "exec" | "check" | "judge" | "retry" | "escalate" | "notify" | "reroute" | "human";
+  label: string;
+  when: "pre" | "post" | "on-success" | "on-failure" | "always";
+  onFail?: "block" | "warn" | "stop" | "retry" | "escalate";
+  advisory?: boolean;
+}
+
+/** (POLICY channel) A node's authored gate/policy summary — mirrors core `GateSummary`. Distilled from op[]
+ *  + the G5 checkpoint at run time and carried verbatim on the run-view's `NodeConfig`, so the GUI renders
+ *  the post-node policy legibly WITHOUT the `/__piflow/node-config` template side-channel. */
+export interface GateSummary {
+  entries: GateSummaryEntry[];
+  checkpoint?: "confirm" | "input" | "select";
+}
 
 /** (SKIN channel) The curated per-node config slice — mirrors core `NodeConfig` (runner/status.ts). The
  *  `sandbox` here is per-node SCOPING (workspace/readScope/owns), NOT the backend (that is run-level). */
@@ -26,6 +46,9 @@ export interface NodeConfig {
    *  Drives the `unlocked` node skin; a local-only, loosen-only posture. Mirrors core `NodeConfig`. */
   fullAccess?: boolean;
   sandbox?: { workspace?: string; readScope?: string[]; owns?: string[]; };
+  /** (POLICY channel) The authored post-node consequence chain (gate lane + policy + checkpoint), distilled
+   *  by core's `summarizeGates` and mirrored through observe. The GUI's legible "what happens after" source. */
+  gates?: GateSummary;
 }
 
 export interface ScopeBucket { kind: ScopeKind; label: string; count: number; paths: string[]; }
@@ -106,7 +129,7 @@ export interface RunView {
  *  distills the run's REAL `.pi/` on demand via the shared `@piflow/core/observe` builder — works for
  *  live, historical, and foreign runs alike (no transcode, no per-run static file). */
 export async function loadRunView(run: string): Promise<RunView> {
-  const res = await fetch(`/__piflow/run-view/${encodeURIComponent(run)}`);
+  const res = await apiFetch(`/__piflow/run-view/${encodeURIComponent(run)}`);
   if (!res.ok) throw new Error(`Failed to load run-view for "${run}": ${res.status} ${res.statusText}`);
   return (await res.json()) as RunView;
 }
@@ -117,7 +140,7 @@ export async function loadRunView(run: string): Promise<RunView> {
  *  SAME RunView shape — so the canvas renders the real siblings+judge DAG, never a view-local rewrite. */
 export async function loadPreview(run: string, overrides: Record<string, string>): Promise<RunView> {
   const q = encodeURIComponent(JSON.stringify(overrides));
-  const res = await fetch(`/__piflow/preview/${encodeURIComponent(run)}?overrides=${q}`);
+  const res = await apiFetch(`/__piflow/preview/${encodeURIComponent(run)}?overrides=${q}`);
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try { const body = await res.json(); if (body?.error) detail = body.error; } catch { /* keep status */ }
@@ -131,7 +154,7 @@ export async function loadPreview(run: string, overrides: Record<string, string>
 export async function saveRunFusion(run: string, overrides: Record<string, string>): Promise<{ ok: boolean; error?: string }> {
   try {
     const q = encodeURIComponent(JSON.stringify(overrides));
-    const res = await fetch(`/__piflow/save-run/${encodeURIComponent(run)}?overrides=${q}`, { method: "POST" });
+    const res = await apiFetch(`/__piflow/save-run/${encodeURIComponent(run)}?overrides=${q}`, { method: "POST" });
     if (res.ok) return { ok: true };
     let error = `${res.status} ${res.statusText}`;
     try { const body = await res.json(); if (body?.error) error = body.error; } catch { /* keep status */ }
@@ -199,7 +222,7 @@ export interface AuthoredNodeConfig {
 /** Fetch a node's authored config from the TEMPLATE (the badge read path the write path mirrors). */
 export async function loadNodeConfig(run: string, nodeId: string): Promise<AuthoredNodeConfig | null> {
   try {
-    const res = await fetch(`/__piflow/node-config/${encodeURIComponent(run)}?node=${encodeURIComponent(nodeId)}`);
+    const res = await apiFetch(`/__piflow/node-config/${encodeURIComponent(run)}?node=${encodeURIComponent(nodeId)}`);
     if (!res.ok) return null;
     const { node } = (await res.json()) as { node: AuthoredNodeConfig };
     return node ?? null;
@@ -218,7 +241,7 @@ export async function dropChipOnNode(
   target: "template" | "run" = "template",
 ): Promise<{ ok: boolean; node?: AuthoredNodeConfig; error?: string; stub?: boolean }> {
   try {
-    const res = await fetch(`/__piflow/node-edit/${encodeURIComponent(run)}`, {
+    const res = await apiFetch(`/__piflow/node-edit/${encodeURIComponent(run)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ nodeId, chip, target }),
@@ -255,7 +278,7 @@ export type AgentCatalog = Record<string, AgentDisplay>;
  *  `~/.piflow/agents/`, never on the node (decision #3). Absent/unreachable ⇒ {} (nodes render default chips). */
 export async function loadAgentCatalog(): Promise<AgentCatalog> {
   try {
-    const res = await fetch("/__piflow/agents.json");
+    const res = await apiFetch("/__piflow/agents.json");
     if (!res.ok) return {};
     return (await res.json()) as AgentCatalog;
   } catch {
@@ -268,7 +291,7 @@ export async function loadAgentCatalog(): Promise<AgentCatalog> {
  *  the produced-files set `buildDirectory` derives from the run-view. File leaf ids are `f:<run-relative>`,
  *  which equals a produced file's run-relative displayPath, so the `fileToNode` map still maps clicks. */
 export async function loadRunTree(run: string): Promise<DirEntry[]> {
-  const res = await fetch(`/__piflow/tree/${encodeURIComponent(run)}`);
+  const res = await apiFetch(`/__piflow/tree/${encodeURIComponent(run)}`);
   if (!res.ok) throw new Error(`Failed to load file tree for "${run}": ${res.status} ${res.statusText}`);
   const { tree } = (await res.json()) as { tree: DirEntry[] };
   return tree ?? [];
@@ -278,7 +301,7 @@ export async function loadRunTree(run: string): Promise<DirEntry[]> {
  *  disk (text or image), resolved under the run's workspace. The HUD uses this to render ANY file it has a
  *  path for — input read, output artifact, or write — not just the telemetry preview snapshot. */
 export function fileUrl(run: string, path: string): string {
-  return `/__piflow/file/${encodeURIComponent(run)}?path=${encodeURIComponent(path)}`;
+  return apiUrl(`/__piflow/file/${encodeURIComponent(run)}?path=${encodeURIComponent(path)}`);
 }
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]);

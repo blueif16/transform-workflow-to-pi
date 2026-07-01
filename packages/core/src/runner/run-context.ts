@@ -37,6 +37,14 @@ export interface RunContext {
   providerName: string;
   model?: string;
   /**
+   * Run-start executor selection (run-level default + per-node override), applied at each node run by
+   * `resolveExecutor` (node-lifecycle.ts): `executorOverride[node.id] ?? executorDefault ?? node.executor`.
+   * Lets a caller (CLI/GUI) pick `pi` vs `claude-code` WITHOUT editing the template. Both absent ⇒ every
+   * node keeps its authored `executor` (today's behavior).
+   */
+  executorDefault?: 'pi' | 'claude-code';
+  executorOverride?: Record<string, 'pi' | 'claude-code'>;
+  /**
    * G1 — global routing config (the activatable tier map + pi's models.json index), loaded ONCE at run start.
    * The per-node effective model/provider is resolved from this via `resolveNodeModel` at the build call.
    */

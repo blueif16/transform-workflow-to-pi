@@ -9,6 +9,7 @@ import type { FlowNode, FlowNodeData } from "../components/WorkflowNode";
 import { toNodeStatus, formatMs } from "./runView";
 import type { RunViewNode } from "./runView";
 import { LiveTelemetry } from "./liveTelemetry";
+import { sse, useEndpoint } from "./apiBase";
 
 export type LiveNodeStatus =
   | "pending" | "running" | "ok" | "reused" | "gap" | "blocked" | "error" | "dry";
@@ -103,6 +104,9 @@ function reduce(prev: RunStreamState, f: Frame): RunStreamState {
 export function useRunStream(run: string | null | undefined): RunStreamState {
   const [state, setState] = useState<RunStreamState>(INITIAL);
   const esRef = useRef<EventSource | null>(null);
+  // Re-point trigger: a migrate switches the console to a new serve → this baseUrl changes → the effect
+  // re-runs and reopens the telemetry stream against the new origin (for the same run id).
+  const endpointBase = useEndpoint().baseUrl;
 
   useEffect(() => {
     if (!run) { setState(INITIAL); return; }
@@ -121,7 +125,7 @@ export function useRunStream(run: string | null | undefined): RunStreamState {
     };
     const foldTimer = window.setInterval(flush, FOLD_MS);
 
-    const es = new EventSource(`/__piflow/stream/${encodeURIComponent(run)}`);
+    const es = sse(`/__piflow/stream/${encodeURIComponent(run)}`);
     esRef.current = es;
     es.onmessage = (e: MessageEvent) => {
       let f: Frame;
@@ -137,7 +141,7 @@ export function useRunStream(run: string | null | undefined): RunStreamState {
       setState((prev) => (prev.status === "done" || prev.model ? prev : { ...prev, status: "error", error: "stream connection failed" }));
     };
     return () => { es.close(); esRef.current = null; window.clearInterval(foldTimer); };
-  }, [run]);
+  }, [run, endpointBase]);
 
   return state;
 }

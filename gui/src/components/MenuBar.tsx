@@ -20,15 +20,20 @@ import { DirectoryPanel } from "./DirectoryPanel";
 import { useExpand } from "./ExpandContext";
 import { findThread, indexToTree, type GlobalIndex } from "../data/runIndex";
 import { formatMs } from "../data/runView";
+import { useEndpoint } from "../data/apiBase";
 import "../styles/menubar.css";
+import "../styles/startrun.css";
 
 // `ix` is owned + LIVE-polled by CanvasInner (single source of truth) and passed down — the switcher
 // list + status chip stay fresh as runs start / progress without the bar holding its own loader.
-export function MenuBar({ activeRun, onSelectRun, ix }: { activeRun: string; onSelectRun: (run: string) => void; ix: GlobalIndex | null }) {
+// `onStartRun` deploys the StartRunPanel (owned by CanvasInner so it can wire the returned run into
+// the run-select seam). The endpoint reflector shows which control server the GUI is talking to.
+export function MenuBar({ activeRun, onSelectRun, onStartRun, onMigrateRun, ix }: { activeRun: string; onSelectRun: (run: string) => void; onStartRun: () => void; onMigrateRun: () => void; ix: GlobalIndex | null }) {
   const { expandedId, collapse } = useExpand();
   const { fitView } = useReactFlow();
   const [open, setOpen] = useState(false);
   const layerRef = useRef<HTMLDivElement>(null);
+  const endpointBaseUrl = useEndpoint().baseUrl;
 
   // dismiss the switcher on any click outside it (or Esc) — the "click anywhere closes" rule
   useEffect(() => {
@@ -71,6 +76,28 @@ export function MenuBar({ activeRun, onSelectRun, ix }: { activeRun: string; onS
             )}
             {active.state === "running" && active.runningStalled && <span className="ds-menubar__stalled"> · stalled</span>}
           </span>
+        )}
+
+        {/* which control server the GUI is talking to — same-origin (local serve) or a remote URL.
+            Reads the LIVE endpoint so a migrate switch re-labels it without a reload. */}
+        <span className="ds-menubar__endpoint" title={`control server: ${endpointBaseUrl || "same-origin"}`}>
+          {endpointBaseUrl || "local (same-origin)"}
+        </span>
+
+        {/* LAUNCH a run — the one action in the chrome (accent-tinted). Opens the StartRunPanel. */}
+        <button type="button" className="ds-menubar__icon ds-menubar__start" aria-label="Start a run" title="Start a run" onClick={onStartRun}>
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4.5 3l8 5-8 5V3z" fill="currentColor" />
+          </svg>
+        </button>
+
+        {/* MIGRATE the active run to another serve (local ⇄ cloud). Needs a run to move; opens MigrateRunPanel. */}
+        {activeRun && (
+          <button type="button" className="ds-menubar__icon" aria-label="Migrate this run" title="Migrate this run to another serve" onClick={onMigrateRun}>
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M2 5h9M8 2l3 3-3 3M14 11H5M8 14l-3-3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
         )}
 
         <button type="button" className="ds-menubar__icon" aria-label="Fit view" onClick={() => fitView({ padding: 0.25, duration: 320 })}>

@@ -11,6 +11,7 @@
 // message_start/update/end (message_end carries message.usage), tool_execution_start/end, plus the bridge's
 // own meta/stderr/session_closed/stream-error wrappers.
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { apiFetch, sse, useEndpoint } from "./apiBase";
 
 /** A folded chat message (assembled from message_start → message_update → message_end). We fold on the
  *  ASSEMBLED `message` snapshot pi sends on each frame (stable), not the fine-grained delta. */
@@ -232,13 +233,16 @@ export function useControlSession(run: string | null | undefined): ControlSessio
   const backoffRef = useRef(500);
   const retryRef = useRef<number | null>(null);
   const stoppedRef = useRef(false);
+  // Re-point trigger: when the console migrates to a different serve, the baseUrl changes → the connect
+  // effect below re-runs and re-subscribes the control stream to the new origin (same run id).
+  const endpointBase = useEndpoint().baseUrl;
 
   // GET the conversation history list and fold it into state (active flag → activeSessionId). Defined as a
   // ref-stable fetch so the EventSource effect can call it on connect/rebase without re-subscribing.
   const refreshSessions = useCallback(async () => {
     if (!run) return;
     try {
-      const r = await fetch(`/__piflow/control/${encodeURIComponent(run)}/sessions`);
+      const r = await apiFetch(`/__piflow/control/${encodeURIComponent(run)}/sessions`);
       if (!r.ok) return;
       const body = (await r.json()) as { sessions?: SessionSummary[] };
       const sessions = Array.isArray(body.sessions) ? body.sessions : [];
@@ -255,7 +259,7 @@ export function useControlSession(run: string | null | undefined): ControlSessio
 
     const connect = () => {
       if (stoppedRef.current) return;
-      const es = new EventSource(`/__piflow/control/${encodeURIComponent(run)}/stream`);
+      const es = sse(`/__piflow/control/${encodeURIComponent(run)}/stream`);
       esRef.current = es;
       es.onopen = () => { backoffRef.current = 500; void refreshSessions(); };
       es.onmessage = (e: MessageEvent) => {
@@ -284,11 +288,11 @@ export function useControlSession(run: string | null | undefined): ControlSessio
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [run, refreshSessions]);
+  }, [run, refreshSessions, endpointBase]);
 
   const post = useCallback(async (body: Record<string, unknown>) => {
     if (!run) return;
-    await fetch(`/__piflow/control/${encodeURIComponent(run)}/message`, {
+    await apiFetch(`/__piflow/control/${encodeURIComponent(run)}/message`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -304,7 +308,7 @@ export function useControlSession(run: string | null | undefined): ControlSessio
 
   const start = useCallback(async () => {
     if (!run) return;
-    await fetch(`/__piflow/control/${encodeURIComponent(run)}/start`, { method: "POST" });
+    await apiFetch(`/__piflow/control/${encodeURIComponent(run)}/start`, { method: "POST" });
   }, [run]);
 
   // CONTINUE a conversation: clear the chat view OPTIMISTICALLY (so the switch REPLACES, not appends — the
@@ -313,7 +317,7 @@ export function useControlSession(run: string | null | undefined): ControlSessio
   const selectSession = useCallback(async (sessionId: string) => {
     if (!run) return;
     setState((prev) => ({ ...prev, messages: [], toolExecutions: new Map(), streaming: false, activeSessionId: sessionId }));
-    await fetch(`/__piflow/control/${encodeURIComponent(run)}/select`, {
+    await apiFetch(`/__piflow/control/${encodeURIComponent(run)}/select`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId }),
     });
     await refreshSessions();
@@ -323,7 +327,7 @@ export function useControlSession(run: string | null | undefined): ControlSessio
   const newChat = useCallback(async () => {
     if (!run) return;
     setState((prev) => ({ ...prev, messages: [], toolExecutions: new Map(), streaming: false, activeSessionId: null }));
-    await fetch(`/__piflow/control/${encodeURIComponent(run)}/new`, { method: "POST" });
+    await apiFetch(`/__piflow/control/${encodeURIComponent(run)}/new`, { method: "POST" });
     await refreshSessions();
   }, [run, refreshSessions]);
 

@@ -31,6 +31,9 @@ import { runOptimizeFixCli } from './optimize-fix.js';
 import { runOptimizeAdoptCli } from './optimize-adopt.js';
 import { runOptimizeLoopCli } from './optimize-loop.js';
 import { runGuiCli } from './gui.js';
+import { runContextCli } from './context.js';
+import { runCloudCli } from './cloud.js';
+import { runServeCli } from '@piflow/server';
 import { runTuiCli } from './tui.js';
 import { runSkillsCli } from './skills.js';
 import { runUnderstandCli } from './understand.js';
@@ -75,6 +78,22 @@ USAGE
   piflowctl model   [list | set <tier> <modelId> [--claude] | activate | deactivate]  the model-tier config
   piflowctl claude-code [connect [--token <t>] | status]  OPTIONAL credential for the claude-code executor
   piflowctl gui     [--port <n>] [--no-open]  launch the browser run viewer, scoped to the project at cwd
+  piflowctl serve   [--port <n>] [--host <h>] [--token <t>] [--roots <p>]  host the control plane (control API +
+                                            built GUI) on THIS machine — the \`local\` context's server, the SAME
+                                            binary a cloud control VM runs. Long-lived; Ctrl-C stops. Serves gui/dist
+                                            (build it: cd gui && npm run build) + POST /api/runs/start.
+  piflowctl context [use <name> | ls | add <name> --url <baseUrl> [--token <t>] | rm <name> | current]
+                                            switch the CLI/GUI between named control-plane endpoints
+                                            (local ⇄ cloud \`serve\`), stored in ~/.piflow/contexts.json.
+                                            Active-context ladder: --context flag > PIFLOW_CONTEXT env >
+                                            the \`use\` pointer > the implicit \`local\` (${'http://127.0.0.1:5273'}).
+  piflowctl cloud   up [--app <n>] [--provider <gw>] [--execute] | down [--execute]  stand up (or tear
+                                            down) the SAME control plane on a durable Fly.io VM. Bare \`up\`
+                                            = a PLAN (mint the bearer token, register a \`cloud\` context,
+                                            print the fly runbook — spends nothing). \`--execute\` runs it
+                                            (secrets set → deploy → smoke) + switches context on a green
+                                            smoke. Projects the pi gateway (models.json entry + cred vars)
+                                            + Claude OAuth as Fly secrets, the same way a node sandbox does.
   piflowctl tui     [<rundir>] [--every <s>]  launch the terminal run viewer, scoped to the project at cwd
   piflowctl skills  install [targetDir] [--force] [--with <id>|--all|--wizard]  install the authoring skills (+ add-ons) into a repo
   piflowctl understand [subsystem] [--check|--rebuild]  how a subsystem works / where to change it (code slices)
@@ -303,6 +322,15 @@ async function main(): Promise<void> {
       break;
     case 'gui':
       await runGuiCli(rest);
+      break;
+    case 'context':
+      await runContextCli(rest);
+      break;
+    case 'cloud':
+      await runCloudCli(rest);
+      break;
+    case 'serve':
+      await runServeCli(rest);
       break;
     case 'tui':
       await runTuiCli(rest);

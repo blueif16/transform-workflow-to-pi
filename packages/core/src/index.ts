@@ -197,10 +197,22 @@ export type { HookReport, RunHooksOpts } from './hooks/index.js';
 
 // Runner (M1 execution loop — create→stage→exec→collect→dispose; watchdogs · halt-on-failure ·
 // --from resume · run-status.json). The pi-spawn is injectable (buildCommand/execRunner) so it runs offline.
-export { runWorkflow, defaultExecRunner, defaultPiCommand, lastJsonBlock, writeStatus, artifactState, nowISO } from './runner/index.js';
+export { runWorkflow, defaultExecRunner, defaultPiCommand, dispatchCommand, lastJsonBlock, writeStatus, artifactState, nowISO } from './runner/index.js';
 // buildNodeConfig — the curated per-node config-slice builder (the SKIN channel mirror). Surfaced so a test
 // can pin the slice mapping (e.g. the `fullAccess`/`programmatic` carve-outs) directly off the resolved NodeSpec.
-export { buildNodeConfig } from './runner/index.js';
+// summarizeGates — the POLICY-channel distiller (node.op + checkpoint → the legible post-node consequence chain).
+export { buildNodeConfig, summarizeGates } from './runner/index.js';
+export type { GateSummary, GateSummaryEntry, NodeConfig } from './runner/status.js';
+// P6 — mid-run migration primitives: the single-writer lease (guards journal double-write across a
+// migration), the freeze-at-node-boundary signal (`.pi/freeze` → park the run), and the run-dir bundle
+// (the portable snapshot shipped laptop⇄cloud). Surfaced for @piflow/server (the migrate endpoints) +
+// @piflow/cli (`context migrate`).
+export {
+  acquireLease, readLease, LeaseHeldError, lockFile,
+  requestFreeze, clearFreeze, freezeFile, defaultFreezeSignal,
+  packRunDir, unpackRunDir, BUNDLE_EXCLUDE,
+} from './runner/index.js';
+export type { Lease, LeaseInfo, AcquireOpts, PackOpts } from './runner/index.js';
 // (op⊖ops) derivesFromOp / gatesFromOp / runOpsFromOp — reconstruct the per-family executor inputs from a
 // node's canonical `op[]` (the SOLE derive rep; the legacy `node.ops` was retired in U6). The runner reads
 // derives/gates/run ops through these three adapters (one home), and consumers (inspector) render via them.
@@ -217,6 +229,9 @@ export type { RunFromTemplateOpts } from './runner/index.js';
 // G1 — per-node model/provider ROUTING: the single home of the override order (model > tier > run > default).
 export {
   resolveNodeModel,
+  effectiveModel,
+  resolveClaudeModel,
+  isClaudeModel,
   ModelRoutingError,
   loadModelTiers,
   writeModelTiers,
@@ -241,6 +256,10 @@ export type { SchemaValidator, SchemaCheckResult } from './runner/index.js';
 // scoped token, not the raw credential (also surfaced via `export * from './types.js'` above).
 export { defaultSecretResolver } from './runner/index.js';
 export type { SecretResolver } from './runner/index.js';
+// Cloud-cred / claude-code OAuth staging seams — reused by `piflowctl cloud up` to mint Fly secrets
+// (provider cred via the isCloud:true SecretResolver seam; the subscription token via the layered resolver).
+export { cloudCredEnvAdditions, CLOUD_KINDS, resolveClaudeOAuthToken, defaultClaudeCodeCredFile } from './runner/index.js';
+export type { ClaudeTokenSources } from './runner/index.js';
 export type {
   RunOptions,
   RunResult,
