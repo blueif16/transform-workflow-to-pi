@@ -311,15 +311,16 @@ becomes the context `baseUrl` + the smoke's `PIFLOW_CLOUD_URL`. Without it, PLAN
 ## 5. CLI surface
 
 ```
-piflowctl cloud up   --host <fly|railway|selfhost|docker>
+piflowctl cloud up   --host <railway|fly|selfhost|docker>
                      [--app <name>] [--public-url <https://…>]      # required for selfhost/docker before --execute
                      [--provider <gw>] [--provider-secret <VAR>]
                      [--context <name>] [--config <path>] [--dockerfile <path>] [--port <n>] [--execute]
 
-piflowctl cloud down --host <fly|railway|selfhost|docker> [--app <name>] [--context <name>] [--port <n>] [--execute]
+piflowctl cloud down --host <railway|fly|selfhost|docker> [--app <name>] [--context <name>] [--port <n>] [--execute]
 ```
 
-- `--host` defaults to `fly` → **every existing invocation is byte-for-byte unchanged**.
+- `--host` defaults to `railway` (a managed builder — no local provider CLI or tunnel, ~$5/mo w/ a free first
+  month). Pass `--host fly` (or `selfhost`/`docker`) to switch; the fly pathway is byte-for-byte unchanged.
 - Parser (`runCloudCli`, `cloud.ts:500-552`): add `--host`, `--public-url`, `--port` to the shared flag loop; validate
   `host` via `resolveAdapter(host)` (→ `fail(...)` on unknown). Keep Fly defaults for `config`/`dockerfile`/`app`.
 - `runCloudUp`: resolve the adapter, `appUrl = adapter.appUrl(app, {publicUrl, port})`, pass `appUrl` into
@@ -437,8 +438,9 @@ input via the wrapper path (its own test passes `appUrl` through the same `https
 
 ## 11. Open decisions for the human
 
-- **Default `--host`.** Kept `fly` for 100% back-compat. If the flagship story is now selfhost/docker (free), consider
-  whether the default or the docs' lead example should change.
+- **Default `--host`.** RESOLVED → `railway` (managed builder — no local provider CLI or tunnel, ~$5/mo w/ a free
+  first month) is now the default: the lowest-setup pathway. `fly` was the original default (byte-for-byte
+  back-compat); pass `--host fly` to keep it.
 - **Is `selfhost` in scope for THIS change**, or ship `fly`+`railway`+`docker` first and add `selfhost` (with its
   two-phase tunnel flow + supervisor guidance) as a fast-follow? The tunnel URL-known-only-after-start seam is the one
   genuine wart.
