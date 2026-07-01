@@ -32,3 +32,7 @@ export { globalDir, productsFile, indexFile, homeTiersFile, ensurePiflowHome, lo
 export type { ProductEntry, Registry } from './registry.js';
 export { discoverNamespaces, discoverRunDirs, summarizeRun, buildSnapshot } from './discover.js';
 export type { NamespaceDesc, NamespaceMeta, ThreadRow, SnapshotNamespace, SnapshotProduct, Snapshot } from './discover.js';
+
+// SCOPE — resolve the launched project's product roots from a cwd + build a registry scoped to them. The shared
+// spine behind "a view shows the project you launched it in, not the whole global registry" (piflowctl gui/tui).
+export { isProductRoot, findProductRoot, findProductRootsUnder, resolveScope, registryFromRoots, loadScopedRegistry } from './scope.js';
