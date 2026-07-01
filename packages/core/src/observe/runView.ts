@@ -17,7 +17,7 @@ import path from 'node:path';
 import { createNodeAccumulator } from './distill.js';
 import { loadModelCatalog, contextWindowFor, type ModelCatalog } from './models.js';
 import { checkpointViewFrom, type CheckpointMarker, type CheckpointJournalSlot } from '../runner/checkpoint.js';
-import type { NodeConfig } from '../runner/status.js';
+import type { NodeConfig, NodeUsage } from '../runner/status.js';
 import type { SandboxProviderKind, Workflow } from '../types.js';
 
 export type ScopeKind = 'run' | 'skill' | 'template' | 'package' | 'repo';
@@ -197,6 +197,10 @@ interface RunJsonNode {
   artifacts?: { path: string; exists?: boolean; bytes?: number }[];
   summary?: string; issues?: string[];
   config?: NodeConfig;
+  /** the effective model recorded on the node (fallback when message events carried none — e.g. Claude). */
+  model?: string | null;
+  /** (agent-neutral spine) authoritative token/cost rollup from the executor's final report. See NodeUsage. */
+  usage?: NodeUsage;
 }
 interface RunJson {
   run: string; source?: string; provider?: string; model?: string | null;
@@ -281,6 +285,30 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
     const writes: WriteRef[] = rich.writes.map((w) => { const abs = toAbs(w.path); return { path: abs, displayPath: displayPath(abs), verified: w.verified, bytes: w.bytes }; });
     const artifacts: ArtifactRef[] = (rec.artifacts || []).map((a) => { const abs = toAbs(a.path); return { path: abs, displayPath: displayPath(abs), exists: !!a.exists, bytes: a.bytes ?? 0 }; });
 
+    // (agent-neutral spine) When the executor persisted an authoritative usage rollup (Claude — whose
+    // stream-json the pi reducer cannot decode, so `rich` is blank), PREFER it for the token/cost/context
+    // spine. Gated on `rec.usage`: pi never sets it, so pi nodes stay byte-identical (event replay wins).
+    const u = rec.usage;
+    const effModel = rich.model ?? rec.model ?? null;
+    const tokens: RunTokens = u
+      ? {
+          input: u.inputTokens ?? 0,
+          output: u.outputTokens ?? 0,
+          cacheRead: u.cacheRead ?? 0,
+          cacheWrite: u.cacheCreation ?? 0, // Claude cache_creation ≙ pi cacheWrite (newly-cached input)
+          cost: u.cost ?? 0,
+          contextPeak: (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheCreation ?? 0), // context in the window
+          billable: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
+        }
+      : { ...rich.tokens };
+    const spineModel = u ? effModel : rich.model;
+    const spineContextWindow = u
+      ? (u.contextWindow ?? (effModel ? contextWindowFor(effModel, catalog) : null))
+      : (rich.model ? contextWindowFor(rich.model, catalog) : null);
+    const spineModelCalls = u ? (u.numTurns ?? rich.modelCalls) : rich.modelCalls;
+    const spineStopReason = u ? (u.stopReason ?? rich.stopReason) : rich.stopReason;
+    const spineTruncated = u ? (spineStopReason === 'max_tokens' || spineStopReason === 'length') : rich.truncated;
+
     // (G5) Build the checkpoint view from the marker + the `__checkpoints__` journal. A pending marker
     // makes the node's shown `status` read `awaiting-input` (verified-not-trusted: the marker is on disk).
     const checkpoint = checkpointViewFrom(readMarkerSync(id), ckJournal[id]) ?? undefined;
@@ -292,12 +320,12 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
       ...(rec.config ? { config: rec.config } : {}), // (SKIN) curated config slice → GUI cloud skin
       startedAt: rec.startedAt, endedAt: rec.endedAt, durationMs: rec.durationMs,
       expectedMs: expected[id] ?? rec.durationMs ?? null, priorSamples: samples[id] ?? 0,
-      model: rich.model, provider: rich.provider, api: rich.api,
-      contextWindow: rich.model ? contextWindowFor(rich.model, catalog) : null,
+      model: spineModel, provider: rich.provider, api: rich.api,
+      contextWindow: spineContextWindow,
       toolCalls: rich.toolCalls, toolBreakdown: rich.toolBreakdown, timeline: rich.timeline,
-      reads, scopes, writes, artifacts, bash: rich.bash, tokens: { ...rich.tokens },
-      retries: rich.retries, stopReason: rich.stopReason, truncated: rich.truncated, thinkingChars: rich.thinkingChars,
-      modelCalls: rich.modelCalls, maxToolRepeat: rich.maxToolRepeat, repeatedTool: rich.repeatedTool,
+      reads, scopes, writes, artifacts, bash: rich.bash, tokens,
+      retries: rich.retries, stopReason: spineStopReason, truncated: spineTruncated, thinkingChars: rich.thinkingChars,
+      modelCalls: spineModelCalls, maxToolRepeat: rich.maxToolRepeat, repeatedTool: rich.repeatedTool,
       summary: rec.summary, issues: rec.issues || [],
       ...(checkpoint ? { checkpoint } : {}),
     });

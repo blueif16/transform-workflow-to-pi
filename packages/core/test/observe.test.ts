@@ -15,6 +15,7 @@ import type { PiEvent } from '../src/runner/events.js';
 import { readRunModel } from '../src/observe/read.js';
 import { buildRunView } from '../src/observe/runView.js';
 import { watchRun } from '../src/observe/watch.js';
+import { projectRunDigest } from '../src/observe/telemetry.js';
 import type { RunUpdate } from '../src/observe/types.js';
 
 // ── fixture: a `.pi/` run dir built with the LAYOUT HELPERS (never a hardcoded path) ─────────────────
@@ -270,6 +271,93 @@ describe('buildRunView — the SKIN channel surfaces the run sandbox + per-node 
     expect(vById.w0.config?.gates).toEqual(gates);
     // a node without a gates summary stays undefined (additive minimal-slice).
     expect(vById.b1.config?.gates).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// (2c) buildRunView — the AGENT-NEUTRAL spine: source tokens/cost/context from rec.usage when present
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('buildRunView — prefers rec.usage for the token/cost/context spine (Claude-Code parity)', () => {
+  const rec = (id: string, label: string, status: NodeStatusRecord['status'], extra: Partial<NodeStatusRecord> = {}): NodeStatusRecord => ({
+    id, label, status, artifacts: [], issues: [], ...extra,
+  });
+
+  it('lights up a Claude node (blank event replay) from its persisted usage — tokens, cost, context, turns', async () => {
+    const runDir = mkRunDir();
+    const status: RunStatus = {
+      run: 'claude1', startedAt: '2026-07-01T00:00:00.000Z', updatedAt: '2026-07-01T00:00:05.000Z',
+      done: true, ok: true, durationMs: 5000, stage: null, totals: null,
+      nodes: {
+        // A Claude node: its stream-json is opaque to the pi reducer, so events.jsonl replay is BLANK.
+        // The authoritative telemetry lives on rec.usage (stamped from the result event).
+        cx: rec('cx', 'Claude Node', 'ok', {
+          model: 'claude-haiku-4-5-20251001',
+          artifacts: [{ path: 'out.txt', exists: true, bytes: 5 }],
+          usage: { inputTokens: 18, outputTokens: 337, cacheRead: 17172, cacheCreation: 4790, cost: 0.0130002, contextWindow: 200000, numTurns: 2, stopReason: 'end_turn' },
+        }),
+      },
+    };
+    const nodes: Record<string, FixtureNode> = {
+      cx: {
+        rec: status.nodes.cx,
+        io: { id: 'cx', label: 'Claude Node', phase: null, reads: [], writes: [{ path: 'out.txt', verified: true, bytes: 5 }], promotes: [], status: 'ok' },
+        filesOnDisk: [{ rel: 'out.txt', body: 'hello' }],
+        // NO events — proves the spine comes from rec.usage, NOT the (blank) pi-style event replay.
+      },
+    };
+    await writeFixture(runDir, status, nodes);
+
+    const { view } = buildRunView(runDir);
+    const cx = view.nodes.find((n) => n.id === 'cx')!;
+    expect(cx.tokens.input).toBe(18);
+    expect(cx.tokens.output).toBe(337);
+    expect(cx.tokens.cacheRead).toBe(17172);
+    expect(cx.tokens.cacheWrite).toBe(4790); // Claude cache_creation ≙ pi cacheWrite
+    expect(cx.tokens.cost).toBeCloseTo(0.0130002, 6);
+    expect(cx.tokens.contextPeak).toBe(18 + 17172 + 4790); // 21980 — the context that was in the window
+    expect(cx.tokens.billable).toBe(18 + 337);
+    expect(cx.contextWindow).toBe(200000);
+    expect(cx.modelCalls).toBe(2); // Claude num_turns — the real invocation count
+    expect(cx.stopReason).toBe('end_turn');
+    expect(cx.truncated).toBe(false);
+    expect(cx.model).toBe('claude-haiku-4-5-20251001'); // events carry no model → falls back to rec.model
+
+    // The whole digest lights up for a Claude node (was all-zero before this).
+    const digest = projectRunDigest(view);
+    expect(digest.totals.cost).toBeCloseTo(0.0130002, 6);
+    expect(digest.totals.inputTokens).toBe(18);
+    const nd = digest.nodes.find((n) => n.id === 'cx')!;
+    expect(nd.contextPct).toBeCloseTo(21980 / 200000, 4);
+  });
+
+  it('leaves a pi node (no rec.usage) sourced from the event replay — the spine override never fires', async () => {
+    const runDir = mkRunDir();
+    const status: RunStatus = {
+      run: 'pi1', startedAt: '2026-07-01T00:00:00.000Z', updatedAt: '2026-07-01T00:00:05.000Z',
+      done: true, ok: true, durationMs: 5000, stage: null, totals: null,
+      nodes: { p0: rec('p0', 'Pi Node', 'ok', { model: 'm1', artifacts: [{ path: 'p.txt', exists: true, bytes: 3 }] }) },
+    };
+    const events: PiEvent[] = [
+      { type: 'message_start', message: { role: 'assistant', model: 'm1', provider: 'cp' } } as unknown as PiEvent,
+      { type: 'message_end', message: { role: 'assistant', usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.5, totalTokens: 120 }, stopReason: 'end_turn' } } as unknown as PiEvent,
+    ];
+    const nodes: Record<string, FixtureNode> = {
+      p0: {
+        rec: status.nodes.p0,
+        io: { id: 'p0', label: 'Pi Node', phase: null, reads: [], writes: [{ path: 'p.txt', verified: true, bytes: 3 }], promotes: [], status: 'ok' },
+        filesOnDisk: [{ rel: 'p.txt', body: 'pi!' }],
+        events,
+      },
+    };
+    await writeFixture(runDir, status, nodes);
+
+    const { view } = buildRunView(runDir);
+    const p0 = view.nodes.find((n) => n.id === 'p0')!;
+    // Sourced from the event replay (rec.usage absent) — byte-identical to today's pi behavior.
+    expect(p0.tokens.input).toBe(100);
+    expect(p0.tokens.output).toBe(20);
+    expect(p0.tokens.cost).toBeCloseTo(0.5, 6);
+    expect(p0.modelCalls).toBe(1);
   });
 });
 
