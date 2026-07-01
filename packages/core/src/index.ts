@@ -361,3 +361,41 @@ export type {
   SnapshotProduct,
   Snapshot,
 } from './observe/index.js';
+
+// The MEMORY layer (piflow-memory-v1 §2) — the per-node + per-template self-correction surface the Hermes
+// optimizer/reconcile node READS + UPDATES from run traces. Two SEPARATE legs:
+//   • Leg A (memory/) — SELF/history: the node's standing behavior + generalized failure LESSONS + the git
+//     pointer to its `skillsys(<id>)` log; plus the template reconcile summary. The customizable, growing one.
+//   • Leg B (code-map.ts) — WORLD/code: the Tier-0 OKF reference slice of the product code in the node's scope.
+// Both are OPTIMIZER-FACING data — NEVER injected into a node's runtime prompt — and seeded create-if-absent
+// so curated content never gets clobbered. The DATA lives in the product template; only this LOGIC is in core.
+export { buildNodeMemory, buildSystemMemory, seedNodeMemory, seedSystemMemory } from './memory/index.js';
+export type { MemorySeedResult } from './memory/index.js';
+export { buildNodeCodeMap, seedNodeCodeMap } from './code-map.js';
+export type { CodeMapSeedResult } from './code-map.js';
+
+// The OPTIMIZE layer (piflow-memory-v1.5 §7) — the out-of-band Score + Triage pass. Pure, read-only,
+// post-run; NEVER an in-DAG node. scoreRun folds Tier-0 (telemetry disqualifier) × Tier-1 (the product's
+// outcome/checkable signal) → NodeScore[]; triage projects the four-way worklist (LAPSE/SKILL/FUNCTIONALITY/
+// ARCH); renderRouting emits the proven HERMES-ROUTING.md shape. The fixer/gate/land steps build on this.
+export {
+  scoreNodes, scoreRun, triage, parseCriteria, readVerifyReport, renderRouting,
+} from './optimize/index.js';
+export type {
+  NodeScore, Tier0Signal, Tier1Result, Tier1Check, Tier1Gate, Defect, DefectBucket, Confidence,
+  CriteriaEntry, CriteriaFixture, ScoreInput, ScoreRunOpts, TriageOpts, RoutingMeta,
+} from './optimize/index.js';
+// The FIX→GATE→LAND overlord (§6) + the §5.1 replay+scoring harness + its mining half. Lifted to the ROOT so
+// a PRODUCT-side binding (game-omni's live oracle module) can import makeReplayStages + the replay/driver
+// TYPES from the package root — it cannot reach into src/optimize/. All product-agnostic; no product concept
+// enters core (the live oracle/copyScope it injects stay product-side).
+export {
+  evaluateGate, runFixGate, writeStagingManifest, adoptFile, makeReplayStages, mineTaskFromTrace, gameOmniNodeToMilestone,
+  renderOptimizeEvent,
+} from './optimize/index.js';
+export type {
+  GateInput, GateVerdict, LandPolicy, Fixer, ReplayScore, PrepareCandidate, BaseScore, CandidateEdit,
+  FixGateStages, FixGateOpts, FixGateRecord, FixGateResult, FixCycleSkip, StageOpts,
+  CheckableTask, ReplayOracle, MineTask, CopyScope, ReplayDeps, ReplayStages, MineOpts,
+  OptimizeEvent, OptimizeEventSink,
+} from './optimize/index.js';

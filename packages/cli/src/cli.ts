@@ -15,7 +15,7 @@
 
 import { runLogsCli, ensurePiflowHome } from '@piflow/core';
 import { runInitCli } from './init/index.js';
-import { runNewCli, runAddNodeCli } from './scaffold.js';
+import { runNewCli, runAddNodeCli, runMemoryCli } from './scaffold.js';
 import { runModelCli } from './model.js';
 import { runClaudeCodeCli } from './claude-code.js';
 import { runStatusCli } from './status.js';
@@ -26,6 +26,8 @@ import { runRunCli } from './run.js';
 import { runNodeCli } from './node.js';
 import { runInspectCli } from './inspect.js';
 import { runTelemetryCli } from './telemetry.js';
+import { runOptimizeCli } from './optimize.js';
+import { runOptimizeFixCli } from './optimize-fix.js';
 import { runGuiCli } from './gui.js';
 import { runSkillsCli } from './skills.js';
 import { createRequire } from 'node:module';
@@ -40,6 +42,7 @@ USAGE
   piflowctl init                            interactive setup wizard for ~/.piflow (model tiers + optional executors)
   piflowctl new     <templateDir> [flags]   scaffold meta.json + the nodes/ dir (then add-node + Write prose)
   piflowctl add-node <templateDir> --id <id> [flags]  emit one schema-valid node.json (prose is yours)
+  piflowctl memory  scaffold <templateDir>  seed the memory layer (template + per-node memory.md/code-map.md)
   piflowctl run     <templateDir> [--run <id>] [flags]  drive a template run (real or --dry-run)
   piflowctl node    <run> <nodeId> --resume [-m "<msg>"]  warm-resume a node's stored pi session (--stop too)
   piflowctl inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
@@ -50,6 +53,14 @@ USAGE
   piflowctl telemetry <rundir> [nodeId] [--watch] [--verbose] [--json]  agent-facing digest:
                                             verdicts · cost spine · loop signals · anomaly worklist ·
                                             failure-onset root cause. --watch = live stream then record.
+  piflowctl optimize <rundir> [--json] [--archetype <n>]  out-of-band Score + Triage of a FINISHED run:
+                                            folds Tier-0 (telemetry) × Tier-1 (verify outcome) → the
+                                            four-way (LAPSE/SKILL/FUNCTIONALITY/ARCH) worklist. Read-only.
+  piflowctl optimize --fix <rundir> --binding <module> [--node <substr>] [--auto-adopt] [--staging-dir <d>]
+                                            [--edit-budget n] [--watch] [--watch-json]  drive FIX→GATE with a
+                                            PRODUCT binding (oracle/copyScope/fixer); strict-improvement gate on
+                                            a candidate copy → STAGES a manifest. --node scopes the worklist to
+                                            one node; --watch streams live progress (--watch-json = JSON lines).
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
   piflowctl model   [list | set <tier> <modelId> [--claude] | activate | deactivate]  the model-tier config
   piflowctl claude-code [connect [--token <t>] | status]  OPTIONAL credential for the claude-code executor
@@ -115,6 +126,13 @@ ADD-NODE
 ${renderAddNodeHelp()}
 
   Emits/overwrites node.json from the flags; NEVER touches nodes/<id>/prompt.md (yours to Write).
+
+MEMORY
+  scaffold <templateDir>  seed the memory layer — the template's memory.md (system reconcile summary) +
+                each node's memory.md (Leg A: standing behavior + failure lessons) and code-map.md (Leg B:
+                Tier-0 OKF slice of the product code it touches). CREATE-IF-ABSENT — never clobbers curated
+                files. new/add-node seed these automatically; use this to backfill an older template.
+                These files are OPTIMIZER-FACING (the Hermes fixer reads+updates them) — NEVER prompt-injected.
 
 INSPECT
   <templateDir> an authored template/ dir. Compiles it and prints each node's RESOLVED view —
@@ -197,6 +215,9 @@ async function main(): Promise<void> {
     case 'add-node':
       await runAddNodeCli(rest);
       break;
+    case 'memory':
+      await runMemoryCli(rest);
+      break;
     case 'run':
       await runRunCli(rest);
       break;
@@ -220,6 +241,11 @@ async function main(): Promise<void> {
       break;
     case 'telemetry':
       await runTelemetryCli(rest);
+      break;
+    case 'optimize':
+      // `--fix` routes to the FIX→GATE→LAND driver (writes a staging manifest); bare `optimize` is read-only.
+      if (rest.includes('--fix')) await runOptimizeFixCli(rest);
+      else await runOptimizeCli(rest);
       break;
     case 'logs':
       await runLogsCli(rest);

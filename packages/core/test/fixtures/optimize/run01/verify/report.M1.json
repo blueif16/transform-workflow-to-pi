@@ -1,0 +1,157 @@
+{
+  "milestoneId": "M1",
+  "marker": "VALIDATION_PASSED",
+  "passed": true,
+  "summary": "M1 all 9 checks passed (fidelity + completability + invariants + perturbation)",
+  "assertions": [
+    {
+      "id": "M1-A1",
+      "describe": "exactly one player exists at start",
+      "observe": "entities.count(type==player)",
+      "comparator": "equals",
+      "expected": 1,
+      "observed": 1,
+      "status": "pass"
+    },
+    {
+      "id": "M1-A2",
+      "describe": "the bird falls under gravity (no input needed)",
+      "observe": "player.y",
+      "comparator": "increases",
+      "expected": true,
+      "observed": {
+        "before": 422.33333333333337,
+        "after": 430.25000000000006
+      },
+      "status": "pass"
+    },
+    {
+      "id": "M1-A3",
+      "describe": "flapping Space sets player.vy negative (the deterministic flap response)",
+      "observe": "player.vy",
+      "comparator": "decreases",
+      "expected": true,
+      "observed": {
+        "before": 520,
+        "after": -220
+      },
+      "status": "pass"
+    },
+    {
+      "id": "M1-A4",
+      "describe": "status stays 'playing' across the safe teach",
+      "observe": "status",
+      "comparator": "equals",
+      "expected": "playing",
+      "observed": "playing",
+      "status": "pass"
+    }
+  ],
+  "buildHealth": {
+    "greenOnEntry": true
+  },
+  "fixCycles": 0,
+  "fixOutcome": "passed_first_try",
+  "advisoryVlm": {
+    "ran": false,
+    "flag": "skipped",
+    "canvasNotBlank": true,
+    "note": "advisory VLM disabled in v1; deterministic canvas-content check only"
+  },
+  "fidelity": [
+    {
+      "id": "M1-A1",
+      "describe": "exactly one player exists at start",
+      "given": "status is 'playing', the run has just started, no entities exist yet",
+      "observe": "entities.count(type==player)",
+      "comparator": "equals",
+      "expected": 1,
+      "observed": 1,
+      "status": "pass"
+    },
+    {
+      "id": "M1-A2",
+      "describe": "the bird falls under gravity (no input needed)",
+      "given": "player at (120, 384) with vy=0, no input, status='playing'",
+      "observe": "player.y",
+      "comparator": "increases",
+      "expected": true,
+      "observed": {
+        "before": 422.33333333333337,
+        "after": 430.25000000000006
+      },
+      "status": "pass"
+    },
+    {
+      "id": "M1-A3",
+      "describe": "flapping Space sets player.vy negative (the deterministic flap response)",
+      "given": "player at (120, 384) with vy=0, status='playing'",
+      "observe": "player.vy",
+      "comparator": "decreases",
+      "expected": true,
+      "observed": {
+        "before": 520,
+        "after": -220
+      },
+      "status": "pass"
+    },
+    {
+      "id": "M1-A4",
+      "describe": "status stays 'playing' across the safe teach",
+      "given": "the run is in the safe teach (no obstacles yet), status='playing'",
+      "observe": "status",
+      "comparator": "equals",
+      "expected": "playing",
+      "observed": "playing",
+      "status": "pass"
+    }
+  ],
+  "completability": {
+    "ran": false,
+    "reachedWin": false,
+    "interimObservables": [],
+    "status": "pass",
+    "message": "completability out of scope for non-terminal milestone 'M1' — the whole-game referenceSolution win-path is replayed on the terminal milestone (its required entities are later milestones' deliverables)"
+  },
+  "invariants": [
+    {
+      "name": "score/moveCount/waveIndex non-decreasing",
+      "kind": "monotonic",
+      "held": true
+    },
+    {
+      "name": "player position finite + in-bounds",
+      "kind": "bounds",
+      "held": true
+    },
+    {
+      "name": "no soft-lock (state changes under input)",
+      "kind": "no-softlock",
+      "held": true
+    },
+    {
+      "name": "status transitions are legal",
+      "kind": "status-legality",
+      "held": true
+    },
+    {
+      "name": "no duplicate systems or entity ids",
+      "kind": "structural",
+      "held": true
+    }
+  ],
+  "perturbation": {
+    "ran": true,
+    "invariant": true,
+    "permutationsApplied": [],
+    "diverged": []
+  },
+  "screenshots": [
+    "verify/M1-end.png"
+  ],
+  "consoleErrors": [
+    "perturbation engine error (non-blocking): Error: page.evaluate: TypeError: Cannot read properties of undefined (reading 'entries')\n    at initialize.getChildren (http://127.0.0.1:61176/assets/index-CPSW-vTy.js:1527:5004)\n    at $e (http://127.0.0.1:61176/assets/index-CPSW-vTy.js:6360:13865)\n    at get entities (http://127.0.0.1:61176/assets/index-CPSW-vTy.js:6360:15674)\n    at __evalObserve (<anonymous>:13:33)\n    at eval (eval at evaluate (:290:30), <anonymous>:1:14)\n    at UtilityScript.evaluate (<anonymous>:292:16)\n    at UtilityScript.<anonymous> (<anonymous>:1:44)"
+  ],
+  "durationMs": 14683,
+  "startedAt": "2026-06-25T21:44:49.495Z"
+}

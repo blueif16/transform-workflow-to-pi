@@ -1,0 +1,19 @@
+{
+  "milestoneId": "M1",
+  "marker": "VALIDATION_FAILED",
+  "passed": false,
+  "summary": "build did not boot — canvas blank past the ready timeout; the six gates never ran. NOTE: a CONSTRUCTED fixture (no real boot_failed report exists in the captured runs as of 2026-06-30); shaped to the real VerifyReport schema. The abstain signal is fixOutcome==='boot_failed' (there is no top-level bootFailed field in a real report).",
+  "assertions": [],
+  "buildHealth": {
+    "greenOnEntry": false
+  },
+  "fixCycles": 0,
+  "fixOutcome": "boot_failed",
+  "advisoryVlm": {
+    "ran": false,
+    "flag": "skipped"
+  },
+  "screenshots": [],
+  "durationMs": 0,
+  "startedAt": "2026-06-25T00:00:00.000Z"
+}

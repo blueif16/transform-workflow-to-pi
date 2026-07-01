@@ -40,6 +40,12 @@ out/
 .claude/workflows/
 .tasks/HANDOFF-*.md
 
+# generated optimize/memory artifacts: agent scratch is not committed, EXCEPT
+# .agents/okf/ — the OKF code-understanding slices ARE versioned (slice@sha /
+# recency / --check all need git; matches game-omni which tracks its .agents/okf/).
+.agents/*
+!.agents/okf/
+.codegraph/
 # Generated build artifact: `piflowctl skills install` ships the workflow-authoring trio, bundled into the
 # CLI tarball by the package's `prepack` (packages/cli/scripts/bundle-skills.mjs) from the canonical repo-root
 # .claude/skills/. Never a committed duplicate — the canonical source is the ONE editable copy (no drift).

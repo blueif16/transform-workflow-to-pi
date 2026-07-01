@@ -80,6 +80,24 @@ below (`run` · `inspect` · `extract` · `status` · `watch` · `logs`) is a `p
    tail a node's `events.jsonl`. Confirm liveness by the **artifact on disk + the VCS/file evidence**, never a
    self-report.
 
+## Monitor & diagnose live
+**NEVER hand-roll polling with `sleep` + `cat`/`tail -f` on a node's `events.jsonl` — the SDK ships live
+views; a `sleep` loop burns turns, misses the terminal event, and re-improvises a tested surface.** Use the
+`piflowctl` bin (never `node …/dist/cli.js`):
+- `piflowctl watch <rundir> [--notify]` — the wake-on-event SENTINEL: it blocks on the live stream and prints
+  ONE line when the run finishes / a node fails / it dead-stalls. Reach for this to await a background run.
+- `piflowctl status <rundir> --every <s>` — the per-node table, refreshed in place every `<s>` seconds (omit
+  `--every` for a one-shot snapshot). The human dashboard.
+- `piflowctl telemetry <rundir> [nodeId] --watch` — the agent-facing digest streamed live (verdicts · cost
+  spine · loop signals · anomaly worklist · failure-onset root cause), then the final record.
+- **The optimize loop streams too:** `piflowctl optimize --fix <rundir> --binding <module> --watch` emits the
+  FIX→GATE→LAND events in order — **`triaged → candidate-prepared → fixer-started → fixer-trace* → fixer-done
+  → scored → gated → landed → stopped`** (`fixer-trace*` repeats per fixer step; `--watch-json` = JSONL). Use
+  this to follow an autonomous fix round; the loop itself lives in **piflow-enhance**.
+
+Confirm liveness by the artifact on disk + the VCS/file evidence, never a self-report. (Deep status/event
+contract: piflow-init's `reference/observability.md`.)
+
 ## Windowing the DAG (`--from` / `--until`)
 A needle matches a stage by substring against its **phase, node-id, or node label** (`stageMatches` in
 `@piflow/core`). Two rules that bite:

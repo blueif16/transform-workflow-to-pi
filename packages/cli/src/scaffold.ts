@@ -13,6 +13,10 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+// The memory layer (piflow-memory-v1 §2) is a CORE feature; the scaffolder is its thin accessor — it seeds
+// the two optimizer-facing legs (Leg A memory.md · Leg B code-map.md) create-if-absent, exactly as it seeds
+// (never clobbers) a node's prompt.md. The build LOGIC lives in @piflow/core; the seeded files are product data.
+import { seedSystemMemory, seedNodeMemory, seedNodeCodeMap } from '@piflow/core';
 import { loadAgentPreset, mergePreset } from '@piflow/core';
 import type { PresetMergeable } from '@piflow/core';
 
@@ -379,12 +383,21 @@ export function buildNode(opts: NodeOpts): Record<string, unknown> {
   return node;
 }
 
-/** Emit `meta.json` + create the `nodes/` dir. Returns the path written. Overwrites meta (CLI-owned). */
-export async function scaffoldNew(dir: string, opts: NewOpts): Promise<{ meta: string }> {
+/**
+ * Emit `meta.json` + create the `nodes/` dir, and SEED the template's SYSTEM memory (`memory.md`, Leg A
+ * reconcile summary) create-if-absent. Overwrites meta (CLI-owned, deterministic) but NEVER clobbers a
+ * curated `memory.md` (it accumulates the optimizer's reconcile state). Returns the paths touched.
+ */
+export async function scaffoldNew(
+  dir: string,
+  opts: NewOpts,
+): Promise<{ meta: string; memory: { path: string; created: boolean } }> {
   await fs.mkdir(path.join(dir, 'nodes'), { recursive: true });
+  const meta = buildMeta(dir, opts);
   const metaPath = path.join(dir, 'meta.json');
-  await fs.writeFile(metaPath, toJson(buildMeta(dir, opts)));
-  return { meta: metaPath };
+  await fs.writeFile(metaPath, toJson(meta));
+  const memory = await seedSystemMemory(dir, meta.id as string);
+  return { meta: metaPath, memory };
 }
 
 /**
@@ -394,7 +407,13 @@ export async function scaffoldNew(dir: string, opts: NewOpts): Promise<{ meta: s
 export async function scaffoldAddNode(
   dir: string,
   opts: NodeOpts,
-): Promise<{ nodeJson: string; promptFile: string; promptExists: boolean }> {
+): Promise<{
+  nodeJson: string;
+  promptFile: string;
+  promptExists: boolean;
+  memory: { path: string; created: boolean };
+  codeMap: { path: string; created: boolean };
+}> {
   const ndir = path.join(dir, 'nodes', opts.id);
   await fs.mkdir(ndir, { recursive: true });
   const nodeJson = path.join(ndir, 'node.json');
@@ -404,7 +423,53 @@ export async function scaffoldAddNode(
     .access(promptFile)
     .then(() => true)
     .catch(() => false);
-  return { nodeJson, promptFile, promptExists };
+  // Seed the node's TWO memory legs create-if-absent — like prompt.md, the optimizer curates these and a
+  // re-emit must never clobber them. Leg A (memory.md): the node's standing behavior + failure lessons;
+  // Leg B (code-map.md): the Tier-0 OKF slice of the product code in its scope.
+  const memory = await seedNodeMemory(ndir, opts.id);
+  const codeMap = await seedNodeCodeMap(ndir, opts.id);
+  return { nodeJson, promptFile, promptExists, memory, codeMap };
+}
+
+/**
+ * BACKFILL the memory layer over an ALREADY-authored template (one written before the layer existed, or
+ * `templates/quality/verify`): seed the template's system `memory.md` + every existing node's `memory.md`
+ * + `code-map.md`, all create-if-absent. The `piflowctl memory scaffold` command's engine. Returns what it
+ * touched so the CLI can report seeded-vs-kept.
+ */
+export async function scaffoldMemory(dir: string): Promise<{
+  system: { path: string; created: boolean };
+  nodes: { id: string; memory: { path: string; created: boolean }; codeMap: { path: string; created: boolean } }[];
+}> {
+  // the workflow id titles the system memory; prefer meta.json's id, fall back to the dir-derived id.
+  let wfId = deriveId(dir);
+  try {
+    const meta = JSON.parse(await fs.readFile(path.join(dir, 'meta.json'), 'utf8')) as { id?: string };
+    if (meta.id) wfId = meta.id;
+  } catch {
+    /* no/invalid meta.json — fall back to the derived id */
+  }
+  const system = await seedSystemMemory(dir, wfId);
+  const nodesDir = path.join(dir, 'nodes');
+  let entries: import('node:fs').Dirent[] = [];
+  try {
+    entries = await fs.readdir(nodesDir, { withFileTypes: true });
+  } catch {
+    /* no nodes/ dir yet — only the system memory is seeded */
+  }
+  const nodes = [];
+  for (const e of entries.filter((x) => x.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+    const ndir = path.join(nodesDir, e.name);
+    let id = e.name; // prefer the authored node.json id; fall back to the folder name.
+    try {
+      const nj = JSON.parse(await fs.readFile(path.join(ndir, 'node.json'), 'utf8')) as { id?: string };
+      if (nj.id) id = nj.id;
+    } catch {
+      /* missing/invalid node.json — use the folder name */
+    }
+    nodes.push({ id, memory: await seedNodeMemory(ndir, id), codeMap: await seedNodeCodeMap(ndir, id) });
+  }
+  return { system, nodes };
 }
 
 // ── arg parsing ────────────────────────────────────────────────────────────────────────────────────
@@ -746,4 +811,32 @@ export async function runAddNodeCli(argv: string[]): Promise<void> {
     ? `\nagent-type ${at}: prepend its role-prompt (~/.piflow/agents/${at}.md) to this node's prompt.md.`
     : '';
   process.stdout.write(`wrote ${nodeJson}\n${next}${presetNote}\n`);
+}
+
+const MEMORY_USAGE = 'piflowctl memory scaffold <templateDir>';
+
+/**
+ * `piflowctl memory scaffold <templateDir>` — backfill the memory layer over an existing template (system
+ * `memory.md` + every node's `memory.md` + `code-map.md`), create-if-absent. Reports seeded-vs-kept per file.
+ */
+export async function runMemoryCli(argv: string[]): Promise<void> {
+  const [action, ...rest] = argv;
+  if (action !== 'scaffold') {
+    process.stderr.write(`piflowctl memory: unknown action '${action ?? ''}'\n  ${MEMORY_USAGE}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const dir = rest[0];
+  if (!dir) {
+    process.stderr.write(`piflowctl memory scaffold: a template directory is required\n  ${MEMORY_USAGE}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const { system, nodes } = await scaffoldMemory(dir);
+  const tag = (r: { created: boolean }): string => (r.created ? 'seeded' : 'kept  ');
+  const lines = [`${tag(system)} ${system.path}`];
+  for (const n of nodes) {
+    lines.push(`${tag(n.memory)} ${n.memory.path}`, `${tag(n.codeMap)} ${n.codeMap.path}`);
+  }
+  process.stdout.write(lines.join('\n') + '\n');
 }
