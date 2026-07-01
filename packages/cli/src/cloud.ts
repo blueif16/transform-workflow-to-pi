@@ -1,0 +1,552 @@
+// A3 — `piflowctl cloud up|down`: born-in-cloud, authed. The one command that stands up the SAME control
+// plane a laptop's `piflowctl serve` runs, on a durable Fly.io machine, and registers a `cloud` context so
+// the CLI/GUI can point at it (`context use cloud`). It automates the `deploy/control-vm/README.md` runbook:
+// mint the bearer token, project the pi gateway + Claude-subscription credentials onto the VM, `fly deploy`
+// the control-VM image, smoke it, then switch the console over.
+//
+//   piflowctl cloud up   [--app <name>] [--provider <gw>] [--provider-secret <VAR>] [--context <name>] [--execute]
+//   piflowctl cloud down [--app <name>] [--context <name>] [--execute]
+//
+// TWO modes, by design (the user law: PAUSE before an outward-facing / paid action):
+//   • DEFAULT = PLAN. Mints the token, registers the `cloud` context row, and PRINTS the exact runbook.
+//     It touches `fly` NEVER (no build, no deploy, no spend). This is what an agent runs.
+//   • `--execute` = the one-click. piflowctl RUNS every step (secrets set → deploy → smoke) and, on a GREEN
+//     smoke, `context use`s the cloud endpoint. The `--execute` flag IS the "spend money" opt-in — the paid
+//     `fly deploy` is the operator's call. Steps 4/6 (deploy/smoke) hit Fly + spend; only pass it when ready.
+//
+// CREDENTIAL PROJECTION — the SAME decomposition the daytona/e2b node path uses (`run.ts` → `parsePiProvider`),
+// so the control VM is just another target of one uniform model, not a bespoke path:
+//   • the pi gateway's `~/.pi/agent/models.json` entry (`$VAR`-ref'd, SECRET-FREE) is staged into the VM as a
+//     NON-secret env `PIFLOW_PI_MODELS_JSON` that the image's CMD writes to `~/.pi/agent/models.json` at boot —
+//     the Fly-transport analog of the providers' `stageHomeFiles`. So a CUSTOM `--provider` resolves on the VM
+//     exactly as on a laptop / in a daytona-e2b node.
+//   • the entry's referenced cred var(s) (`credVars`, the cloud allowlist) + the Claude subscription token are
+//     resolved through the `isCloud:true` `SecretResolver` seam (mint-not-forward) and set as Fly SECRETS.
+//   • `PIFLOW_TOKEN` (the serve bearer) is freshly MINTED — a genuinely new secret with no prior store.
+// With no `--provider` gateway entry, it falls back to a single env key (`--provider-secret`, the demo path).
+// HARD BILLING GUARD: `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` are NEVER staged (a non-empty API key silently
+// outranks the OAuth token in `claude -p` → per-token billing); the provider secret var can't be one either.
+//
+// The PURE core (`mintCloudSecrets` / `buildFlyDeployPlan` / `renderPlan`) is unit-tested with injected RNG +
+// resolvers + a fake step-runner, so no test ever mints a real token, shells out to `fly`, or writes ~/.piflow.
+
+import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import {
+  cloudCredEnvAdditions,
+  resolveClaudeOAuthToken,
+  defaultSecretResolver,
+  type SecretResolver,
+} from '@piflow/core';
+import { parsePiProvider } from './run.js';
+import {
+  readContexts,
+  writeContexts,
+  addContext,
+  useContext,
+  removeContext,
+  type ContextEntry,
+} from './context-store.js';
+
+// ── constants (mirror deploy/control-vm/{fly.toml,README.md}) ──────────────────────────────────────
+
+/** The Fly app name baked into `deploy/control-vm/fly.toml` — the default target (overridable with --app). */
+export const DEFAULT_APP = 'piflow-control-plane';
+/** The single env key the demo/plain path stages when no `--provider` gateway entry is found. */
+export const DEFAULT_PROVIDER_SECRET = 'NEBIUS_API_KEY';
+/** The context name `cloud up` registers + switches to (a row in ~/.piflow/contexts.json). */
+export const DEFAULT_CONTEXT_NAME = 'cloud';
+/** The control-VM Fly config + Dockerfile, relative to the repo root (the build context). */
+export const DEFAULT_FLY_CONFIG = 'deploy/control-vm/fly.toml';
+export const DEFAULT_DOCKERFILE = 'deploy/control-vm/Dockerfile';
+/** The Claude subscription OAuth secret (auth precedence #5 in `claude -p`). */
+const OAUTH_SECRET = 'CLAUDE_CODE_OAUTH_TOKEN';
+/** The NON-secret env the image's CMD writes to ~/.pi/agent/models.json at boot (the gateway registry). */
+export const MODELS_JSON_ENV = 'PIFLOW_PI_MODELS_JSON';
+/** API-key vars a non-empty value of which silently OUTRANKS the OAuth token → per-token billing. NEVER stage. */
+const FORBIDDEN_SECRETS = new Set(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']);
+/** The nodeId the mint seam passes to the SecretResolver (so a broker can scope a per-caller token). */
+const MINT_NODE_ID = 'piflowctl-cloud-up';
+
+/** The public HTTPS origin Fly gives an app — the `cloud` context's baseUrl. */
+export function flyAppUrl(app: string): string {
+  return `https://${app}.fly.dev`;
+}
+
+// ── minting the secrets (the values the deploy stages; PURE given injected RNG + resolvers) ─────────
+
+/** One staged Fly secret/env: a var name + its value. `displayValue` overrides the redacted `***` (config, not a secret). */
+export interface CloudSecret {
+  name: string;
+  value: string;
+  /** A safe label to show instead of `***` — used for the SECRET-FREE gateway config, never for a real secret. */
+  displayValue?: string;
+}
+
+/** The minted deploy inputs: the bearer token + the `cloud` context entry + the ordered var set + the gateway file. */
+export interface MintedSecrets {
+  /** The freshly minted bearer token (the `PIFLOW_TOKEN` the serve requires + the context carries). */
+  token: string;
+  /** The public origin the control VM will answer on. */
+  appUrl: string;
+  /** The `cloud` context entry to register (baseUrl + the bearer token). */
+  contextEntry: ContextEntry;
+  /** The vars to `fly secrets set`, in order (PIFLOW_TOKEN first; provider cred(s) + OAuth only when resolved). */
+  secrets: CloudSecret[];
+  /** The scoped, SECRET-FREE `~/.pi/agent/models.json` gateway entry to stage (when a custom --provider resolved). */
+  modelsJson?: string;
+  /** The pi gateway name a custom `--provider` resolved to (for display); absent on the plain-key path. */
+  provider?: string;
+  /** Declared secrets that could NOT be resolved on this machine (the operator must supply them). */
+  missing: string[];
+}
+
+/** The pi gateway decomposition (mirrors `run.ts`'s cloud-node path): the models.json entry + its $VAR cred names. */
+export interface ProviderResolution {
+  config?: string;
+  credVars: string[];
+}
+
+/** Injectable boundaries for `mintCloudSecrets` — real defaults (crypto RNG + the core resolvers), fakes in tests. */
+export interface MintDeps {
+  /** Bearer-token minter. Default: 256 bits of crypto randomness, hex. */
+  randomToken?: () => string;
+  /** The scoped-token / vault broker. Default: reads `process.env` (`defaultSecretResolver`). */
+  resolver?: SecretResolver;
+  /** Provider-cred staging via the isCloud:true allowlist seam. Default: core `cloudCredEnvAdditions`. */
+  cloudCred?: typeof cloudCredEnvAdditions;
+  /** Claude subscription-token resolver. Default: core `resolveClaudeOAuthToken` (env → file → local login). */
+  resolveOAuth?: typeof resolveClaudeOAuthToken;
+  /** Resolve a pi gateway → its models.json entry + cred vars. Default: read ~/.pi/agent/models.json + parsePiProvider. */
+  resolveProvider?: (provider: string) => ProviderResolution;
+}
+
+/** Default gateway resolver — the same source `run.ts` reads for a daytona/e2b node (never throws → {credVars:[]}). */
+function resolveProviderDefault(provider: string): ProviderResolution {
+  try {
+    return parsePiProvider(readFileSync(path.join(os.homedir(), '.pi', 'agent', 'models.json'), 'utf8'), provider);
+  } catch {
+    return { credVars: [] };
+  }
+}
+
+/**
+ * Mint the deploy inputs. The bearer token is FRESH (never forwarded). If a custom `--provider` resolves to a
+ * `~/.pi/agent/models.json` gateway entry, that (secret-free) entry becomes `modelsJson` (staged as a file on the
+ * VM) and its referenced `$VAR`(s) become the cred allowlist; otherwise the single `--provider-secret` is used.
+ * Each cred var + the Claude OAuth token resolve through the `isCloud:true` SecretResolver seam (mint-not-forward);
+ * an unresolved one is reported in `missing`, never staged empty.
+ *
+ * BILLING GUARD (throws): neither the provider secret var nor any resolved cred name may be an `ANTHROPIC_*`
+ * API-key var — a non-empty API key silently wins in `claude -p` (per-token billing).
+ */
+export async function mintCloudSecrets(
+  opts: { app: string; provider?: string; providerSecret: string },
+  deps: MintDeps = {},
+): Promise<MintedSecrets> {
+  const randomToken = deps.randomToken ?? (() => randomBytes(32).toString('hex'));
+  const resolver = deps.resolver ?? defaultSecretResolver;
+  const cloudCred = deps.cloudCred ?? cloudCredEnvAdditions;
+  const resolveOAuth = deps.resolveOAuth ?? resolveClaudeOAuthToken;
+  const resolveProvider = deps.resolveProvider ?? resolveProviderDefault;
+
+  const token = randomToken();
+  const appUrl = flyAppUrl(opts.app);
+
+  // The gateway decomposition — the SAME (models.json entry + $VAR cred allowlist) a daytona/e2b node gets.
+  // A custom --provider with a real entry → stage the file + use ITS cred vars; otherwise the single env key.
+  let modelsJson: string | undefined;
+  let providerName: string | undefined;
+  let credVarNames: string[];
+  const gw = opts.provider ? resolveProvider(opts.provider) : undefined;
+  if (gw?.config) {
+    modelsJson = gw.config;
+    providerName = opts.provider;
+    credVarNames = gw.credVars;
+  } else {
+    credVarNames = [opts.providerSecret];
+  }
+  // BILLING GUARD: the vars we're about to stage must not include an ANTHROPIC_* API key (whether it arrived
+  // as a gateway cred ref or the --provider-secret) — a non-empty API key silently outranks the OAuth token in
+  // `claude -p` (per-token billing). Guarding what actually gets STAGED covers both paths (no separate check).
+  for (const name of credVarNames) {
+    if (FORBIDDEN_SECRETS.has(name)) {
+      const src = modelsJson ? `gateway "${opts.provider}" references` : `--provider-secret`;
+      throw new Error(`${src} ${name} — an API-key var that silently outranks the Claude OAuth token in \`claude -p\` (per-token billing); refusing to stage it.`);
+    }
+  }
+
+  const secrets: CloudSecret[] = [{ name: 'PIFLOW_TOKEN', value: token }];
+  const missing: string[] = [];
+
+  // Provider cred(s): the isCloud:true allowlist seam (mint-not-forward). Returns only the resolved names.
+  const provEnv = await cloudCred(credVarNames, true, MINT_NODE_ID, resolver);
+  for (const name of credVarNames) {
+    if (provEnv[name]) secrets.push({ name, value: provEnv[name] });
+    else missing.push(name);
+  }
+
+  // Claude subscription token: the layered host-side resolver (env → ~/.piflow/claude-code.json → login).
+  const oauth = await resolveOAuth({ resolver, nodeId: MINT_NODE_ID });
+  if (oauth) secrets.push({ name: OAUTH_SECRET, value: oauth });
+  else missing.push(OAUTH_SECRET);
+
+  // Defense-in-depth: never let a forbidden API-key var ride along, whatever a broker returned.
+  for (const s of secrets) {
+    if (FORBIDDEN_SECRETS.has(s.name)) {
+      throw new Error(`refusing to stage ${s.name} as a Fly secret (it forces per-token API billing in \`claude -p\`)`);
+    }
+  }
+
+  return { token, appUrl, contextEntry: { baseUrl: appUrl, token }, secrets, modelsJson, provider: providerName, missing };
+}
+
+// ── the deploy plan (PURE — the ordered runbook the README documents) ──────────────────────────────
+
+export type StepKind = 'local' | 'fly' | 'smoke';
+
+/** One ordered deploy step: an execute-ready argv + a REDACTED display form + its blast/idempotency flags. */
+export interface DeployStep {
+  id: string;
+  kind: StepKind;
+  /** The argv to run (real secret values inlined where a command requires them, e.g. `fly secrets set`). */
+  command: string[];
+  /** The human display — secret values shown as `***` so the runbook is safe to print/scrollback. */
+  display: string;
+  /** Extra env for the step's process (the smoke's PIFLOW_CLOUD_URL/PIFLOW_TOKEN); values redacted in display. */
+  env?: Record<string, string>;
+  /** Touches Fly / spends money / runs a real model — an agent must not auto-run these. */
+  outward: boolean;
+  /** The specific paid `fly deploy` — the pause point the runbook centers on. */
+  paid?: boolean;
+  /** A failure is tolerable (e.g. `fly apps create` when the app already exists) — execute-mode continues. */
+  idempotent?: boolean;
+  note?: string;
+}
+
+export interface DeployPlan {
+  app: string;
+  appUrl: string;
+  steps: DeployStep[];
+}
+
+/**
+ * Build the ordered Fly deploy plan (the `deploy/control-vm/README.md` runbook, as data). The `secrets`
+ * (from `mintCloudSecrets`) are inlined into the `fly secrets set` command (execute form) but rendered as
+ * `***`; the SECRET-FREE gateway `modelsJson` rides the same command as a NON-secret env (labeled, not `***`).
+ * `-a <app>` is stamped on every `fly` command so the plan overrides the config's app name explicitly.
+ */
+export function buildFlyDeployPlan(opts: {
+  app: string;
+  appUrl: string;
+  config: string;
+  dockerfile: string;
+  secrets: CloudSecret[];
+  token: string;
+  modelsJson?: string;
+  provider?: string;
+}): DeployPlan {
+  const { app, appUrl, config, dockerfile, secrets, token, modelsJson, provider } = opts;
+  const setPairs = [...secrets];
+  if (modelsJson) setPairs.push({ name: MODELS_JSON_ENV, value: modelsJson, displayValue: `<gateway:${provider ?? 'pi'}>` });
+  const secretArgs = setPairs.map((s) => `${s.name}=${s.value}`);
+  const secretDisplay = setPairs.map((s) => `${s.name}=${s.displayValue ?? '***'}`).join(' ');
+
+  const steps: DeployStep[] = [
+    {
+      id: 'copy-dockerignore',
+      kind: 'local',
+      command: ['cp', 'deploy/control-vm/.dockerignore', '.dockerignore'],
+      display: 'cp deploy/control-vm/.dockerignore .dockerignore',
+      outward: false,
+      note: 'the builder reads ONLY a context-root .dockerignore; without this copy, COPY . . ships secrets/junk.',
+    },
+    {
+      id: 'apps-create',
+      kind: 'fly',
+      command: ['fly', 'apps', 'create', app],
+      display: `fly apps create ${app}`,
+      outward: true,
+      idempotent: true,
+      note: 'first deploy only — skipped (reported, not failed) if the app already exists.',
+    },
+    {
+      id: 'secrets-set',
+      kind: 'fly',
+      command: ['fly', 'secrets', 'set', ...secretArgs, '-a', app],
+      display: `fly secrets set ${secretDisplay} -a ${app}`,
+      outward: true,
+      note: `encrypted at rest; injected as env at runtime. ${MODELS_JSON_ENV} is secret-free gateway config (the image writes it to ~/.pi/agent/models.json at boot).`,
+    },
+    {
+      id: 'deploy',
+      kind: 'fly',
+      command: ['fly', 'deploy', '--config', config, '--dockerfile', dockerfile, '-a', app, '.'],
+      display: `fly deploy --config ${config} --dockerfile ${dockerfile} -a ${app} .`,
+      outward: true,
+      paid: true,
+      note: 'the operator\'s paid step — builds + ships the control-VM image from the repo root.',
+    },
+    {
+      id: 'rm-dockerignore',
+      kind: 'local',
+      command: ['rm', '.dockerignore'],
+      display: 'rm .dockerignore',
+      outward: false,
+      idempotent: true,
+      note: 'clean up the temporary context-root copy.',
+    },
+    {
+      id: 'smoke',
+      kind: 'smoke',
+      command: ['node', 'deploy/control-vm/smoke-live.mjs'],
+      env: { PIFLOW_CLOUD_URL: appUrl, PIFLOW_TOKEN: token },
+      display: `PIFLOW_CLOUD_URL=${appUrl} PIFLOW_TOKEN=*** node deploy/control-vm/smoke-live.mjs`,
+      outward: true,
+      note: 'the P5 gate: A(auth)→B(start)→C(SSE done)→D(run-view)→E(in-VM bwrap/OAuth invariants).',
+    },
+  ];
+  return { app, appUrl, steps };
+}
+
+// ── rendering the plan (the runbook a user reads; secrets redacted) ─────────────────────────────────
+
+/** Render the PLAN as a numbered runbook — never leaks a resolved secret value (all shown `***`). */
+export function renderPlan(plan: DeployPlan, mint: MintedSecrets, opts: { contextName: string }): string {
+  const lines: string[] = [];
+  lines.push(`piflowctl cloud up — PLAN for app "${plan.app}" → ${plan.appUrl}`);
+  lines.push('');
+  lines.push(`  Minted bearer token → registered as context "${opts.contextName}" in ~/.piflow/contexts.json`);
+  lines.push(`  (the smoke needs it too: PIFLOW_TOKEN is in that file, or copy it from step 3 when you run it).`);
+  if (mint.provider) {
+    lines.push(`  pi gateway "${mint.provider}" → staged as ${MODELS_JSON_ENV} (the VM writes ~/.pi/agent/models.json at boot).`);
+  }
+  lines.push('');
+  lines.push('  This is a PLAN — nothing outward-facing has run (no fly build/deploy, no spend). Run the steps');
+  lines.push('  below yourself, or re-run with --execute to have piflowctl run them (step 4 spends money).');
+  lines.push('');
+  plan.steps.forEach((s, i) => {
+    const tag = s.paid ? 'fly·$$' : s.kind;
+    lines.push(`  ${i + 1}. [${tag}] ${s.display}`);
+    if (s.note) lines.push(`       — ${s.note}`);
+  });
+  if (mint.missing.length) {
+    lines.push('');
+    lines.push(`  ⚠ not found on this machine — set these yourself before/at step 3: ${mint.missing.join(', ')}`);
+    if (mint.missing.includes(OAUTH_SECRET)) {
+      lines.push(`    mint the Claude subscription token with:  claude setup-token`);
+    }
+  }
+  lines.push('');
+  lines.push('  ⚠ NEVER set ANTHROPIC_API_KEY as a Fly secret — it silently forces per-token billing in `claude -p`.');
+  lines.push('');
+  lines.push(`  After a green smoke:  piflowctl context use ${opts.contextName}`);
+  return lines.join('\n');
+}
+
+// ── the CLI orchestration ────────────────────────────────────────────────────────────────────────
+
+/** The result of running one step (an execute-mode `runStep` returns this). */
+export interface StepResult {
+  ok: boolean;
+  code?: number;
+}
+
+/** Injectable side-effect boundaries — real defaults (spawn + ~/.piflow writes), fakes in tests (no I/O). */
+export interface CloudDeps extends MintDeps {
+  /** Run one step (spawn `fly`/`node`/`cp`/`rm`). Default: spawnSync, stdio inherited. */
+  runStep?: (step: DeployStep) => Promise<StepResult>;
+  /** Register the `cloud` context row (add, DO NOT switch). Default: read→add→write ~/.piflow/contexts.json. */
+  registerContext?: (name: string, entry: ContextEntry) => Promise<void>;
+  /** Switch the active context (after a green smoke). Default: read→use→write. */
+  switchContext?: (name: string) => Promise<void>;
+  /** Remove a context row (`cloud down`). Default: read→remove→write. */
+  removeContextFn?: (name: string) => Promise<void>;
+  print?: (s: string) => void;
+}
+
+/** Default step runner — spawn the command with inherited stdio; the smoke gets its extra env. */
+function runStepDefault(step: DeployStep): Promise<StepResult> {
+  const res = spawnSync(step.command[0], step.command.slice(1), {
+    stdio: 'inherit',
+    env: step.env ? { ...process.env, ...step.env } : process.env,
+  });
+  return Promise.resolve({ ok: res.status === 0, code: res.status ?? undefined });
+}
+
+const registerContextDefault = async (name: string, entry: ContextEntry): Promise<void> => {
+  await writeContexts(addContext(readContexts(), name, entry));
+};
+const switchContextDefault = async (name: string): Promise<void> => {
+  await writeContexts(useContext(readContexts(), name));
+};
+const removeContextDefault = async (name: string): Promise<void> => {
+  await writeContexts(removeContext(readContexts(), name));
+};
+
+export interface CloudUpOpts {
+  app: string;
+  provider?: string;
+  providerSecret: string;
+  contextName: string;
+  config: string;
+  dockerfile: string;
+  /** Run the outward-facing steps (secrets set → deploy → smoke) + switch context on a green smoke. */
+  execute: boolean;
+}
+
+/**
+ * `cloud up`. PLAN mode (default): mint, register the `cloud` context row, print the runbook — no `fly`.
+ * EXECUTE mode (`--execute`): run every step in order (an idempotent step's failure is tolerated), then, only
+ * on a GREEN smoke, switch the active context to the cloud endpoint. Throws on a hard step failure (halts
+ * before the switch, so the console never points at a half-deployed endpoint).
+ */
+export async function runCloudUp(opts: CloudUpOpts, deps: CloudDeps = {}): Promise<void> {
+  const print = deps.print ?? ((s: string) => process.stdout.write(s + '\n'));
+  const registerContext = deps.registerContext ?? registerContextDefault;
+
+  const mint = await mintCloudSecrets({ app: opts.app, provider: opts.provider, providerSecret: opts.providerSecret }, deps);
+  const plan = buildFlyDeployPlan({
+    app: opts.app,
+    appUrl: mint.appUrl,
+    config: opts.config,
+    dockerfile: opts.dockerfile,
+    secrets: mint.secrets,
+    token: mint.token,
+    modelsJson: mint.modelsJson,
+    provider: mint.provider,
+  });
+
+  // Register the row up front (a harmless local write) so `context use cloud` works the moment it's live.
+  await registerContext(opts.contextName, mint.contextEntry);
+
+  if (!opts.execute) {
+    print(renderPlan(plan, mint, { contextName: opts.contextName }));
+    return;
+  }
+
+  // EXECUTE — the one-click. Each outward step runs in order; a hard failure halts before the context switch.
+  const runStep = deps.runStep ?? runStepDefault;
+  const switchContext = deps.switchContext ?? switchContextDefault;
+  print(`piflowctl cloud up --execute — deploying "${opts.app}" → ${mint.appUrl}`);
+  if (mint.missing.length) print(`  ⚠ unresolved secrets (set them via 'fly secrets set' yourself): ${mint.missing.join(', ')}`);
+  for (const step of plan.steps) {
+    print(`▸ ${step.display}`);
+    const res = await runStep(step);
+    if (!res.ok) {
+      if (step.idempotent) {
+        print(`  (step "${step.id}" exited ${res.code ?? '?'} — tolerated as idempotent, continuing)`);
+        continue;
+      }
+      throw new Error(`cloud up: step "${step.id}" failed (exit ${res.code ?? '?'}) — halted before switching context`);
+    }
+  }
+  await switchContext(opts.contextName);
+  print(`✓ deployed + smoke-green. switched to context "${opts.contextName}" (${mint.appUrl}).`);
+}
+
+export interface CloudDownOpts {
+  app: string;
+  contextName: string;
+  execute: boolean;
+}
+
+/** `cloud down`. PLAN mode prints the teardown; EXECUTE destroys the Fly app then removes the `cloud` context. */
+export async function runCloudDown(opts: CloudDownOpts, deps: CloudDeps = {}): Promise<void> {
+  const print = deps.print ?? ((s: string) => process.stdout.write(s + '\n'));
+  const destroyStep: DeployStep = {
+    id: 'apps-destroy',
+    kind: 'fly',
+    command: ['fly', 'apps', 'destroy', opts.app, '--yes'],
+    display: `fly apps destroy ${opts.app} --yes`,
+    outward: true,
+    note: 'DESTRUCTIVE — removes the machine + kills any in-flight runs/streams.',
+  };
+  if (!opts.execute) {
+    print(`piflowctl cloud down — PLAN for app "${opts.app}"`);
+    print('');
+    print(`  1. [fly] ${destroyStep.display}`);
+    print(`       — ${destroyStep.note}`);
+    print(`  2. [local] remove the "${opts.contextName}" context from ~/.piflow/contexts.json`);
+    print('');
+    print('  This is a PLAN — nothing has been destroyed. Re-run with --execute to tear the app down.');
+    return;
+  }
+  const runStep = deps.runStep ?? runStepDefault;
+  const removeContextFn = deps.removeContextFn ?? removeContextDefault;
+  print(`▸ ${destroyStep.display}`);
+  const res = await runStep(destroyStep);
+  if (!res.ok) throw new Error(`cloud down: '${destroyStep.display}' failed (exit ${res.code ?? '?'})`);
+  await removeContextFn(opts.contextName);
+  print(`✓ destroyed "${opts.app}" and removed the "${opts.contextName}" context.`);
+}
+
+// ── arg parsing + dispatch (the thin wrapper; mirrors context.ts) ──────────────────────────────────
+
+function fail(msg: string): void {
+  process.stderr.write(`piflowctl cloud: ${msg}\n`);
+  process.exitCode = 1;
+}
+
+const UP_USAGE =
+  'usage: piflowctl cloud up [--app <name>] [--provider <gw>] [--provider-secret <VAR>] [--context <name>] ' +
+  '[--config <fly.toml>] [--dockerfile <path>] [--execute]';
+const DOWN_USAGE = 'usage: piflowctl cloud down [--app <name>] [--context <name>] [--execute]';
+
+/** `piflowctl cloud <up|down> [...]` — parse flags, dispatch, map errors to stderr + a non-zero exit. */
+export async function runCloudCli(argv: string[]): Promise<void> {
+  const [verb, ...rest] = argv;
+
+  // Shared flag parse (both verbs accept --app/--context/--execute; up also takes provider/config/dockerfile).
+  let app = DEFAULT_APP;
+  let provider: string | undefined;
+  let providerSecret = DEFAULT_PROVIDER_SECRET;
+  let contextName = DEFAULT_CONTEXT_NAME;
+  let config = DEFAULT_FLY_CONFIG;
+  let dockerfile = DEFAULT_DOCKERFILE;
+  let execute = false;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '--app') app = rest[++i];
+    else if (a === '--provider') provider = rest[++i];
+    else if (a === '--provider-secret') providerSecret = rest[++i];
+    else if (a === '--context') contextName = rest[++i];
+    else if (a === '--config') config = rest[++i];
+    else if (a === '--dockerfile') dockerfile = rest[++i];
+    else if (a === '--execute' || a === '--yes') execute = true;
+    else return fail(`unknown flag "${a}"`);
+  }
+  if (!app) return fail('--app requires a value');
+  if (!contextName) return fail('--context requires a value');
+
+  switch (verb) {
+    case 'up':
+      try {
+        await runCloudUp({ app, provider, providerSecret, contextName, config, dockerfile, execute });
+      } catch (e) {
+        return fail((e as Error).message ?? String(e));
+      }
+      return;
+
+    case 'down':
+      try {
+        await runCloudDown({ app, contextName, execute });
+      } catch (e) {
+        return fail((e as Error).message ?? String(e));
+      }
+      return;
+
+    case undefined:
+    case 'help':
+    case '--help':
+    case '-h':
+      process.stdout.write(`${UP_USAGE}\n${DOWN_USAGE}\n`);
+      return;
+
+    default:
+      return fail(`unknown verb "${verb}". Use: up | down`);
+  }
+}

@@ -121,12 +121,39 @@ piflowctl context use cloud
 
 The GUI's API-base + the CLI then talk to the cloud origin (see `~/.piflow/contexts.json`).
 
-## `piflowctl cloud up` (being authored)
+## `piflowctl cloud up` — the one-click over this runbook
 
-A separate CLI verb (`piflowctl cloud up`) will automate steps 1–4: generate the token, `fly secrets
-set` it (+ prompt for the gateway/OAuth secrets), `fly deploy` this image, wait for health, register a
-`cloud` context, and print the URL. This directory is the artifact it drives; the manual runbook above
-is the fallback and the source of truth for what the verb must do.
+`piflowctl cloud up` automates steps 1–4 above. It has TWO modes (an agent runs PLAN; the operator runs
+`--execute` when ready to spend):
+
+```bash
+piflowctl cloud up                       # PLAN: mint the token, register a `cloud` context, PRINT the
+                                         #       fly runbook (secrets redacted). Touches fly NEVER, spends $0.
+piflowctl cloud up --provider mmgw       # …resolving your pi gateway from ~/.pi/agent/models.json (below)
+piflowctl cloud up --execute             # RUN it: secrets set → deploy → smoke, then `context use cloud`
+                                         #         on a green smoke. `--execute` IS the "spend money" opt-in.
+piflowctl cloud down                     # PLAN the teardown; `--execute` destroys the app + drops the context
+```
+
+Flags: `--app <name>` (default `piflow-control-plane`, stamped as `-a` on every fly command) · `--provider
+<gw>` (a pi gateway in `~/.pi/agent/models.json`) · `--provider-secret <VAR>` (the single env key when there's
+no gateway entry; default `NEBIUS_API_KEY`) · `--context <name>` (default `cloud`) · `--config`/`--dockerfile`.
+
+**Credentials are projected the SAME way a node sandbox gets them** — `cloud up` reuses the exact
+`parsePiProvider` decomposition the daytona/e2b node path uses (`packages/cli/src/run.ts`):
+
+- the bearer token (`PIFLOW_TOKEN`) is freshly **minted** (never forwarded);
+- with `--provider <gw>`, the gateway's `~/.pi/agent/models.json` entry (secret-free, `$VAR`-ref'd) is staged
+  as the **non-secret** env `PIFLOW_PI_MODELS_JSON` (the image's CMD writes it to `~/.pi/agent/models.json` at
+  boot — the Fly analog of the providers' `stageHomeFiles`), and its referenced `$VAR`(s) become the cred
+  allowlist set as Fly **secrets**. Without `--provider`, the single `--provider-secret` key is used (the demo);
+- the Claude subscription token resolves through the layered `resolveClaudeOAuthToken` (env → `~/.piflow/
+  claude-code.json` → local login) and is set as a Fly **secret**. `ANTHROPIC_*` API keys are NEVER staged
+  (a non-empty API key silently outranks the OAuth token in `claude -p` → per-token billing).
+
+PLAN mode registers the `cloud` context row but does NOT switch to it (the endpoint isn't live yet); after a
+green deploy+smoke, `piflowctl context use cloud`. The manual runbook above stays the source of truth + the
+fallback for what the verb does.
 
 ## Files
 

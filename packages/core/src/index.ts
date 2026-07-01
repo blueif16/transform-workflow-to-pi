@@ -254,6 +254,10 @@ export type { SchemaValidator, SchemaCheckResult } from './runner/index.js';
 // scoped token, not the raw credential (also surfaced via `export * from './types.js'` above).
 export { defaultSecretResolver } from './runner/index.js';
 export type { SecretResolver } from './runner/index.js';
+// Cloud-cred / claude-code OAuth staging seams — reused by `piflowctl cloud up` to mint Fly secrets
+// (provider cred via the isCloud:true SecretResolver seam; the subscription token via the layered resolver).
+export { cloudCredEnvAdditions, CLOUD_KINDS, resolveClaudeOAuthToken, defaultClaudeCodeCredFile } from './runner/index.js';
+export type { ClaudeTokenSources } from './runner/index.js';
 export type {
   RunOptions,
   RunResult,

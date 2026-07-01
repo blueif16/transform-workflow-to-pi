@@ -23,6 +23,11 @@ primary_region = "iad"   # pick a region near you: fly platform regions
 #   Generate the Claude OAuth token once on your laptop with:  claude setup-token
 #   NEVER set ANTHROPIC_API_KEY here — a non-empty API key silently outranks the OAuth token in
 #   `claude -p` (per-token API billing); the executor strips it in-jail, but don't hand it in at all.
+#   OPTIONAL (a CUSTOM pi gateway): set the SECRET-FREE, $VAR-ref'd models.json entry so a run on the VM
+#   resolves `--provider <gw>` exactly like a laptop / a daytona-e2b node. `piflowctl cloud up --provider <gw>`
+#   sets it for you (from ~/.pi/agent/models.json); the image's CMD writes it to ~/.pi/agent/models.json at boot.
+#   The referenced key (e.g. NEBIUS_API_KEY) still arrives as a Fly SECRET — pi expands $VAR from env at runtime.
+#     fly secrets set PIFLOW_PI_MODELS_JSON='{"providers":{"mmgw":{"baseUrl":"…","apiKey":"$MMGW_KEY",…}}}'
 [env]
   PIFLOW_HOST = "0.0.0.0"
   PIFLOW_PORT = "8080"

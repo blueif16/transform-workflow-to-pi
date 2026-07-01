@@ -15,6 +15,13 @@ export { derivesFromOp, gatesFromOp, runOpsFromOp, actionsFromOp } from './op-di
 // In-place exec location — the seam that anchors a `local` (in-place) node's cwd + output to the run dir
 // (so a relative artifact write lands under {{RUN}}); isolated kinds keep their throwaway workspace + out/<id>.
 export { effectiveSandboxLocation } from './env-staging.js';
+// Cloud-cred minting seam (M1): resolve a declared provider-cred var through the SecretResolver with
+// `isCloud:true` (mint-not-forward). `piflowctl cloud up` reuses it to stage a Fly secret. CLOUD_KINDS gates it.
+export { cloudCredEnvAdditions, CLOUD_KINDS } from './env-staging.js';
+// The §7.2 claude-code credential resolver — the LAYERED host-side OAuth-token lookup (env → ~/.piflow file →
+// local login). `piflowctl cloud up` reuses it to stage the subscription token as a Fly secret (never an API key).
+export { resolveClaudeOAuthToken, defaultClaudeCodeCredFile } from './claude-executor.js';
+export type { ClaudeTokenSources } from './claude-executor.js';
 export type { DerivedExecInputs, ProjectOp, RegistryProject, PromoteInput, RunnableOp, RejectedRunOp, ActionOps } from './op-dispatch.js';
 // G5 — HUMAN CHECKPOINT (HITL): the marker/reply schemas, the question hash, and the reply validator (the
 // runner's authority). The Vite courier + the console write the reply file; observe surfaces the marker.

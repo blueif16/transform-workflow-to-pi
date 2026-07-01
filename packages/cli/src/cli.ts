@@ -30,6 +30,7 @@ import { runOptimizeCli } from './optimize.js';
 import { runOptimizeFixCli } from './optimize-fix.js';
 import { runGuiCli } from './gui.js';
 import { runContextCli } from './context.js';
+import { runCloudCli } from './cloud.js';
 import { runServeCli } from '@piflow/server';
 import { runTuiCli } from './tui.js';
 import { runSkillsCli } from './skills.js';
@@ -77,6 +78,13 @@ USAGE
                                             (local ⇄ cloud \`serve\`), stored in ~/.piflow/contexts.json.
                                             Active-context ladder: --context flag > PIFLOW_CONTEXT env >
                                             the \`use\` pointer > the implicit \`local\` (${'http://127.0.0.1:5273'}).
+  piflowctl cloud   up [--app <n>] [--provider <gw>] [--execute] | down [--execute]  stand up (or tear
+                                            down) the SAME control plane on a durable Fly.io VM. Bare \`up\`
+                                            = a PLAN (mint the bearer token, register a \`cloud\` context,
+                                            print the fly runbook — spends nothing). \`--execute\` runs it
+                                            (secrets set → deploy → smoke) + switches context on a green
+                                            smoke. Projects the pi gateway (models.json entry + cred vars)
+                                            + Claude OAuth as Fly secrets, the same way a node sandbox does.
   piflowctl tui     [<rundir>] [--every <s>]  launch the terminal run viewer, scoped to the project at cwd
   piflowctl skills  install [targetDir] [--force] [--with <id>|--all|--wizard]  install the authoring skills (+ add-ons) into a repo
   piflowctl --version                       print the piflowctl version
@@ -280,6 +288,9 @@ async function main(): Promise<void> {
       break;
     case 'context':
       await runContextCli(rest);
+      break;
+    case 'cloud':
+      await runCloudCli(rest);
       break;
     case 'serve':
       await runServeCli(rest);

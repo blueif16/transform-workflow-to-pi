@@ -95,6 +95,10 @@ USER piflow
 # NON-secret config. The demo product root is the serve scope + the allow-listed template by default.
 # Secrets (PIFLOW_TOKEN, the pi gateway key, CLAUDE_CODE_OAUTH_TOKEN) come from `fly secrets set` at
 # deploy time — NEVER baked. PIFLOW_SCOPE_ROOTS scopes the GUI/index to the demo product.
+# PIFLOW_PI_MODELS_JSON (optional, set by `piflowctl cloud up --provider <gw>`) carries the scoped pi
+# gateway registry entry ($VAR-ref'd, SECRET-FREE); the CMD writes it to ~/.pi/agent/models.json at boot
+# so a run on the VM resolves a CUSTOM --provider exactly like a laptop / a daytona-e2b node does. The
+# referenced key (e.g. NEBIUS_API_KEY) still arrives as a Fly SECRET — pi expands $VAR from env at runtime.
 ENV PIFLOW_HOST=0.0.0.0 \
     PIFLOW_PORT=8080 \
     PIFLOW_SCOPE_ROOTS=/home/piflow/demo \
@@ -105,7 +109,8 @@ EXPOSE 8080
 
 # Launch the control plane. GUARD: never launch an UNAUTHENTICATED public server — fail fast if
 # PIFLOW_TOKEN is unset (an empty --token disables the bearer gate, which on a public origin means
-# an open control plane that can start runs). The scope root is also the cwd so resolveScope + the
-# spawned runner's cwd both see the demo product.
+# an open control plane that can start runs). Then stage the pi gateway registry (if `cloud up`
+# supplied one) so the SAME (models.json file + $VAR cred allowlist) projection daytona/e2b use also
+# lands here. The scope root is also the cwd so resolveScope + the spawned runner's cwd see the demo.
 WORKDIR /home/piflow/demo
-CMD ["sh", "-c", "test -n \"$PIFLOW_TOKEN\" || { echo 'FATAL: PIFLOW_TOKEN is unset — refusing to start an unauthenticated public control plane. Set it with: fly secrets set PIFLOW_TOKEN=...' >&2; exit 1; }; exec piflowctl serve --host 0.0.0.0 --port 8080 --token \"$PIFLOW_TOKEN\" --static \"$PIFLOW_STATIC\" --roots \"$PIFLOW_SCOPE_ROOTS\" --allow-templates \"$PIFLOW_ALLOWED_TEMPLATES\""]
+CMD ["sh", "-c", "test -n \"$PIFLOW_TOKEN\" || { echo 'FATAL: PIFLOW_TOKEN is unset — refusing to start an unauthenticated public control plane. Set it with: fly secrets set PIFLOW_TOKEN=...' >&2; exit 1; }; if [ -n \"$PIFLOW_PI_MODELS_JSON\" ]; then mkdir -p \"$HOME/.pi/agent\" && printf '%s' \"$PIFLOW_PI_MODELS_JSON\" > \"$HOME/.pi/agent/models.json\"; fi; exec piflowctl serve --host 0.0.0.0 --port 8080 --token \"$PIFLOW_TOKEN\" --static \"$PIFLOW_STATIC\" --roots \"$PIFLOW_SCOPE_ROOTS\" --allow-templates \"$PIFLOW_ALLOWED_TEMPLATES\""]
