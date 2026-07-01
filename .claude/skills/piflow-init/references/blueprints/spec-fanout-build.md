@@ -1,3 +1,9 @@
+---
+id: spec-fanout-build
+description: the shape for "one design decides the whole thing, then many hands fill DISJOINT parts of it in parallel, then we join and build"
+golden: .piflow/example-spec-fanout/template/
+params: [M]
+---
 # Blueprint: spec fan-out → build
 
 The shape for "one design decides the whole thing, then many hands fill DISJOINT parts of it in parallel, then

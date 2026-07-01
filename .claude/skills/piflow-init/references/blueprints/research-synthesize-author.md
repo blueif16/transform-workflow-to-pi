@@ -1,3 +1,9 @@
+---
+id: research-synthesize-author
+description: the default shape for "go learn a domain, then design from what you learned"
+golden: .piflow/outbound-design/template/
+params: [N]
+---
 # Blueprint: research → synthesize → author
 
 The default shape for "go learn a domain, then design from what you learned." You (the init agent) are stamping

@@ -1,3 +1,9 @@
+---
+id: fan-out-map-reduce
+description: the default shape for "split ONE input across N independent workers, then fold their outputs into one result"
+golden: templates/quality/verify/
+params: [N]
+---
 # Blueprint: fan-out → map → reduce
 
 The default shape for "split ONE input across N independent workers, then fold their outputs into one result." You

@@ -37,6 +37,7 @@ import { runServeCli } from '@piflow/server';
 import { runTuiCli } from './tui.js';
 import { runSkillsCli } from './skills.js';
 import { runUnderstandCli } from './understand.js';
+import { runBlueprintCli } from './blueprint.js';
 import { createRequire } from 'node:module';
 
 // CLI version, read from this package's own package.json (always shipped in the tarball; resolved
@@ -97,6 +98,8 @@ USAGE
   piflowctl tui     [<rundir>] [--every <s>]  launch the terminal run viewer, scoped to the project at cwd
   piflowctl skills  install [targetDir] [--force] [--with <id>|--all|--wizard]  install the authoring skills (+ add-ons) into a repo
   piflowctl understand [subsystem] [--check|--rebuild]  how a subsystem works / where to change it (code slices)
+  piflowctl blueprint <list | show <id>>    discover DAG topologies to stamp: list = every 'id — description';
+                                            show = the full recipe (topology + wiring) before you compose
   piflowctl --version                       print the piflowctl version
 
 RUN
@@ -340,6 +343,11 @@ async function main(): Promise<void> {
       break;
     case 'understand':
       await runUnderstandCli(rest);
+      break;
+    case 'blueprint':
+      // DISCOVER→UNDERSTAND over the materialized ~/.piflow/blueprints/ catalog (parity with the presets).
+      // `list`/`show` are built; `stamp`/`insert` route to a placeholder (a later task owns them).
+      process.exitCode = await runBlueprintCli(rest);
       break;
     case '--version':
     case '-v':

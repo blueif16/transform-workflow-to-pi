@@ -1,3 +1,9 @@
+---
+id: produce-verify-fix
+description: the default shape for "make a deliverable, then GATE it and loop back until it passes"
+golden: .piflow/example-produce-verify-fix/template/
+params: [N, K]
+---
 # Blueprint: produce → verify → fix (the self-correcting pipeline)
 
 The default shape for "make a deliverable, then GATE it and loop back until it passes." You (the init agent) are

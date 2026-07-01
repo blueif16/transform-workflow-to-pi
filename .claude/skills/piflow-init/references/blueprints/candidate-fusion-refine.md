@@ -1,3 +1,9 @@
+---
+id: candidate-fusion-refine
+description: the shape for "one artifact, but I don't trust a single model draft — panel to widen coverage, then best-of-n to harden it"
+golden: .piflow/example-fusion/template/
+params: []
+---
 # Blueprint: candidate-fusion → refine (MoA panel → best-of-n)
 
 The shape for "one artifact, but I don't trust a single model draft — I want a PANEL to widen coverage, then N
