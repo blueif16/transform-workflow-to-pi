@@ -62,13 +62,13 @@ You **subscribe**; you never change the data plane to watch it.
   plus `localizeRootCauses` (walks the file-flow DAG back to the failure onset). Key your ABORT/RERUN rows on
   these. ⚠️ `slow` needs cross-run history (record mode) — it **cannot fire on a live stream**; for a
   slow-but-not-dead producer key on `stall` (the runner's stall watchdog), not `slow`.
-- **Optimize / fix** — the `OptimizeEventSink` (`optimize --fix --watch`). The typed `OptimizeEvent` union is
-  exactly nine: `triaged · candidate-prepared · fixer-started · fixer-trace · fixer-done · scored · gated ·
-  landed · stopped`, and its ONLY typed reason is `stopped{'complete'|'edit-budget'|'token-budget'}`. A
-  **watchdog abort is NOT a first-class event** — the product's fixer sub-trace rides through as an OPAQUE
-  `fixer-trace.payload` that core never inspects, so a watchdog kill arrives as a `fixer-trace` whose
-  `payload = {type:'watchdog_abort', reason, tools, edits}` (and, post-hoc, in the `fixer-done` summary prefix
-  `[watchdog abort: <reason>]`). To key on a watchdog reason you read it OUT of the `fixer-trace` payload.
+- **Optimize / fix** — the `OptimizeEventSink` (`optimize --fix --watch`). The typed `OptimizeEvent` union
+  carries a **first-class `fixer-aborted{node, reason}`** — the PORTABLE watchdog/timeout cutoff signal, read
+  from the fixer stage's TYPED return (`CandidateEdit.aborted`), NOT the opaque payload — so key your ABORT
+  rows on it directly. (Legacy fallback for a binding that hasn't adopted the structured return: the same
+  reason still rides in an OPAQUE `fixer-trace` `payload = {type:'watchdog_abort', reason, …}` and in the
+  `fixer-done` summary prefix `[watchdog abort: <reason>]`.) The other typed reason is
+  `stopped{'complete'|'edit-budget'|'token-budget'}`.
 - **Per-agent inside a node** — the streamed `stream-json` (`fixer.trace.jsonl`): every `tool_use`, result,
   `rate_limit_event`. This is how you SEE behaviour (the M3 fixer's 40 tool-calls / 0 edits — a pre-tuning
   run; the game-omni default now trips at 22 — was read from here).
@@ -118,7 +118,7 @@ Every row keys on something you can read off the stream/artifacts. No row keys o
 | Decision | Fires when (observable) | Action |
 |---|---|---|
 | **CONTINUE** | converging: edits landing / score moving toward desired / no anomaly | observe only |
-| **ABORT** | corruption on an OFF-CRITICAL-PATH agent: `watchdog_abort`, rabbit-hole, repro-probe, no-progress | SIGTERM the candidate (the watchdog already does; you confirm) — **never** a live producer mid-run |
+| **ABORT** | corruption on an OFF-CRITICAL-PATH agent: `fixer-aborted` (rabbit-hole / repro-probe / no-progress) | SIGTERM the candidate (the watchdog already does; you confirm) — **never** a live producer mid-run |
 | **RERUN** | recoverable miss: rate-limit / transient / a *fixable* steer was missing | rerun with ONE thing changed (a budget, evidence, a steer). **Identical rerun is forbidden** — it just re-loops |
 | **NUDGE** | the agent is on the right trail but won't commit (diagnoses-forever) | abort + `claude --resume`/`--continue` with a sharp steer ("stop — the fix is at X; edit now") |
 | **ESCALATE** | architectural / ambiguous / failed after the management plane's bound (N retries, run-count) | HALT, hand to the human WITH evidence. Never invent a fix beyond the node's scope |
