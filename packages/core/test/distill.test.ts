@@ -237,3 +237,97 @@ describe('createNodeAccumulator — thinking chars', () => {
     expect(rich.thinkingChars).toBe(2);
   });
 });
+
+// snapshot() is the live, NON-DESTRUCTIVE twin of finalize() the telemetry stream folds per poll (it
+// cannot call finalize(), which is destructive — synth-closes open spans then clears them, corrupting a
+// still-live node's timeline). These tests pin the P0a contract: on a settled node it equals finalize();
+// it is idempotent AND leaves the accumulator terminal-ready; and with an OPEN span it projects read-only
+// so a LATER real tool_execution_end still yields the correct closed span (a finalize-based path fails).
+describe('createNodeAccumulator — snapshot() (non-destructive twin of finalize)', () => {
+  // (a) On a SETTLED node (every tool span closed), snapshot() deep-equals finalize()'s rich — the
+  // non-destructive read reproduces the terminal shape exactly (model/tokens/timeline/tools/reads/writes).
+  it('on a settled node, snapshot(rec) deep-equals finalize(rec).rich', () => {
+    const rec = { startedAt: 's', endedAt: 'e', durationMs: 42, artifacts: [{ path: '/p/out.js', exists: true, bytes: 7 }] };
+    const events: PiEvent[] = [
+      { type: 'message_start', message: { role: 'assistant', model: 'm1', provider: 'cp', api: 'anthropic-messages' } },
+      { type: 'message_end', message: { role: 'assistant', usage: { input: 30, output: 6, cacheRead: 4, totalTokens: 120 }, stopReason: 'end_turn' } },
+      { type: 'tool_execution_start', toolName: 'read', toolCallId: 'a', args: { path: '/p/in.txt' }, _t: 0 },
+      { type: 'tool_execution_end', toolCallId: 'a', _t: 5, result: { content: [{ type: 'text', text: 'file body' }] } },
+      { type: 'tool_execution_start', toolName: 'write', toolCallId: 'b', args: { path: '/p/out.js' }, _t: 10 },
+      { type: 'tool_execution_end', toolCallId: 'b', _t: 18 },
+    ];
+    // snapshot on one accumulator, finalize on a fresh IDENTICAL one — same events, no shared state.
+    const snapAcc = createNodeAccumulator();
+    for (const e of events) snapAcc.push(e);
+    const snap = snapAcc.snapshot(rec);
+
+    const finAcc = createNodeAccumulator();
+    for (const e of events) finAcc.push(e);
+    const fin = finAcc.finalize(rec).rich;
+
+    expect(snap).toEqual(fin);
+    // and it is the real, populated shape — not a coincidental empty deep-equal.
+    expect(snap.tokens.billable).toBe(36);
+    expect(snap.timeline).toHaveLength(2);
+    expect(snap.reads[0]?.preview).toBe('file body');
+    expect(snap.writes[0]?.verified).toBe(true); // artifact matched on disk
+  });
+
+  // (b) snapshot() is idempotent (two calls deep-equal) AND non-destructive: a subsequent finalize()
+  // still closes correctly. If snapshot() mutated `open`/`timeline`, the second call or the finalize
+  // would diverge (double-pushed spans).
+  it('is idempotent and leaves finalize() still correct', () => {
+    const acc = createNodeAccumulator();
+    acc.push({ type: 'message_end', message: { role: 'assistant', usage: { input: 5, output: 2, totalTokens: 40 } } });
+    acc.push({ type: 'tool_execution_start', toolName: 'read', toolCallId: 'a', args: { path: '/p/a' }, _t: 0 });
+    acc.push({ type: 'tool_execution_end', toolCallId: 'a', _t: 3 });
+
+    const s1 = acc.snapshot();
+    const s2 = acc.snapshot();
+    expect(s2).toEqual(s1); // two calls agree — no accumulating side effect
+    expect(s1.timeline).toHaveLength(1); // the closed span, exactly one
+
+    // finalize() afterward still yields the same terminal timeline (snapshot did not consume state).
+    const fin = acc.finalize().rich;
+    expect(fin.timeline).toHaveLength(1);
+    expect(fin.timeline[0]).toMatchObject({ name: 'read', durMs: 3, ok: true });
+  });
+
+  // (c) THE live-path contract: with an OPEN tool span, snapshot() projects it read-only (durMs:0,
+  // ok:true) WITHOUT closing it, so a LATER real tool_execution_end still produces the correctly-closed
+  // span with its real durMs. A finalize()-based live path fails this — finalize would synth-close the
+  // span at durMs:0 and DROP the real _end, freezing the span wrong forever.
+  it('projects an open span read-only; a later real _end still closes it correctly', () => {
+    const acc = createNodeAccumulator();
+    acc.push({ type: 'tool_execution_start', toolName: 'bash', toolCallId: 'x', args: { command: 'sleep 1' }, _t: 100 });
+
+    // mid-run snapshot: the still-open span is projected read-only at durMs 0, ok true.
+    const mid = acc.snapshot();
+    expect(mid.timeline).toHaveLength(1);
+    expect(mid.timeline[0]).toMatchObject({ name: 'bash', durMs: 0, ok: true });
+    expect(mid.toolCalls).toBe(1);
+
+    // the REAL end arrives AFTER the snapshot — because snapshot() never touched `open`, this closes
+    // the original span with its true duration (not the projected 0).
+    acc.push({ type: 'tool_execution_end', toolCallId: 'x', _t: 350 });
+    const after = acc.snapshot();
+    expect(after.timeline).toHaveLength(1); // still ONE span (not the projection PLUS a close)
+    expect(after.timeline[0]).toMatchObject({ name: 'bash', durMs: 250, ok: true });
+
+    // finalize() agrees — one span, real duration, nothing double-pushed.
+    const fin = acc.finalize().rich;
+    expect(fin.timeline).toHaveLength(1);
+    expect(fin.timeline[0]).toMatchObject({ name: 'bash', durMs: 250, ok: true });
+  });
+
+  // the frozen-copy contract: a consumer holding a snapshot can't mutate it (and a next poll is unaffected).
+  it('returns a deep-frozen copy', () => {
+    const acc = createNodeAccumulator();
+    acc.push({ type: 'tool_execution_start', toolName: 'read', toolCallId: 'a', args: { path: '/p/a' }, _t: 0 });
+    acc.push({ type: 'tool_execution_end', toolCallId: 'a', _t: 2 });
+    const snap = acc.snapshot();
+    expect(Object.isFrozen(snap)).toBe(true);
+    expect(Object.isFrozen(snap.timeline)).toBe(true);
+    expect(Object.isFrozen(snap.tokens)).toBe(true);
+  });
+});

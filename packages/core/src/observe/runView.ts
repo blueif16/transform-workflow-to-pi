@@ -14,7 +14,7 @@
 
 import fssync from 'node:fs';
 import path from 'node:path';
-import { createNodeAccumulator } from './distill.js';
+import { createNodeAccumulator, type RichNode } from './distill.js';
 import { deriveNode, type NodeDerived } from './derive.js';
 import { loadModelCatalog, contextWindowFor, type ModelCatalog } from './models.js';
 import { checkpointViewFrom, type CheckpointMarker, type CheckpointJournalSlot } from '../runner/checkpoint.js';
@@ -214,6 +214,137 @@ interface RunJson {
   nodes: Record<string, RunJsonNode>;
 }
 
+/** The token/cost/context SPINE for one node — the agent-neutral rollup `assembleNode` stamps. */
+export interface NodeTokenSpine {
+  tokens: RunTokens;
+  /** the model label to display (rec.usage path prefers the effective model; else the event-replay model). */
+  model: string | null;
+  /** the context-window denominator (rec.usage's own cap, else the model's registry window). */
+  contextWindow: number | null;
+  modelCalls: number;
+  stopReason: string | null;
+  truncated: boolean;
+}
+
+/**
+ * (agent-neutral spine) Pick the token/cost/context/turns rollup for one node. When the executor persisted
+ * an authoritative usage rollup (`rec.usage` — Claude, whose stream-json the pi reducer cannot decode so
+ * `rich` is blank), PREFER it; otherwise source from the event replay (`rich`). Gated on `usage`: pi never
+ * sets it, so pi nodes stay byte-identical (event replay wins). Extracted verbatim from `buildRunView`'s
+ * per-node loop so the live SSE fold and the batch builder compute the SAME spine from the SAME code —
+ * and so the AgentDriver registry (Thrust 3) slots in here (pick the driver for `rec`) with no rework.
+ */
+export function nodeTokenSpine(
+  usage: NodeUsage | undefined,
+  rich: RichNode,
+  catalog: ModelCatalog,
+  effModel: string | null,
+): NodeTokenSpine {
+  const u = usage;
+  const tokens: RunTokens = u
+    ? {
+        input: u.inputTokens ?? 0,
+        output: u.outputTokens ?? 0,
+        cacheRead: u.cacheRead ?? 0,
+        cacheWrite: u.cacheCreation ?? 0, // Claude cache_creation ≙ pi cacheWrite (newly-cached input)
+        cost: u.cost ?? 0,
+        contextPeak: (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheCreation ?? 0), // context in the window
+        billable: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
+      }
+    : { ...rich.tokens };
+  const model = u ? effModel : rich.model;
+  const contextWindow = u
+    ? (u.contextWindow ?? (effModel ? contextWindowFor(effModel, catalog) : null))
+    : (rich.model ? contextWindowFor(rich.model, catalog) : null);
+  const modelCalls = u ? (u.numTurns ?? rich.modelCalls) : rich.modelCalls;
+  const stopReason = u ? (u.stopReason ?? rich.stopReason) : rich.stopReason;
+  const truncated = u ? (stopReason === 'max_tokens' || stopReason === 'length') : rich.truncated;
+  return { tokens, model, contextWindow, modelCalls, stopReason, truncated };
+}
+
+/** The per-node build context `assembleNode` needs — the run-scoped closures `buildRunView` sets up once. */
+export interface AssembleNodeCtx {
+  /** absolutize a possibly-relative path against the run sandbox. */
+  toAbs: (p: string) => string;
+  /** whether an absolute path lives inside the run sandbox ({{RUN}}) — the `run` scope test. */
+  underRun: (abs: string) => boolean;
+  /** strip an absolute path to a clean display path using the run's two roots. */
+  displayPath: (abs: unknown) => string;
+  /** pi-native model registry for the context-window denominator. */
+  catalog: ModelCatalog;
+  /** cross-run mean durationMs per node id (empty when no history dirs). */
+  expected: Record<string, number>;
+  /** cross-run sample count per node id. */
+  samples: Record<string, number>;
+  /** the `__checkpoints__` resolution journal read once off state.json. */
+  ckJournal: Record<string, CheckpointJournalSlot>;
+  /** read a node's checkpoint marker (`.pi/checkpoints/<id>.json`), null if absent/unparseable. */
+  readMarkerSync: (id: string) => CheckpointMarker | null;
+}
+
+/** The parsed io.json ledger for one node (phase override + declared read/write paths). */
+export interface NodeIoLedger { phase?: string | null; reads: string[]; writes: string[] }
+
+/**
+ * Assemble ONE `RunViewNode` from its status record + the reduced `rich` node + its io.json ledger + the
+ * run-scoped context — the whole per-node build (reads/scopes/writes/artifacts/tokens/spine/checkpoint),
+ * then stamps `derived = deriveNode(node)`. Extracted VERBATIM from `buildRunView`'s per-node loop so the
+ * live SSE fold and the batch builder produce byte-identical nodes from the SAME code.
+ */
+export function assembleNode(
+  rec: RunJsonNode,
+  rich: RichNode,
+  ioLedger: NodeIoLedger | null,
+  ctx: AssembleNodeCtx,
+): RunViewNode {
+  const id = rec.id;
+  let phase: string | null = rec.phase ?? null;
+  if (ioLedger) phase = ioLedger.phase ?? phase;
+
+  const reads: ReadRef[] = rich.reads.map((r) => {
+    const abs = ctx.toAbs(r.path);
+    const dp = ctx.displayPath(abs);
+    return { path: abs, displayPath: dp, via: r.via, scope: ctx.underRun(abs) ? 'run' : scopeKind(dp), preview: r.preview };
+  });
+  const buckets: Partial<Record<ScopeKind, string[]>> = {};
+  for (const r of reads) (buckets[r.scope] = buckets[r.scope] || []).push(r.displayPath);
+  const scopes: ScopeBucket[] = SCOPE_ORDER.filter((k) => buckets[k]).map((kind) => ({
+    kind, label: SCOPE_LABEL[kind], count: buckets[kind]!.length, paths: buckets[kind]!,
+  }));
+
+  const writes: WriteRef[] = rich.writes.map((w) => { const abs = ctx.toAbs(w.path); return { path: abs, displayPath: ctx.displayPath(abs), verified: w.verified, bytes: w.bytes }; });
+  const artifacts: ArtifactRef[] = (rec.artifacts || []).map((a) => { const abs = ctx.toAbs(a.path); return { path: abs, displayPath: ctx.displayPath(abs), exists: !!a.exists, bytes: a.bytes ?? 0 }; });
+
+  // (agent-neutral spine) tokens/cost/context/turns — rec.usage-first-vs-event-replay (nodeTokenSpine).
+  const effModel = rich.model ?? rec.model ?? null;
+  const spine = nodeTokenSpine(rec.usage, rich, ctx.catalog, effModel);
+
+  // (G5) Build the checkpoint view from the marker + the `__checkpoints__` journal. A pending marker
+  // makes the node's shown `status` read `awaiting-input` (verified-not-trusted: the marker is on disk).
+  const checkpoint = checkpointViewFrom(ctx.readMarkerSync(id), ctx.ckJournal[id]) ?? undefined;
+  const status = checkpoint && checkpoint.status === 'pending' ? 'awaiting-input' : rec.status;
+
+  const node: RunViewNode = {
+    id, label: rec.label || id, phase, status,
+    ...(rec.agentType ? { agentType: rec.agentType } : {}), // (G6) verbatim passthrough → GUI icon
+    ...(rec.config ? { config: rec.config } : {}), // (SKIN) curated config slice → GUI cloud skin
+    startedAt: rec.startedAt, endedAt: rec.endedAt, durationMs: rec.durationMs,
+    expectedMs: ctx.expected[id] ?? rec.durationMs ?? null, priorSamples: ctx.samples[id] ?? 0,
+    model: spine.model, provider: rich.provider, api: rich.api,
+    contextWindow: spine.contextWindow,
+    toolCalls: rich.toolCalls, toolBreakdown: rich.toolBreakdown, timeline: rich.timeline,
+    reads, scopes, writes, artifacts, bash: rich.bash, tokens: spine.tokens,
+    retries: rich.retries, stopReason: spine.stopReason, truncated: spine.truncated, thinkingChars: rich.thinkingChars,
+    modelCalls: spine.modelCalls, maxToolRepeat: rich.maxToolRepeat, repeatedTool: rich.repeatedTool,
+    summary: rec.summary, issues: rec.issues || [],
+    ...(checkpoint ? { checkpoint } : {}),
+  };
+  // Compute the DISPLAY zones ONCE, from the assembled node's own fields (tokens/tools/timeline/context/
+  // duration) — every view renders `node.derived.*` and re-derives nothing.
+  node.derived = deriveNode(node);
+  return node;
+}
+
 /**
  * Distill `runDir`/.pi → the enriched run-view. Throws if `.pi/run.json` is absent/unparseable.
  */
@@ -254,6 +385,7 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
   // events stream, io.json PERSISTS across reuse and predates per-node event capture, so the DAG wires
   // every node, not just the ones that happened to record events.
   const ioByNode = new Map<string, { reads: string[]; writes: string[] }>();
+  const ctx: AssembleNodeCtx = { toAbs, underRun, displayPath, catalog, expected, samples, ckJournal, readMarkerSync };
   for (const [id, rec] of Object.entries(rj.nodes || {})) {
     const replay = replayEvents(runDir, id);
     const { rich } = replay.acc.finalize(rec);
@@ -264,79 +396,19 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
       usageEvents: cov.usageEvents, billable: rich.tokens.billable,
     });
 
-    let phase: string | null = rec.phase ?? null;
+    // Parse the io.json ledger once (phase override + declared read/write paths for the edge source).
+    let ioLedger: NodeIoLedger | null = null;
     const ioFile = path.join(runDir, '.pi', 'nodes', id, 'io.json');
     if (fssync.existsSync(ioFile)) {
       try {
         const io = JSON.parse(fssync.readFileSync(ioFile, 'utf8')) as { phase?: string | null; reads?: { path?: unknown }[]; writes?: { path?: unknown }[] };
-        phase = (io.phase ?? phase) as string | null;
         const paths = (arr: { path?: unknown }[] | undefined) => (arr ?? []).map((x) => x?.path).filter((p): p is string => typeof p === 'string');
-        ioByNode.set(id, { reads: paths(io.reads), writes: paths(io.writes) });
+        ioLedger = { phase: io.phase, reads: paths(io.reads), writes: paths(io.writes) };
+        ioByNode.set(id, { reads: ioLedger.reads, writes: ioLedger.writes });
       } catch { /* keep fallback */ }
     }
 
-    const reads: ReadRef[] = rich.reads.map((r) => {
-      const abs = toAbs(r.path);
-      const dp = displayPath(abs);
-      return { path: abs, displayPath: dp, via: r.via, scope: underRun(abs) ? 'run' : scopeKind(dp), preview: r.preview };
-    });
-    const buckets: Partial<Record<ScopeKind, string[]>> = {};
-    for (const r of reads) (buckets[r.scope] = buckets[r.scope] || []).push(r.displayPath);
-    const scopes: ScopeBucket[] = SCOPE_ORDER.filter((k) => buckets[k]).map((kind) => ({
-      kind, label: SCOPE_LABEL[kind], count: buckets[kind]!.length, paths: buckets[kind]!,
-    }));
-
-    const writes: WriteRef[] = rich.writes.map((w) => { const abs = toAbs(w.path); return { path: abs, displayPath: displayPath(abs), verified: w.verified, bytes: w.bytes }; });
-    const artifacts: ArtifactRef[] = (rec.artifacts || []).map((a) => { const abs = toAbs(a.path); return { path: abs, displayPath: displayPath(abs), exists: !!a.exists, bytes: a.bytes ?? 0 }; });
-
-    // (agent-neutral spine) When the executor persisted an authoritative usage rollup (Claude — whose
-    // stream-json the pi reducer cannot decode, so `rich` is blank), PREFER it for the token/cost/context
-    // spine. Gated on `rec.usage`: pi never sets it, so pi nodes stay byte-identical (event replay wins).
-    const u = rec.usage;
-    const effModel = rich.model ?? rec.model ?? null;
-    const tokens: RunTokens = u
-      ? {
-          input: u.inputTokens ?? 0,
-          output: u.outputTokens ?? 0,
-          cacheRead: u.cacheRead ?? 0,
-          cacheWrite: u.cacheCreation ?? 0, // Claude cache_creation ≙ pi cacheWrite (newly-cached input)
-          cost: u.cost ?? 0,
-          contextPeak: (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheCreation ?? 0), // context in the window
-          billable: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
-        }
-      : { ...rich.tokens };
-    const spineModel = u ? effModel : rich.model;
-    const spineContextWindow = u
-      ? (u.contextWindow ?? (effModel ? contextWindowFor(effModel, catalog) : null))
-      : (rich.model ? contextWindowFor(rich.model, catalog) : null);
-    const spineModelCalls = u ? (u.numTurns ?? rich.modelCalls) : rich.modelCalls;
-    const spineStopReason = u ? (u.stopReason ?? rich.stopReason) : rich.stopReason;
-    const spineTruncated = u ? (spineStopReason === 'max_tokens' || spineStopReason === 'length') : rich.truncated;
-
-    // (G5) Build the checkpoint view from the marker + the `__checkpoints__` journal. A pending marker
-    // makes the node's shown `status` read `awaiting-input` (verified-not-trusted: the marker is on disk).
-    const checkpoint = checkpointViewFrom(readMarkerSync(id), ckJournal[id]) ?? undefined;
-    const status = checkpoint && checkpoint.status === 'pending' ? 'awaiting-input' : rec.status;
-
-    const node: RunViewNode = {
-      id, label: rec.label || id, phase, status,
-      ...(rec.agentType ? { agentType: rec.agentType } : {}), // (G6) verbatim passthrough → GUI icon
-      ...(rec.config ? { config: rec.config } : {}), // (SKIN) curated config slice → GUI cloud skin
-      startedAt: rec.startedAt, endedAt: rec.endedAt, durationMs: rec.durationMs,
-      expectedMs: expected[id] ?? rec.durationMs ?? null, priorSamples: samples[id] ?? 0,
-      model: spineModel, provider: rich.provider, api: rich.api,
-      contextWindow: spineContextWindow,
-      toolCalls: rich.toolCalls, toolBreakdown: rich.toolBreakdown, timeline: rich.timeline,
-      reads, scopes, writes, artifacts, bash: rich.bash, tokens,
-      retries: rich.retries, stopReason: spineStopReason, truncated: spineTruncated, thinkingChars: rich.thinkingChars,
-      modelCalls: spineModelCalls, maxToolRepeat: rich.maxToolRepeat, repeatedTool: rich.repeatedTool,
-      summary: rec.summary, issues: rec.issues || [],
-      ...(checkpoint ? { checkpoint } : {}),
-    };
-    // Compute the DISPLAY zones ONCE, from the assembled node's own fields (tokens/tools/timeline/context/
-    // duration) — every view renders `node.derived.*` and re-derives nothing.
-    node.derived = deriveNode(node);
-    nodes.push(node);
+    nodes.push(assembleNode(rec, rich, ioLedger, ctx));
   }
 
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
