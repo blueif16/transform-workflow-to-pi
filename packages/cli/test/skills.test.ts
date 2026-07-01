@@ -123,12 +123,12 @@ describe('runSkillsCli — install [targetDir] [--force]', () => {
   });
 });
 
-// The optional OPT-IN add-ons layer (starting with `okf` → the okf-slices skill). A bare install stays
-// trio-only (asserted above); an add-on is opted in per-run via --with/--all/--wizard, or remembered per
-// project in `.piflow/skills.json`. These tests pin: the trio is ALWAYS present, the chosen add-on skill
-// lands (byte-faithful), the manifest is written when a choice was made, and an unknown --with id is a
-// clean error that installs nothing new.
-describe('runSkillsCli — OKF add-on (--with / --all / --wizard / manifest)', () => {
+// The optional OPT-IN add-ons layer (starting with `understand` → the okf-slices skill dir). A bare install
+// stays trio-only (asserted above); an add-on is opted in per-run via --with/--all/--wizard, or remembered
+// per project in `.piflow/skills.json`. These tests pin: the trio is ALWAYS present, the chosen add-on skill
+// lands (byte-faithful), the manifest is written when a choice was made, an unknown --with id is a clean
+// error that installs nothing new, and the LEGACY `okf` id still resolves (back-compat alias).
+describe('runSkillsCli — understand add-on (--with / --all / --wizard / manifest)', () => {
   const skillsRootOf = (t: string) => path.join(t, '.claude', 'skills');
   const manifestOf = (t: string) => path.join(t, '.piflow', 'skills.json');
   const TRIO_NAMES = ['piflow-init', 'piflow-start', 'piflow-enhance'];
@@ -141,8 +141,8 @@ describe('runSkillsCli — OKF add-on (--with / --all / --wizard / manifest)', (
     }
   };
 
-  it('--with okf installs the trio + okf-slices and writes the manifest', async () => {
-    await runSkillsCli(['install', TARGET, '--with', 'okf']);
+  it('--with understand installs the trio + okf-slices and writes the manifest', async () => {
+    await runSkillsCli(['install', TARGET, '--with', 'understand']);
 
     await assertTrioPresent();
     await expect(
@@ -150,32 +150,33 @@ describe('runSkillsCli — OKF add-on (--with / --all / --wizard / manifest)', (
     ).resolves.toBeUndefined();
 
     const manifest = JSON.parse(await fs.readFile(manifestOf(TARGET), 'utf8'));
-    expect(manifest).toEqual({ addons: ['okf'] });
+    expect(manifest).toEqual({ addons: ['understand'] });
   });
 
   it('--all installs the trio + every add-on skill and writes the manifest', async () => {
     await runSkillsCli(['install', TARGET, '--all']);
 
     await assertTrioPresent();
-    // Every add-on's skill(s) landed — currently okf → okf-slices.
+    // Every add-on's skill(s) landed — currently understand → okf-slices.
     await expect(
       fs.access(path.join(skillsRootOf(TARGET), 'okf-slices', 'SKILL.md')),
     ).resolves.toBeUndefined();
 
     const manifest = JSON.parse(await fs.readFile(manifestOf(TARGET), 'utf8'));
-    expect(manifest.addons).toContain('okf');
+    expect(manifest.addons).toContain('understand');
   });
 
-  it('a bare install READS an existing manifest (installs okf) and does NOT rewrite it', async () => {
-    // Pre-seed the per-project manifest, then run a BARE install (no flags).
+  it('a bare install READS a LEGACY-okf manifest (alias → understand, installs okf-slices) and does NOT rewrite it', async () => {
+    // Pre-seed the per-project manifest with the OLD id `okf`, then run a BARE install (no flags). This is the
+    // back-compat regression: an existing opt-in written before the rename must still resolve.
     await fs.mkdir(path.dirname(manifestOf(TARGET)), { recursive: true });
-    const seeded = '{\n  "addons": [\n    "okf"\n  ]\n}\n'; // deliberately custom formatting
+    const seeded = '{\n  "addons": [\n    "okf"\n  ]\n}\n'; // the legacy id, deliberately custom formatting
     await fs.writeFile(manifestOf(TARGET), seeded);
 
     await runSkillsCli(['install', TARGET]);
 
     await assertTrioPresent();
-    // okf-slices installed because the manifest asked for it (no flag given).
+    // okf-slices installed because the legacy `okf` id aliases to `understand` (no flag given).
     await expect(
       fs.access(path.join(skillsRootOf(TARGET), 'okf-slices', 'SKILL.md')),
     ).resolves.toBeUndefined();
@@ -199,14 +200,14 @@ describe('runSkillsCli — OKF add-on (--with / --all / --wizard / manifest)', (
     expect(Number(process.exitCode ?? 0)).not.toBe(0);
     process.exitCode = 0;
     expect(stderr).toContain('bogus');
-    expect(stderr).toContain('okf'); // the valid ids are surfaced
+    expect(stderr).toContain('understand'); // the valid ids are surfaced
     // Nothing was installed (not even the trio) — the run bailed before any copy.
     await expect(fs.access(skillsRootOf(TARGET))).rejects.toThrow();
     await expect(fs.access(manifestOf(TARGET))).rejects.toThrow();
   });
 
-  it('--wizard uses the injected PromptIO to opt in okf, then installs it + writes the manifest', async () => {
-    // A scripted PromptIO that says YES to every confirm (the okf add-on prompt) and no-ops otherwise.
+  it('--wizard uses the injected PromptIO to opt in understand, then installs it + writes the manifest', async () => {
+    // A scripted PromptIO that says YES to every confirm (the understand add-on prompt) and no-ops otherwise.
     const io: PromptIO = {
       print: () => {},
       confirm: async () => true,
@@ -220,11 +221,11 @@ describe('runSkillsCli — OKF add-on (--with / --all / --wizard / manifest)', (
       fs.access(path.join(skillsRootOf(TARGET), 'okf-slices', 'SKILL.md')),
     ).resolves.toBeUndefined();
     const manifest = JSON.parse(await fs.readFile(manifestOf(TARGET), 'utf8'));
-    expect(manifest.addons).toContain('okf');
+    expect(manifest.addons).toContain('understand');
   });
 
-  it('ANTI-DRIFT: okf-slices/SKILL.md installed via --with okf is byte-identical to the canonical source', async () => {
-    await runSkillsCli(['install', TARGET, '--with', 'okf']);
+  it('ANTI-DRIFT: okf-slices/SKILL.md installed via --with understand is byte-identical to the canonical source', async () => {
+    await runSkillsCli(['install', TARGET, '--with', 'understand']);
 
     const canonical = await fs.readFile(path.join(REPO_SKILLS, 'okf-slices', 'SKILL.md'));
     const installed = await fs.readFile(

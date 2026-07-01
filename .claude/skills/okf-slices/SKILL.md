@@ -156,10 +156,12 @@ relative fragments.
 ## Pointers
 - Design + rationale: `docs/research/memory/code-understanding-and-anti-drift.md` (§2 discovery · §4.1 blast ladder · §5 backlog E0–E8).
 - External SOTA verification: `docs/research/memory/sota-verification-2026-06-30.md`.
-- The generator: `.agents/okf/topics/_generate.mjs` (`--write` / `--check [key]`); config: `.agents/okf/okf.config.json`.
+- The generator: `.agents/okf/topics/_generate.mjs` (`--write` / `--check [key]`), fronted by `piflowctl understand --rebuild`/`--check`; config: `.agents/okf/okf.config.json`.
   Incremental via a per-card input fingerprint (gitignored `.gen-cache.json`); `OKF_NO_CACHE=1` forces a full pass,
   `OKF_NO_CODEGRAPH=1` runs the deterministic line-check without the index.
 - Codegraph fullest-use (escalate with `explore` · `impact` for blast · `status`→`sync` hygiene): the tool's own
   canonical guidance in `src/mcp/server-instructions.ts` / https://colbymchenry.github.io/codegraph/.
-- Promotion path (Stage 2): port FIND/CHECK into a deterministic `piflowctl okf find|check|build` verb, gate on the
-  E6 retrieval eval, then add this skill to the `piflowctl skills install` bundle.
+- Entry verb (SHIPPED): `piflowctl understand [subsystem]` (FIND) · `--check [key]` (this gate) · `--rebuild [key]`
+  (`--write`) fronts this engine so a consumer repo drives it without the raw script path — this skill is the
+  PROCEDURE the verb wraps. Installed via `piflowctl skills install --with understand`. Still open: the E6
+  retrieval-eval promotion gate; seeding `.agents/okf/` into a repo that lacks it (`understand` errors until then).

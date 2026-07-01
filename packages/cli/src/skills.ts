@@ -26,12 +26,21 @@ export const TRIO = ['piflow-init', 'piflow-start', 'piflow-enhance'] as const;
 /** Optional, OPT-IN skill add-ons: id → the skill dir(s) it installs + a one-line wizard description.
  *  MIRROR the skill-name list in scripts/bundle-skills.mjs (the same dual-copy discipline as TRIO). */
 export const SKILL_ADDONS = {
-  okf: {
+  understand: {
     skills: ['okf-slices'],
-    description: 'OKF code-understanding slices — find/maintain code slices (Leg B)',
+    description: 'code-understanding slices — `piflowctl understand` maps how each subsystem works (Leg B)',
   },
 } as const satisfies Record<string, { skills: readonly string[]; description: string }>;
 export type AddonId = keyof typeof SKILL_ADDONS;
+
+/** Back-compat: this add-on shipped briefly under the internal id `okf` before it was renamed to the
+ *  user-legible `understand`. Map the legacy id (typed in `--with`, or persisted in a project's
+ *  `.piflow/skills.json`) to the current one so an existing opt-in never silently loses its add-on. */
+const ADDON_ALIASES: Record<string, AddonId> = { okf: 'understand' };
+/** Normalize a raw add-on id: legacy alias → current id; anything else passes through unchanged. */
+export function normalizeAddonId(id: string): string {
+  return ADDON_ALIASES[id] ?? id;
+}
 
 /** Absolute path to a target repo's per-project skills manifest. */
 function manifestPath(targetDir: string): string {
@@ -46,7 +55,11 @@ export function readManifest(targetDir: string): AddonId[] {
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as { addons?: unknown };
     const addons = Array.isArray(parsed.addons) ? parsed.addons : [];
-    return addons.filter((id): id is AddonId => typeof id === 'string' && id in SKILL_ADDONS);
+    const normalized = addons
+      .filter((id): id is string => typeof id === 'string')
+      .map(normalizeAddonId)
+      .filter((id): id is AddonId => id in SKILL_ADDONS);
+    return [...new Set(normalized)]; // legacy + current id could both be present → dedup
   } catch {
     return []; // unparseable manifest → treat as no add-ons (never crash a plain install)
   }
@@ -154,7 +167,8 @@ export async function runSkillsCli(
     addons = validIds;
     persist = true;
   } else if (withIds.length > 0) {
-    const unknown = withIds.filter((id) => !(id in SKILL_ADDONS));
+    const normalized = withIds.map(normalizeAddonId);
+    const unknown = normalized.filter((id) => !(id in SKILL_ADDONS));
     if (unknown.length > 0) {
       process.stderr.write(
         `piflowctl skills: unknown add-on(s) ${unknown.map((u) => `'${u}'`).join(', ')} — ` +
@@ -163,7 +177,7 @@ export async function runSkillsCli(
       process.exitCode = 1;
       return; // bail BEFORE any copy — an unknown --with installs nothing
     }
-    addons = withIds as AddonId[];
+    addons = [...new Set(normalized)] as AddonId[];
     persist = true;
   } else if (useWizard) {
     // The real PromptIO owns a readline interface that MUST be closed or the process hangs on open stdin
