@@ -20,8 +20,10 @@ import { seedSystemMemory, seedNodeMemory, seedNodeCodeMap } from '@piflow/core'
 import { loadAgentPreset, mergePreset } from '@piflow/core';
 import type { PresetMergeable } from '@piflow/core';
 // The read-only Leg-A readers (`memory find|check`) live in their own file (mirroring understand.ts); the
-// dispatcher below routes to them so scaffold.ts stays the scaffolding concern only.
+// dispatcher below routes to them so scaffold.ts stays the scaffolding concern only. `memory compact` is the
+// out-of-band cap/retire pass (its injectors shell git + the OKF gate) — its own file too, one concern each.
 import { runMemoryFind, runMemoryCheck } from './memory.js';
+import { runMemoryCompactCli } from './memory-compact.js';
 
 /** A `--mcp name=url` server entry → the `node.json` `mcp.servers` value (http transport inferred). */
 export type McpServers = Record<string, { transport: string; url: string }>;
@@ -817,12 +819,14 @@ export async function runAddNodeCli(argv: string[]): Promise<void> {
 }
 
 const MEMORY_USAGE =
-  'piflowctl memory <scaffold|find|check> <templateDir>  (find/check are read-only Leg-A readers)';
+  'piflowctl memory <scaffold|find|check|compact> <templateDir>  (find/check read-only; compact is the out-of-band cap/retire pass)';
 
 /**
- * `piflowctl memory <scaffold|find|check> …` — the Leg-A per-node MEMORY verb. `scaffold` backfills the layer;
- * `find`/`check` are the read-only readers (in ./memory.ts). Dispatches by the first token; `deps` threads the
- * injectable gate/cwd through to the readers (so tests inject the OKF gate without shelling).
+ * `piflowctl memory <scaffold|find|check|compact> …` — the Leg-A per-node MEMORY verb. `scaffold` backfills the
+ * layer; `find`/`check` are the read-only readers (in ./memory.ts); `compact` is the out-of-band cap/retire
+ * pass (in ./memory-compact.ts) that RETIRES lowest-value/graduated/code-shifted lessons (dry-run unless
+ * `--apply`). Dispatches by the first token; `deps` threads the injectable OKF gate/cwd through so tests never
+ * shell (`runGate` also drives the compact code-shifted injector).
  */
 export async function runMemoryCli(
   argv: string[],
@@ -839,6 +843,8 @@ export async function runMemoryCli(
       return runMemoryCheck(rest, deps);
     case 'scaffold':
       return runMemoryScaffold(rest);
+    case 'compact':
+      return runMemoryCompactCli(rest, { runGate: deps.runGate });
     default:
       process.stderr.write(`piflowctl memory: unknown action '${action ?? ''}'\n  ${MEMORY_USAGE}\n`);
       process.exitCode = 1;

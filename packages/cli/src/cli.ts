@@ -46,8 +46,9 @@ USAGE
   piflowctl init                            interactive setup wizard for ~/.piflow (model tiers + optional executors)
   piflowctl new     <templateDir> [flags]   scaffold meta.json + the nodes/ dir (then add-node + Write prose)
   piflowctl add-node <templateDir> --id <id> [flags]  emit one schema-valid node.json (prose is yours)
-  piflowctl memory  <scaffold|find|check> <templateDir>  the Leg-A memory verb: scaffold the layer · find
-                                            a node's standing lessons + recurrence · check lesson freshness
+  piflowctl memory  <scaffold|find|check|compact> <templateDir>  the Leg-A memory verb: scaffold the layer ·
+                                            find a node's standing lessons + recurrence · check lesson
+                                            freshness · compact (retire graduated/code-shifted/over-cap lessons)
   piflowctl run     <templateDir> [--run <id>] [flags]  drive a template run (real or --dry-run)
   piflowctl node    <run> <nodeId> --resume [-m "<msg>"]  warm-resume a node's stored pi session (--stop too)
   piflowctl inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
@@ -150,6 +151,11 @@ MEMORY  (the Leg-A per-node memory layer — OPTIMIZER-FACING reference, NEVER p
   check <templateDir> [node…] [--strict]  ADVISORY: ride the OKF --check gate through each lesson's
                 [[okf-slice]] link and flag the code-shifted / dangling ones. Advisory by default (exit 0);
                 --strict makes a code-shifted/dangling lesson a non-zero exit (for a pre-commit hook).
+  compact <templateDir> [--apply] [--node <s>] [--max-lessons <n>] [--no-graduated] [--no-code-shifted] [--json]
+                OUT-OF-BAND cap/retire pass: retire lessons whose fix GRADUATED to git (a skillsys/flowCommit
+                commit body carries the sig), whose linked [[okf-slice]] went code-shifted (rides the OKF gate
+                per-key), or that overflow the per-node cap (lowest recurrence first). DELETES whole lessons,
+                never re-summarizes. DEFAULT DRY-RUN (reports the plan, writes nothing); --apply mutates.
 
 INSPECT
   <templateDir> an authored template/ dir. Compiles it and prints each node's RESOLVED view —
