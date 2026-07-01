@@ -24,3 +24,18 @@ export function liveSource(): LiveSource {
   }
   return buildDefault();
 }
+
+/**
+ * (P4) Whether the DEV-ONLY shadow-diff parity gate is armed (docs/design/observe-live-sse-single-source.md
+ * DR7/§10-P4). True ONLY in a dev build (`import.meta.env.DEV`) AND when `?shadow=1` is in the URL — so a human
+ * running `?live=sse&shadow=1` gets the SSE≡/run-view proof, and it NEVER runs in a production build or a normal
+ * session. Pure/no-throw, safe to call on every render (mirrors `liveSource`).
+ */
+export function shadowDiffEnabled(): boolean {
+  if (!import.meta.env.DEV) return false;
+  try {
+    return new URLSearchParams(window.location.search).get("shadow") === "1";
+  } catch {
+    return false;
+  }
+}

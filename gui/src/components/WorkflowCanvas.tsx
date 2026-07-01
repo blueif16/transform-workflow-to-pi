@@ -63,7 +63,8 @@ import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buil
 import { deriveZones, toZoneFlowNode, type ZoneFlowNode } from "../data/zones";
 import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
 import { useRunStream, RunStreamContext } from "../data/runStream";
-import { liveSource } from "../data/liveSource";
+import { liveSource, shadowDiffEnabled } from "../data/liveSource";
+import { shadowDiff } from "../data/shadowDiff";
 import { setEndpoint, useEndpoint } from "../data/apiBase";
 
 /* defined OUTSIDE the component — prevents node re-mounts on every render */
@@ -216,6 +217,34 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
     setNodes([...deriveZones(view).map(toZoneFlowNode), ...n]);
     setEdges(e);
   }, [sseLive, liveModel, agentCatalog, setNodes, setEdges]);
+
+  // ── (P4) DEV-ONLY shadow-diff parity gate — a PURE side-observer, NEVER a render input ──────────────────────
+  // Armed only in a dev build with `?shadow=1` (shadowDiffEnabled) AND while the SSE path drives the graph
+  // (`sseLive` + a live model). It ALSO fetches the authoritative /run-view and deep-compares the SSE-rendered
+  // graph against it over the full field key (docs/design/observe-live-sse-single-source.md DR7/§11), console-
+  // warning each divergence and console.info'ing once when they agree. It touches NO render state (no
+  // setNodes/setEdges/setDir, no flag) — it is the human's proof that SSE≡/run-view before the cutover.
+  useEffect(() => {
+    if (!shadowDiffEnabled() || !sseLive || !liveModel) return;
+    let alive = true;
+    (async () => {
+      try {
+        const pollView = await loadRunView(activeRun);
+        if (!alive) return;
+        const divs = shadowDiff(liveModelToRunView(liveModel), pollView);
+        if (divs.length === 0) {
+          console.info("[shadow] SSE≡/run-view ✓");
+        } else {
+          for (const d of divs) {
+            console.warn(`[shadow] divergence — ${d.scope}${d.id ? `#${d.id}` : ""}.${d.field}`, { sse: d.sse, poll: d.poll });
+          }
+        }
+      } catch {
+        /* the parity fetch is best-effort; a failed /run-view load must not disturb the render */
+      }
+    })();
+    return () => { alive = false; };
+  }, [sseLive, liveModel, activeRun, endpointBase]);
 
   // Keep the file tree/dir fresh WITHOUT the telemetry replay (DR5): refetch only when a node's STATUS changes
   // (a node finishing is when files land) — not on every token delta. The status signature gates the refetch.
