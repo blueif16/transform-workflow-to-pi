@@ -24,12 +24,17 @@ const all = (gate: GateVerdict = acceptVerdict): OptimizeEvent[] => [
   { type: 'landed', node: 'w4-execute-m2', decision: 'staged' },
   { type: 'fix-cycle-ceiling', node: 'w4-execute-m2', cycles: 3, ceiling: 3 },
   { type: 'stopped', reason: 'complete' },
+  // multi-round OVERLORD (loop.ts) round-boundary events, in the same stream.
+  { type: 'round-started', round: 1, of: 5 },
+  { type: 'round-complete', round: 1, defectCount: 3, accepted: 1, attempted: 2 },
+  { type: 'loop-converged', round: 2 },
+  { type: 'loop-stopped', reason: 'converged', roundsRun: 2 },
 ];
 
 describe('renderOptimizeEvent — one distinct non-empty line per variant', () => {
-  it('renders all 11 variants', () => {
+  it('renders all 15 variants', () => {
     const lines = all().map(renderOptimizeEvent);
-    expect(lines).toHaveLength(11);
+    expect(lines).toHaveLength(15);
     for (const l of lines) {
       expect(typeof l).toBe('string');
       expect(l.trim().length).toBeGreaterThan(0);
