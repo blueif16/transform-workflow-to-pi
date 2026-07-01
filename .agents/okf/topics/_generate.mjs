@@ -13,15 +13,18 @@
 //
 // Usage:
 //   node _generate.mjs --write [<key>...]   regenerate the auto region of every (or named) card
-//   node _generate.mjs --check [<key>...]   exit 1 if regenerating would change anything, or a
-//                                           referenced path is missing (the pre-commit drift gate)
+//   node _generate.mjs --check [<key>...]   the pre-commit drift gate. Exit 1 ONLY on a HEALTH
+//                                           failure (a seed/anchor file or symbol/line moved — the
+//                                           anchors may be wrong). Auto-region DRIFT (a stale git/
+//                                           memory/blast block) is ADVISORY: reported, non-blocking
+//                                           — run --write to refresh it.
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
+const HERE = process.env.OKF_TOPICS_DIR ? resolve(process.env.OKF_TOPICS_DIR) : dirname(fileURLToPath(import.meta.url));
 const CFG = JSON.parse(readFileSync(join(HERE, '..', 'okf.config.json'), 'utf8'));
 const REPO = resolve(join(HERE, '..'), CFG.repoRoot);
 const MEMDIR = process.env.OKF_MEMORY_DIR || CFG.memoryDir;
@@ -225,7 +228,7 @@ const allKeys = readdirSync(HERE).filter(f => f.endsWith('.md')).map(f => f.repl
 const unknown = only.filter(k => !allKeys.includes(k));
 if (unknown.length) { console.error(`unknown card key(s): ${unknown.join(', ')} — known: ${allKeys.join(', ')}`); process.exit(2); }
 const cards = readdirSync(HERE).filter(f => f.endsWith('.md') && (!only.length || only.includes(f.replace(/\.md$/, ''))));
-let drift = 0;
+let drift = 0, healthFail = 0;
 for (const file of cards) {
   const path = join(HERE, file);
   const text = readFileSync(path, 'utf8');
@@ -242,8 +245,13 @@ for (const file of cards) {
     for (const h of health) console.log(`  ⚠ ${h}`);
   } else { // check
     if (next !== text) { console.error(`${tag} DRIFT: auto region is stale — run --write`); drift++; }
-    for (const h of health) { console.error(`${tag} HEALTH: ${h}`); drift++; }
+    for (const h of health) { console.error(`${tag} HEALTH: ${h}`); healthFail++; }
     if (next === text && !health.length) console.log(`${tag} ok`);
   }
 }
-if (mode === 'check' && drift) { console.error(`\n${drift} drift/health issue(s).`); process.exit(1); }
+if (mode === 'check') {
+  // DRIFT is advisory (the auto region is regenerable); only a HEALTH failure means the
+  // curated anchors may be WRONG — that is what blocks the commit.
+  if (drift) console.error(`\n${drift} advisory DRIFT (auto region stale — non-blocking; run --write to refresh).`);
+  if (healthFail) { console.error(`\n${healthFail} HEALTH failure(s) — blocking.`); process.exit(1); }
+}
