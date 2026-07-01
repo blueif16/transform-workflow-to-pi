@@ -20,8 +20,10 @@ node_modules
 gui/dist
 **/*.tsbuildinfo
 
-# Worktrees + other deploy trees (the e2b/daytona images, this dir's own git noise)
-.claude/worktrees
+# Claude Code dev tooling — the WHOLE dir (worktrees, settings.local.json, any MCP/token config). The
+# image never needs it, and settings could hold credentials — so it must NEVER enter the build context.
+.claude
+**/.claude
 deploy/e2b/node_modules
 deploy/daytona/node_modules
 
@@ -31,12 +33,29 @@ deploy/daytona/node_modules
 **/*.log
 npm-debug.log*
 
-# Local env / secrets — NEVER ship these into an image
+# Local env / secrets / credentials — NEVER ship these into an image. The Dockerfile hands EVERY secret
+# (PIFLOW_TOKEN, the pi gateway key, CLAUDE_CODE_OAUTH_TOKEN) in at RUNTIME via `fly secrets set`; none is
+# ever baked. This block is the belt-and-suspenders guard so a stray secret file can't ride `COPY . .` in.
 .env
 .env.*
 **/.env
 **/.env.*
 **/.credentials.json
+# npm/registry auth (an _authToken in an .npmrc would otherwise persist in the image)
+**/.npmrc
+# private keys / certs / cloud + shell credential stores
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/.ssh
+**/.aws
+**/.netrc
+**/*.env
+**/secrets.json
+**/*.secret
 
 # Runs + collected data (never bake a product's data; see CLAUDE.md data boundaries)
 **/.pi

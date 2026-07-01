@@ -64,13 +64,23 @@ fly secrets set CLAUDE_CODE_OAUTH_TOKEN="$(claude setup-token)"   # executor: cl
 ### 2. Deploy (operator's paid step)
 
 ```bash
+# REQUIRED first — put the prune list where the builder actually reads it (the context ROOT). Docker/Fly
+# read ONLY a context-root `.dockerignore`; a `.dockerignore` sitting in deploy/control-vm/ is IGNORED, so
+# without this copy the `COPY . .` would ship node_modules/.git/.claude/etc. into the image. Do it every time:
+cp deploy/control-vm/.dockerignore .dockerignore
+
 # Build the image FROM THE REPO ROOT (the build needs the whole workspace), using this Dockerfile:
 fly deploy --config deploy/control-vm/fly.toml --dockerfile deploy/control-vm/Dockerfile .
+
+rm .dockerignore   # clean up the temporary copy
 ```
 
-Run this with the **repo root** as the build context (the trailing `.`). The build context is pruned
-by `deploy/control-vm/.dockerignore`; if your Fly/Docker version reads only a root `.dockerignore`,
-copy it up first: `cp deploy/control-vm/.dockerignore .dockerignore` (temporary).
+Run this with the **repo root** as the build context (the trailing `.`).
+
+**Secrets never enter the image.** The Dockerfile bakes NO tokens/keys — every secret (`PIFLOW_TOKEN`, the
+pi gateway key, `CLAUDE_CODE_OAUTH_TOKEN`) is injected at RUNTIME via `fly secrets set` (step 1), and the
+CMD fails closed if `PIFLOW_TOKEN` is unset. The root `.dockerignore` above is the belt-and-suspenders guard
+that keeps any stray `.env`/`.npmrc`/`*.pem`/`*.key`/`.ssh`/`.aws`/`.claude` out of `COPY . .`.
 
 Set the app name in `fly.toml` (`app = "…"`) or pass `-a <name>` — first time, `fly apps create <name>`.
 
