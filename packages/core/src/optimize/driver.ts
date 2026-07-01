@@ -22,6 +22,13 @@ export interface CandidateEdit {
   candidatePassedProductChecks?: boolean;
   tokensSpent?: number;
   summary?: string;
+  /**
+   * Set when the fixer was CUT SHORT (a watchdog trip or a wall-clock timeout) rather than finishing on its own.
+   * Product-agnostic SHAPE, product-specific `reason` STRING — the driver surfaces it as a first-class
+   * `fixer-aborted` OptimizeEvent so the control plane keys on the cutoff PORTABLY (it reads this TYPED return,
+   * never the opaque `emit` payload). An aborted fixer is still just a proposal (usually 0 edits) the gate judges.
+   */
+  aborted?: { reason: string };
 }
 
 /**
@@ -111,6 +118,10 @@ export async function runFixGate(defects: Defect[], stages: FixGateStages, opts:
     safeEmit({ type: 'candidate-prepared', node: d.node, bucket: d.bucket, candidateRef });
     safeEmit({ type: 'fixer-started', node: d.node, bucket: d.bucket });
     const edit = await stages.fixer(d, { candidateRef, emit: (payload) => safeEmit({ type: 'fixer-trace', node: d.node, payload }) });
+    // A cut-short fixer surfaces its reason STRUCTURALLY (edit.aborted, a typed return) — we re-emit it as a
+    // first-class PORTABLE event so the control plane keys on the cutoff without sniffing the opaque emit trace.
+    // This is a signal only; the loop below still scores/gates/lands this (0-edit) proposal exactly as normal.
+    if (edit.aborted) safeEmit({ type: 'fixer-aborted', node: d.node, reason: edit.aborted.reason });
     safeEmit({ type: 'fixer-done', node: d.node, editsApplied: edit.editsApplied, tokensSpent: edit.tokensSpent ?? 0 });
     attempted++;
     tokens += edit.tokensSpent ?? 0;

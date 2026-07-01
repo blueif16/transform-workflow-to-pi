@@ -84,4 +84,34 @@ describe('runFixGate — OptimizeEventSink wiring', () => {
     const landed = events.find((e) => e.type === 'landed');
     expect(landed && landed.type === 'landed' ? landed.decision : null).toBe('discarded');
   });
+
+  it("an ABORTED fixer emits a first-class 'fixer-aborted' event carrying the reason — and the loop still completes", async () => {
+    // The fixer reports the watchdog/timeout cutoff STRUCTURALLY (a typed return field), not smuggled in summary.
+    // The driver surfaces it as its OWN portable event so the control plane keys on it without sniffing the
+    // opaque emit payload. An aborted fixer is just a 0-edit proposal: the loop must still score/gate/stop.
+    const abortReason = 'no-progress: 22 tool calls / 0 edits';
+    const abortingFixer: Fixer = async () => ({ editsApplied: 0, aborted: { reason: abortReason } });
+    const events: OptimizeEvent[] = [];
+    await runFixGate([defect('w4-execute-m2')], stages(score(0), abortingFixer), { onEvent: (e) => events.push(e) });
+
+    // (a) the portable abort event fired, BEFORE fixer-done, carrying node + the product-specific reason string.
+    const aborted = events.find((e) => e.type === 'fixer-aborted');
+    expect(aborted).toBeDefined();
+    if (aborted && aborted.type === 'fixer-aborted') {
+      expect(aborted.node).toBe('w4-execute-m2');
+      expect(aborted.reason).toBe(abortReason);
+    }
+    const types = events.map((e) => e.type);
+    expect(types.indexOf('fixer-aborted')).toBeLessThan(types.indexOf('fixer-done'));
+    // (b) the loop still completed all the way to stopped (an aborted fixer is a 0-edit proposal the gate rejects).
+    expect(types).toContain('stopped');
+    expect(types).toContain('gated');
+    expect(types).toContain('landed');
+  });
+
+  it("a NON-aborted fixer emits NO 'fixer-aborted' event (the signal is absent unless the fixer set it)", async () => {
+    const events: OptimizeEvent[] = [];
+    await runFixGate([defect('w4-execute-m2')], stages(score(1)), { onEvent: (e) => events.push(e) });
+    expect(events.some((e) => e.type === 'fixer-aborted')).toBe(false);
+  });
 });

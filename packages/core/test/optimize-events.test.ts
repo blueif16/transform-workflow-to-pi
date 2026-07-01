@@ -1,5 +1,5 @@
 // Contract for optimize/events.ts — the OptimizeEvent sink + its pure renderer (the live progress surface for
-// the FIX→GATE loop). The renderer is the ONLY thing under test here: each of the 9 event variants must render
+// the FIX→GATE loop). The renderer is the ONLY thing under test here: each of the 10 event variants must render
 // a DISTINCT non-empty line, and the load-bearing 'gated' line must carry the node id AND an accept/reject
 // marker AND the base/cand scores (so a human watching the stream can read the gate decision off one line).
 //
@@ -17,6 +17,7 @@ const all = (gate: GateVerdict = acceptVerdict): OptimizeEvent[] => [
   { type: 'candidate-prepared', node: 'w4-execute-m2', bucket: 'FUNCTIONALITY', candidateRef: 'cand:w4-execute-m2' },
   { type: 'fixer-started', node: 'w4-execute-m2', bucket: 'FUNCTIONALITY' },
   { type: 'fixer-trace', node: 'w4-execute-m2', payload: { step: 'edit', file: 'x.ts' } },
+  { type: 'fixer-aborted', node: 'w4-execute-m2', reason: 'no-progress: 22 tool calls / 0 edits' },
   { type: 'fixer-done', node: 'w4-execute-m2', editsApplied: 1, tokensSpent: 10 },
   { type: 'scored', node: 'w4-execute-m2', baseScore: 0, candidateScore: 1 },
   { type: 'gated', node: 'w4-execute-m2', verdict: gate },
@@ -25,9 +26,9 @@ const all = (gate: GateVerdict = acceptVerdict): OptimizeEvent[] => [
 ];
 
 describe('renderOptimizeEvent — one distinct non-empty line per variant', () => {
-  it('renders all 9 variants', () => {
+  it('renders all 10 variants', () => {
     const lines = all().map(renderOptimizeEvent);
-    expect(lines).toHaveLength(9);
+    expect(lines).toHaveLength(10);
     for (const l of lines) {
       expect(typeof l).toBe('string');
       expect(l.trim().length).toBeGreaterThan(0);
@@ -59,5 +60,12 @@ describe('renderOptimizeEvent — one distinct non-empty line per variant', () =
     expect(accepted).not.toBe(rejected);
     expect(rejected).toMatch(/reject/i);
     expect(rejected).toMatch(/✗/);
+  });
+
+  it("the 'fixer-aborted' line carries the node id AND the reason string", () => {
+    const line = renderOptimizeEvent({ type: 'fixer-aborted', node: 'w4-execute-m2', reason: 'no-progress: 22 tool calls / 0 edits' });
+    expect(line).toContain('fixer-aborted');
+    expect(line).toContain('w4-execute-m2');
+    expect(line).toContain('no-progress: 22 tool calls / 0 edits');
   });
 });

@@ -14,6 +14,7 @@ export type OptimizeEvent =
   | { type: 'candidate-prepared'; node: string; bucket: DefectBucket; candidateRef: string }
   | { type: 'fixer-started'; node: string; bucket: DefectBucket }
   | { type: 'fixer-trace'; node: string; payload: Record<string, unknown> }   // opaque product sub-trace; core NEVER inspects payload
+  | { type: 'fixer-aborted'; node: string; reason: string }                   // fixer cut short (watchdog/timeout); portable cutoff signal, read from the fixer's TYPED return (not the opaque payload)
   | { type: 'fixer-done'; node: string; editsApplied: number; tokensSpent: number }
   | { type: 'scored'; node: string; baseScore: number | null; candidateScore: number | null }
   | { type: 'gated'; node: string; verdict: GateVerdict }
@@ -36,6 +37,8 @@ export function renderOptimizeEvent(e: OptimizeEvent): string {
       return `fixer-started [${e.node}] ${e.bucket}`;
     case 'fixer-trace':
       return `fixer-trace [${e.node}] ${JSON.stringify(e.payload)}`;
+    case 'fixer-aborted':
+      return `fixer-aborted [${e.node}] ${e.reason}`;
     case 'fixer-done':
       return `fixer-done [${e.node}] edits=${e.editsApplied} tokens=${e.tokensSpent}`;
     case 'scored':
