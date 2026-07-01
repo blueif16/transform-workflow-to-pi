@@ -16,10 +16,32 @@ makes that stamping a deterministic, tested code path, validated to reproduce th
    `--agent-type reviewer --tool write` (the preset is read-only `[read, submit_result]`; `write` is added to
    persist the verdict JSON — same pattern as the `plan` lane in `research-synthesize-author`). The
    `templates/quality/verify` golden keeps `agentType: null` + hand-wired tools; its lane-plan encodes that.
-3. **`blueprint list` reads the shipped skill catalog**, not `~/.piflow/`. Blueprint-id → file resolution is
-   `<piflow-init skill>/references/blueprints/<id>.md`, with an OPTIONAL `~/.piflow/blueprints/<id>.md` user
-   overlay taking precedence when present. `list` enumerates the union.
+3. **`blueprint list`/`show` read `~/.piflow/blueprints/`** — the materialized catalog, in exact parity with how
+   presets resolve from `~/.piflow/agents/` (`packages/core/src/workflow/agent-preset.ts`, via the
+   `PIFLOW_HOME`-aware home resolution — reuse that helper so tests are hermetic). The global CLI CANNOT locate
+   the skill dir, so it never reads `references/blueprints/` directly. The skill's `references/blueprints/` is the
+   SEED source, materialized create-if-absent into `~/.piflow/blueprints/` at init (the README's "one home"). One
+   home, no union. (Frontmatter is authored on the seeds; a re-materialize propagates it — the already-present
+   `~/.piflow/blueprints/` copies predate the frontmatter, so seeding must overwrite-on-newer or be re-run.)
 4. **`insert` MAY extend a downstream consumer's seam** (corrects the old contradiction, see *Boundaries*).
+
+## The agent-facing model (this verb is an agent's tool, not a human CLI)
+
+Every subcommand is invoked BY the init agent from inside the scaffold loop — the same way it calls
+`add-node`. It is not a human ergonomic. Two things follow:
+
+- **Blueprints are like skills: they self-describe so the agent can pick one.** A skill exposes a description
+  the agent reads to decide whether to invoke it; a blueprint must do the same during init. Today the
+  description is prose-only (`# Blueprint: …` + the `shape for "<trigger>"` line + the README catalog); presets
+  already carry machine-readable YAML frontmatter (`id`/`display`/`skills`/`tools`) and blueprints do not. Add a
+  minimal frontmatter block to each blueprint `.md` seed — `id`, `description` (the one-line "shape for …"),
+  `golden` (pointer), `params` (the holes, e.g. `[N, K]`) — so the surface is machine-readable, mirroring
+  presets. Keep the prose body unchanged.
+- **The triad: discover → understand → stamp.** `list` surfaces every blueprint's `id — description` (the
+  discovery surface); `show <id>` dumps the full recipe `.md` (the understanding surface — the agent reads the
+  topology + wiring rule before composing); `stamp`/`insert` compose the shape in **as a part**, a thin logic
+  gate over `add-node` that saves hand-wiring the topology each time. `stamp`/`insert` add ZERO DAG logic —
+  edges still derive from `io.reads ⋈ io.produces`.
 
 ## Motivation — split the mechanical wiring from the intelligent holes
 
@@ -42,10 +64,16 @@ only batches `add-node` calls it could have typed by hand.
 ## Surface
 
 ```
+piflowctl blueprint list                    # DISCOVER: every blueprint's `id — description` (catalog ∪ ~/.piflow overlay)
+piflowctl blueprint show   <blueprint-id>   # UNDERSTAND: dump the full recipe .md (topology + wiring rule)
 piflowctl blueprint stamp  <blueprint-id> --plan <lane-plan.json> --into <new-dir>
 piflowctl blueprint insert <blueprint-id> --plan <lane-plan.json> --into <existing-dir> [--ns <prefix>]
-piflowctl blueprint list          # the shipped skill catalog (references/blueprints/) ∪ ~/.piflow/blueprints/ overlay
 ```
+
+- **list** — reads the frontmatter `id`+`description` of every blueprint in `~/.piflow/blueprints/` (the
+  materialized catalog; same home resolution as presets); prints one line each. The agent's discovery surface.
+- **show** — prints the full `~/.piflow/blueprints/<id>.md` (frontmatter + prose) so the agent reads the shape
+  before composing. Unknown id ⇒ non-zero + the available ids (never invent a shape).
 
 - **stamp** — `piflowctl new <new-dir>` then one `scaffoldAddNode` per lane; the whole blueprint into a fresh
   template dir.
@@ -143,12 +171,15 @@ Building the verb against the 4 goldens de-risks it (reproduce-known-good, not s
 made reproducible in the same effort (a committed runner + captured run), so "the agent picks the right shape"
 becomes evidenced rather than asserted. Build sequence, test-first:
 
+0. **Description surface first** (the "blueprints are like skills" part): add the minimal frontmatter
+   (`id`/`description`/`golden`/`params`) to the 5 blueprint `.md` seeds, then `list` (id — description over
+   `~/.piflow/blueprints/`) and `show` (dump the recipe). Hermetic tests via `PIFLOW_HOME`→temp seeded with
+   frontmatter'd fixtures. Simplest, no round-trip; validates the discovery surface the agent picks a shape from.
 1. **`stamp` for the 2 linear/fan-out goldens** (produce-verify-fix, spec-fanout) — these are already canonical;
    round-trip them first (deep-equal). Derive each blueprint's machine-readable wiring rule FROM the golden.
 2. **`stamp` for fusion + quality/verify** — exercises the full lane-plan field set (`fusion`/`inject`/`checks`/
    `deny`/no-preset). Round-trip deep-equal.
 3. **`insert`** — the namespacing helper + seam-rebind; test against a synthetic insert (e.g. splice a review
    panel into produce-verify-fix) with `extract` green + the additive-only invariant asserted.
-4. **`list`** — enumerate the skill catalog ∪ overlay.
 
 Each step: failing round-trip/extract test FIRST, then the code to pass it. The 4 goldens are unchanged fixtures.
