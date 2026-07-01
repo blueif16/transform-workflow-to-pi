@@ -10,20 +10,23 @@
 //   --json    → the raw { scores, defects } worklist for an agent/driver to consume directly.
 
 import path from 'node:path';
-import { scoreRun, triage, deriveRecurrence, renderRouting, type NodeScore, type Defect } from '@piflow/core';
+import { scoreRun, triage, deriveRecurrence, memorize, renderRouting, type NodeScore, type Defect } from '@piflow/core';
 
 export interface ParsedOptimizeArgs {
   dir: string;
   json: boolean;
   archetype?: string;
+  /** persist the run's tier0-signature defects into Leg-A memory.md (the MEMORIZE writer). Off by default. */
+  memorize: boolean;
 }
 
 export function parseOptimizeArgs(argv: string[]): ParsedOptimizeArgs {
-  const out: ParsedOptimizeArgs = { dir: '', json: false };
+  const out: ParsedOptimizeArgs = { dir: '', json: false, memorize: false };
   const positionals: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === '--json') out.json = true;
+    else if (k === '--memorize') out.memorize = true;
     else if (k === '--archetype') out.archetype = argv[++i];
     else if (k.startsWith('--')) { /* ignore unknown flags — this is a read-only accessor */ }
     else positionals.push(k);
@@ -47,6 +50,16 @@ export async function runOptimizeCli(argv: string[]): Promise<void> {
   const templateDir = path.resolve(args.dir, '..', '..', 'template');
   const recurrence = deriveRecurrence({ templateDir, nodes: scores.map((s) => s.node) });
   const defects = triage(scores, digest, { recurrence });
+
+  // The MEMORIZE writer (opt-in, --memorize): persist the run's tier0-signature defects into Leg-A memory.md so
+  // the two-run recurrence carry needs no human hand-write. The count is DERIVED from the run trail (idempotent);
+  // the shipped reader is unchanged. Off by default — the read-only accessor behavior is preserved.
+  if (args.memorize) {
+    const { lessons } = memorize(scores, defects, { runDir: args.dir, templateDir });
+    const appended = lessons.filter((l) => l.action === 'append').length;
+    const updated = lessons.filter((l) => l.action === 'update').length;
+    process.stderr.write(`memorized: ${lessons.length} lesson(s) — ${appended} appended, ${updated} updated\n`);
+  }
 
   if (args.json) {
     process.stdout.write(JSON.stringify({ run: digest.run, scores, defects } satisfies { run: string; scores: NodeScore[]; defects: Defect[] }, null, 2) + '\n');
