@@ -9,15 +9,17 @@
 // The global CLI cannot locate the skill dir, so it NEVER reads `references/blueprints/` directly; the seed
 // `.md`s are materialized into the home at init.
 //
-// This verb is a PURE fs read (no `@piflow/core` change, no scaffold): `list` parses every blueprint's
+// `list`/`show` are a PURE fs read (no `@piflow/core` change, no scaffold): `list` parses every blueprint's
 // frontmatter `id`+`description` and prints one line each (sorted, README/AUTHORING-GUIDE excluded); `show`
 // dumps the full recipe `.md` so the agent reads the topology + wiring rule before composing; an unknown id
-// exits non-zero surfacing the ACTUAL catalog (never invent a shape). `stamp`/`insert` are a LATER task —
-// dispatched to a clear "not yet implemented" placeholder here so the switch stays extensible.
+// exits non-zero surfacing the ACTUAL catalog (never invent a shape). `stamp` composes a blueprint's topology
+// into a fresh template — a thin logic gate over the scaffolder's `buildNode` driven by a CODE-SIDE wiring
+// rule (blueprint-stamp.ts + blueprint-wiring.ts); `insert` is still a LATER task (a clear placeholder).
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { globalDir } from '@piflow/core';
+import { runBlueprintStamp } from './blueprint-stamp.js';
 
 /** The default home of the materialized blueprint catalog — `<PIFLOW_HOME|~/.piflow>/blueprints/`. Parity
  *  with `defaultAgentsDir()` (`~/.piflow/agents/`); honors `PIFLOW_HOME` via the shared `globalDir()`. */
@@ -143,7 +145,16 @@ export async function runBlueprintCli(argv: string[], deps: BlueprintDeps = {}):
       }
     }
 
-    case 'stamp':
+    case 'stamp': {
+      // `stamp <id> --plan <plan.json> --into <new-dir>` — compose the whole blueprint into a fresh template.
+      const id = rest.find((a) => !a.startsWith('-'));
+      const flag = (name: string): string | undefined => {
+        const i = rest.indexOf(`--${name}`);
+        return i >= 0 ? rest[i + 1] : undefined;
+      };
+      return runBlueprintStamp(id, flag('plan'), flag('into'), { out, err });
+    }
+
     case 'insert':
       err(
         `piflowctl blueprint ${sub}: not yet implemented — see docs/design/blueprint-compose-verb.md.\n` +
