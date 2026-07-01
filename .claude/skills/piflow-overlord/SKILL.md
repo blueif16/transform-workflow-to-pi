@@ -44,11 +44,22 @@ quoted observable signal — a decision with no signal is a vibe, and vibes are 
 ## The invariant you sit on — ONE telemetry stream
 There is a single canonical telemetry feed, identical to every consumer (programmatic, you, the GUI companion).
 You **subscribe**; you never change the data plane to watch it.
-- **Live run** — `piflowctl watch <run>` / `observe.watchRun` (SSE): node lifecycle, status records, anomalies.
-- **Optimize / fix** — the `OptimizeEventSink` (`optimize --fix --watch`): `triaged · candidate-prepared ·
-  fixer-started · fixer-trace · fixer-done · scored · gated · landed · stopped`, plus `watchdog_abort{reason}`.
+- **Live run** — `piflowctl watch <run>` / `observe.watchRun` (SSE): node lifecycle + status records. The
+  DECISION-GRADE surface is `observe.telemetryStream`, which folds `watchRun` into edge-triggered, typed
+  `AnomalyKind` — `failed · truncated · context-pressure · tool-loop · slow · retries` (`DEFAULT_THRESHOLDS`) —
+  plus `localizeRootCauses` (walks the file-flow DAG back to the failure onset). Key your ABORT/RERUN rows on
+  these. ⚠️ `slow` needs cross-run history (record mode) — it **cannot fire on a live stream**; for a
+  slow-but-not-dead producer key on `stall` (the runner's stall watchdog), not `slow`.
+- **Optimize / fix** — the `OptimizeEventSink` (`optimize --fix --watch`). The typed `OptimizeEvent` union is
+  exactly nine: `triaged · candidate-prepared · fixer-started · fixer-trace · fixer-done · scored · gated ·
+  landed · stopped`, and its ONLY typed reason is `stopped{'complete'|'edit-budget'|'token-budget'}`. A
+  **watchdog abort is NOT a first-class event** — the product's fixer sub-trace rides through as an OPAQUE
+  `fixer-trace.payload` that core never inspects, so a watchdog kill arrives as a `fixer-trace` whose
+  `payload = {type:'watchdog_abort', reason, tools, edits}` (and, post-hoc, in the `fixer-done` summary prefix
+  `[watchdog abort: <reason>]`). To key on a watchdog reason you read it OUT of the `fixer-trace` payload.
 - **Per-agent inside a node** — the streamed `stream-json` (`fixer.trace.jsonl`): every `tool_use`, result,
-  `rate_limit_event`. This is how you SEE behaviour (the M3 fixer's 40 tool-calls / 0 edits was read from here).
+  `rate_limit_event`. This is how you SEE behaviour (the M3 fixer's 40 tool-calls / 0 edits — a pre-tuning
+  run; the game-omni default now trips at 22 — was read from here).
 
 If the data you need to decide is not on the stream, that is a telemetry gap to FILE, not a reason to guess.
 
@@ -59,15 +70,23 @@ re-implement them in prose.
 1. **Workflow-management plane (programmatic, SHIPPED).** Deterministic termination. Read its verdicts as
    signals; do NOT hand-roll run-count or budget logic.
    - Run-count / node ceiling → HALTs the run (`run-context.ts` `total-node ceiling`).
-   - Per-node wall-clock cap + watchdog kill (`status.ts` `sandbox.timeoutMs`, `killedByWatchdog`).
+   - Per-node wall-clock + stall watchdog: the runner races `nodeTimeoutMs` vs `stallMs` and SIGTERM→SIGKILLs
+     on a trip (`exec-runner.ts`, kinds `'timeout' | 'stall'`), recording `killedTimeout?` / `killedStall?`
+     (`status.ts`).
    - Bounded retry + escalation ladder by failure-class (`retry.ts` `runNodeWithRetries`, `escalate.after`).
    - `policy.fail: block|warn|stop|retry|escalate` (`checks.ts`).
    - Optimize `editBudget` / `tokenBudget` → `stoppedReason`, dead-edit buffer (`optimize/driver.ts`).
    - Known GAP: SDK-level bounded self-fix cycle counter (today node-self-managed `.fixcycles-*.json`).
-2. **In-node watchdog (the reflex, finer than a seam).** Aborts a corrupting *candidate/control* agent
-   mid-stream on observable triggers — `repro-probe` (`node -e`), `dep-rabbit-hole` (node_modules reads),
-   `no-progress` (N tool-calls / 0 edits). You SET its thresholds and READ its `watchdog_abort`; you do not
-   replace it. It is the cheap reflex; you are the judgment.
+2. **In-node behavioural watchdog (the reflex, finer than a seam) — a PRODUCT-BINDING concern, not an SDK
+   primitive.** The core runner reflex knows only `timeout`/`stall` (above); the *behavioural* triggers live in
+   the product binding (game-omni `optimize/binding-live.mjs`): `repro-probe` (`node -e`), `dep-rabbit-hole`
+   (node_modules reads, default `depReadBudget:3`), `no-progress` (N tool-calls / 0 edits, default
+   `noEditToolBudget:22`), tuned via `GAME_OMNI_FIXER_*`. It aborts a corrupting *candidate/control* agent
+   mid-stream, SIGTERMs, and emits its reason into the `fixer-trace.payload` (above). You tune its thresholds
+   and READ its reason off the stream; you do not replace it. It is the cheap reflex; you are the judgment.
+   (Prior art: the published SWE process-monitor — plan-violation / oscillation / stagnation "≥N steps, 0
+   edits", arXiv 2512.02393 — and the separate-evaluator course-correction of arXiv 2509.02360; treat the
+   stagnation threshold as a cited default, not a magic number.)
 
 **Rule:** if a deterministic check below you can make the call, let it — reserve yourself for what needs
 judgment (is this diagnosis converging? rerun with which steer? is this architectural? land or hold?).
@@ -93,7 +112,7 @@ Every row keys on something you can read off the stream/artifacts. No row keys o
 | **ESCALATE** | architectural / ambiguous / failed after the management plane's bound (N retries, run-count) | HALT, hand to the human WITH evidence. Never invent a fix beyond the node's scope |
 | **LAND** | the gate records a strict-improvement ACCEPT, verified against the held-out outcome | stage / adopt per the land policy (adopt is a separate, explicit step) |
 
-## The seam law (HARD CONSTRAINT — `ARCHITECTURE.md` §5)
+## The seam law (HARD CONSTRAINT — `docs/ARCHITECTURE.md` §5 "Seams / the control plane")
 **Hot-edits and interventions on a LIVE PRODUCER run happen at a node BOUNDARY (a seam), never mid-run:** stop
 at the boundary → splice the debug/control node → **`--from` relaunch** the affected suffix, reusing unchanged
 upstream. You may abort/kill **mid-run ONLY off the critical path** — a candidate copy or a control node (the
@@ -131,16 +150,17 @@ or the chain → **piflow-enhance**. You DECIDE which to invoke and when; those 
 
 ## Worked example — the fixer overlord (the live M3 case)
 Goal (desired): the optimize gate records a strict-improvement ACCEPT on milestone M3.
-1. **Observe** the `--watch` stream: `fixer-started` → 40 `fixer-trace` tool-calls, `fixer-done edits=0`,
-   `gated reject (no edit applied)`. **Verify** against the candidate `report.M3.json` (`passed:false`) — not
-   the fixer's prose.
+1. **Observe** the `--watch` stream: `fixer-started` → 40 `fixer-trace` tool-calls (a pre-tuning run; the
+   game-omni default now trips `no-progress` at 22), `fixer-done edits=0`, `gated reject (no edit applied)`.
+   **Verify** against the candidate `report.M3.json` (`passed:false`) — not the fixer's prose.
 2. **Diff**: the agent diagnosed for the whole budget and never committed (a discipline failure, read off the
    stream: its last trace was "settle whether Phaser auto-destroys groups" — going deeper, not editing).
-3. **Act** — set the **in-node watchdog** thresholds so the next run aborts on `no-progress`/`dep-rabbit-hole`
-   in ~7 min, not 15 (delegate the cutoff to the reflex). Then **RERUN** with ONE variable changed: the evidence
-   now carries the `consoleErrors` so the agent can see the crash. If it diagnoses-but-won't-commit again →
-   **NUDGE** (`--resume` "the fix is the `.getChildren()` guard; edit now"). If it fails past the bound →
-   **ESCALATE** to the human with the trace + the gate verdict.
+3. **Act** — tune the **product watchdog** (`GAME_OMNI_FIXER_*`) so the next run aborts on `no-progress`
+   (`noEditToolBudget`, default 22 tool-calls / 0 edits) / `dep-rabbit-hole` (`depReadBudget`, default 3)
+   instead of running to the ~600s blind backstop — delegate the cutoff to the reflex. Then **RERUN** with ONE
+   variable changed: the evidence now carries the `consoleErrors` so the agent can see the crash. If it
+   diagnoses-but-won't-commit again → **NUDGE** (`--resume` "the fix is the `.getChildren()` guard; edit now").
+   If it fails past the bound → **ESCALATE** to the human with the trace + the gate verdict.
 4. **Re-observe** the gate verdict; **LAND** only on a verified strict improvement.
 
 This is the loop you run by hand today; this skill is that loop made repeatable for any occupant of the seat.
