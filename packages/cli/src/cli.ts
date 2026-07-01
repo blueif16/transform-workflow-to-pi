@@ -75,9 +75,12 @@ USAGE
                                             built GUI) on THIS machine — the \`local\` context's server, the SAME
                                             binary a cloud control VM runs. Long-lived; Ctrl-C stops. Serves gui/dist
                                             (build it: cd gui && npm run build) + POST /api/runs/start.
-  piflowctl context [use <name> | ls | add <name> --url <baseUrl> [--token <t>] | rm <name> | current]
+  piflowctl context [use <name> | host use <kind> | worker use <kind> | ls | add <name> --url <baseUrl>
+                    [--token <t>] | rm <name> | current]
                                             switch the CLI/GUI between named control-plane endpoints
-                                            (local ⇄ cloud \`serve\`), stored in ~/.piflow/contexts.json.
+                                            (local ⇄ cloud \`serve\`), stored in ~/.piflow/contexts.json. Two
+                                            axes: \`host\` (where the plane runs) + \`worker\` (where nodes run =
+                                            the sandbox); \`worker use <local|e2b|daytona>\` replaces \`--sandbox\`.
                                             Active-context ladder: --context flag > PIFLOW_CONTEXT env >
                                             the \`use\` pointer > the implicit \`local\` (${'http://127.0.0.1:5273'}).
   piflowctl cloud   up [--host <railway|fly|selfhost|docker>] [--app <n>] [--public-url <url>] [--provider <gw>]
@@ -101,7 +104,11 @@ RUN
   --run <id>    the instance id (keys out/<id>); aliases --id. Required for a live run.
   --arg k=v     a workflow arg → {{arg.k}} (repeatable).
   --workspace <p>  the read-only {{WORKSPACE}} root (skills/templates/registry); default cwd.
-  --sandbox <inmemory|local|danger-full-access|daytona>  exec backend. inmemory (default) = no model;
+  --sandbox <inmemory|local|danger-full-access|daytona|e2b|docker>  exec backend = WHERE nodes run. LEGACY
+                   per-run override of the persistent \`context worker\` (which is the same axis) — set it once
+                   with \`piflowctl context worker use <local|e2b|daytona>\` and omit this flag. When omitted, the
+                   active context's worker drives it (a cloud context ⇒ its cloud sandbox); a plain local
+                   context ⇒ inmemory. inmemory = no model (in-process);
                    local = real in-place pi, read-scope-jailed per node (seatbelt on macOS);
                    danger-full-access = local with the jail OFF (agent reads the whole filesystem);
                    daytona = real pi in a remote CLOUD VM (full isolation). Boots the promoted
