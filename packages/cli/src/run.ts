@@ -145,8 +145,9 @@ export interface RunDeps {
  *     — the OFFLINE, FREE mirror of the cloud path: the SAME pi node-runtime image, credential injection, and
  *     tool binding as daytona/e2b, run on the host daemon instead of a cloud VM (NOT a stronger isolation tier
  *     than `local` seatbelt). Requires the CHOOSE-TO-INSTALL extension `@piflow/docker` (`npm i @piflow/docker`);
- *     loaded DYNAMICALLY only on `--sandbox docker`. Reads `DOCKER_IMAGE` from env (build it: `docker build -t
- *     piflow-node-runtime deploy/docker`); the pi gateway credential crosses in exactly like the cloud backends.
+ *     loaded DYNAMICALLY only on `--sandbox docker`. The pi node-runtime image is AUTO-BUILT on first use (no
+ *     setup); `DOCKER_IMAGE` overrides with a pre-built tag. The pi gateway credential crosses in exactly like
+ *     the cloud backends.
  */
 export type SandboxChoice = 'inmemory' | 'local' | 'danger-full-access' | 'daytona' | 'e2b' | 'docker';
 
@@ -655,10 +656,10 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
         : `piflowctl run: ⚠ cloud (e2b) — no provider config/credential resolved for --provider "${parsed.provider ?? '(default)'}"; add a custom gateway to ~/.pi/agent/models.json, or declare the key with --cloud-secret NAME, or pi in the sandbox will have no model key.`,
     );
   } else if (parsed.sandbox === 'docker') {
-    // Real pi exec inside a LOCAL Docker container — the offline mirror of the cloud path. The image comes
-    // from the environment (DOCKER_IMAGE; default `piflow-node-runtime`, built with `docker build -t
-    // piflow-node-runtime deploy/docker`). The `@piflow/docker` extension is loaded DYNAMICALLY by
-    // `makeDockerProvider` — an absent package gives the `npm i @piflow/docker` install message.
+    // Real pi exec inside a LOCAL Docker container — the offline mirror of the cloud path. The managed pi
+    // node-runtime image is AUTO-BUILT on first use (zero setup); `DOCKER_IMAGE` overrides with a pre-built
+    // tag. The `@piflow/docker` extension is loaded DYNAMICALLY by `makeDockerProvider` — an absent package
+    // gives the `npm i @piflow/docker` install message.
     // A container inherits NO host env (docker is a CLOUD_KIND), so — exactly like daytona/e2b — a CUSTOM
     // gateway from ~/.pi/agent/models.json is staged into the container home and its cred var(s) cross via
     // the allowlist. A built-in provider has no entry → no staging.
@@ -679,7 +680,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
           ? [fallback]
           : [];
     const credList = cloudSecrets.join(', ');
-    const bootFrom = image ? `image ${image}` : 'the default image piflow-node-runtime';
+    const bootFrom = image ? `image ${image}` : 'the auto-built pi node-runtime image (built on first use)';
     print(`piflowctl run: local (docker) — booting one container per run from ${bootFrom}; egress OPEN by default.`);
     print(
       cloudSecrets.length

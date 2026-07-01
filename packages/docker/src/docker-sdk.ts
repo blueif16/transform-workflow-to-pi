@@ -14,6 +14,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { DockerSandboxProvider } from './docker.js';
+import { PI_RUNTIME_IMAGE, PI_RUNTIME_DOCKERFILE } from './pi-runtime.generated.js';
 import type {
   DockerSdk,
   DockerContainer,
@@ -171,22 +172,44 @@ function makeContainer(bin: string, id: string): DockerContainer {
 }
 
 /**
+ * Make the pi node-runtime image available locally. Already built ⇒ no-op (a fast `image inspect`). MISSING
+ * AND our managed default tag ⇒ AUTO-BUILD from the embedded Dockerfile via `docker build -t <tag> -` (the
+ * Dockerfile piped on stdin with an EMPTY context — the recipe has no COPY), so `--sandbox docker` is a
+ * single line with ZERO setup. A MISSING custom image (a `DOCKER_IMAGE` override) is a loud error — we can't
+ * build an arbitrary tag. Build progress streams to stderr (the first build is slow: apt + `npm i -g pi`).
+ */
+async function ensureImage(bin: string, image: string): Promise<void> {
+  const inspect = await launch(bin, ['image', 'inspect', image]).done;
+  if (inspect.code === 0) return; // already present
+  if (image !== PI_RUNTIME_IMAGE) {
+    throw new Error(
+      `--sandbox docker: image "${image}" is not available locally (or Docker is not running). It is a custom ` +
+        `DOCKER_IMAGE override, so build it yourself, or unset DOCKER_IMAGE to use the managed default ` +
+        `"${PI_RUNTIME_IMAGE}" (auto-built). (details: ${inspect.stderr.trim() || 'docker not found'})`,
+    );
+  }
+  process.stderr.write(`piflowctl: building the pi node-runtime image "${image}" (first run; ~1–3 min: apt + npm i -g pi)…\n`);
+  const build = await launch(bin, ['build', '-t', image, '-'], {
+    input: PI_RUNTIME_DOCKERFILE,
+    onStdout: (c) => process.stderr.write(c),
+    onStderr: (c) => process.stderr.write(c),
+  }).done;
+  if (build.code !== 0) {
+    throw new Error(`--sandbox docker: failed to build "${image}" (code ${build.code}). Is Docker running? Build output is above.`);
+  }
+  process.stderr.write(`piflowctl: built "${image}".\n`);
+}
+
+/**
  * Map the real `docker` CLI onto the `DockerSdk` seam `./docker.ts` is written against. `dockerBin`
- * overrides the binary (default `docker`, or `$PIFLOW_DOCKER_BIN`). `create` preflights that the image
- * exists locally (which also proves Docker is reachable) with a clear, actionable error otherwise.
+ * overrides the binary (default `docker`, or `$PIFLOW_DOCKER_BIN`). `create` ensures the image exists —
+ * auto-building the managed default on first use (`ensureImage`) — which also proves Docker is reachable.
  */
 export function realDockerSdk(opts: { dockerBin?: string } = {}): DockerSdk {
   const bin = opts.dockerBin ?? process.env.PIFLOW_DOCKER_BIN ?? 'docker';
   return {
     async create(params: DockerCreateParams): Promise<DockerContainer> {
-      const inspect = await launch(bin, ['image', 'inspect', params.image]).done;
-      if (inspect.code !== 0) {
-        throw new Error(
-          `--sandbox docker: image "${params.image}" is not available locally (or Docker is not running). ` +
-            `Build it first:  docker build -t ${params.image} deploy/docker  ` +
-            `(details: ${inspect.stderr.trim() || 'docker not found'})`,
-        );
-      }
+      await ensureImage(bin, params.image);
       const runArgs = ['run', '-d'];
       if (params.name) runArgs.push('--name', params.name);
       if (params.network) runArgs.push('--network', params.network);
@@ -204,7 +227,10 @@ export function realDockerSdk(opts: { dockerBin?: string } = {}): DockerSdk {
 
 /** Options for {@link createDockerProvider}. */
 export interface CreateDockerProviderOpts {
-  /** The pi node-runtime image tag to boot (default {@link DEFAULT_DOCKER_IMAGE}; `docker build -t <tag> deploy/docker`). */
+  /**
+   * The image tag to boot. Omit ⇒ the managed default {@link DEFAULT_DOCKER_IMAGE}, AUTO-BUILT from the
+   * embedded pi node-runtime Dockerfile on first use. Set a custom tag only if you built it yourself.
+   */
   image?: string;
   /** `docker run --network` value (e.g. `none` to cut egress); omit ⇒ default bridge (egress open). */
   network?: string;
@@ -216,8 +242,8 @@ export interface CreateDockerProviderOpts {
   dockerBin?: string;
 }
 
-/** The default image tag (matches `deploy/pi-runtime` / `deploy/docker`'s node-runtime name). */
-export const DEFAULT_DOCKER_IMAGE = 'piflow-node-runtime';
+/** The default image tag — the versioned pi node-runtime, pinned to the shared spec (auto-built on first use). */
+export const DEFAULT_DOCKER_IMAGE = PI_RUNTIME_IMAGE;
 
 /**
  * Convenience factory: wire the real `docker` CLI onto the seam and return a `DockerSandboxProvider`. The
