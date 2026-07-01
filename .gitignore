@@ -5,8 +5,11 @@ vendor/
 
 # JS/TS build + deps (the packages/ SDK)
 node_modules/
-# worktree-local symlink to the main checkout's gui deps (a symlink isn't a dir, so `node_modules/` misses it)
+# worktree-local symlinks to the main checkout's deps (a symlink isn't a dir, so `node_modules/` misses it)
 gui/node_modules
+/node_modules
+packages/*/node_modules
+tui/node_modules
 dist/
 *.tsbuildinfo
 
