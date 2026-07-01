@@ -6,11 +6,18 @@
 // `/__piflow/run-view/<run>` poll returns (the observe surface stamps every zone). Real data only.
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { sse, useEndpoint } from "./apiBase";
+import type { RunTokens, NodeDerived, TimelineSpan, ReadRef, WriteRef, ArtifactRef } from "./runView";
 
 export type LiveNodeStatus =
   | "pending" | "running" | "ok" | "reused" | "gap" | "blocked" | "error" | "dry";
 
-/** A node as the live model carries it (subset of observe NodeView). */
+/**
+ * A node as the live model carries it. The base identity/placement fields are always present; the ENRICHED
+ * telemetry fields (tokens/derived/model/toolCalls/…) are optional and filled by the SSE fold's
+ * `node-enriched` delta (docs/design/observe-live-sse-single-source.md DR3/§6). This MIRRORS the core
+ * `NodeView` shape LOCALLY (the GUI cannot import @piflow/core — the mirror is the contract, not a fork), so a
+ * streamed enriched node maps 1:1 onto `RunViewNode` via `liveModelToRunView` and renders through `toFlowGraph`.
+ */
 export interface LiveNode {
   id: string;
   label: string;
@@ -18,6 +25,36 @@ export interface LiveNode {
   status: LiveNodeStatus;
   stageIndex: number;
   lane: number;
+
+  // ── ENRICHED live-graph fields (optional; present once the SSE fold enriches the node — P2) ──────────────
+  /** agent-neutral token/cost/context rollup (input/output/cache/cost/contextPeak/billable). */
+  tokens?: RunTokens;
+  /** the per-node DISPLAY projection (zones/rankings/unified outputs), computed ONCE server-side. */
+  derived?: NodeDerived;
+  /** the effective model label the node ran on. */
+  model?: string | null;
+  /** the context-window denominator for the context-pressure bar. */
+  contextWindow?: number | null;
+  /** how many tool invocations this node made. */
+  toolCalls?: number;
+  /** per-tool call counts (the ranking + dominance source). */
+  toolBreakdown?: Record<string, number>;
+  /** the per-tool execution timeline (spans with real durMs/ok once closed). */
+  timeline?: TimelineSpan[];
+  /** scope-bucketed reads. */
+  reads?: ReadRef[];
+  /** declared/observed writes. */
+  writes?: WriteRef[];
+  /** declared artifacts with on-disk existence + bytes. */
+  artifacts?: ArtifactRef[];
+  /** provider rate-limit/overload retries. */
+  retries?: number;
+  /** the assistant's final `message.stopReason` (null if none seen). */
+  stopReason?: string | null;
+  /** the output was cut off by the token cap. */
+  truncated?: boolean;
+  /** the node's self-reported summary line. */
+  summary?: string;
 }
 
 /** The live snapshot (subset of observe RunModel). */
@@ -29,6 +66,9 @@ export interface LiveModel {
   provider?: string;
   model?: string | null;
   totals: { nodes: number; ok: number; failed: number } | null;
+  /** run-level token/cost rollup folded across nodes — the sum the enriched live graph shows (present once
+   *  the SSE fold enriches the snapshot; recomputed on each `node-enriched` delta). */
+  tokenTotal?: RunTokens;
   nodes: LiveNode[];
   /** file-flow edges (a writer's path read back by a consumer) — fills in as nodes complete. */
   edges?: { from: string; to: string; path: string }[];
@@ -40,6 +80,8 @@ type Frame =
   | { kind: "snapshot"; model: LiveModel }
   | { kind: "node-status"; id: string; status: LiveNodeStatus }
   | { kind: "node-event"; id: string; event: Record<string, unknown> }
+  /** the WHOLE re-assembled enriched node (not just tokens+derived — DR3/M4), on a material fold change. */
+  | { kind: "node-enriched"; id: string; node: LiveNode }
   | { kind: "done" }
   | { kind: "stream-error"; error: string };
 
@@ -61,6 +103,26 @@ const RECENT_CAP = 40;
 export const RunStreamContext = createContext<RunStreamState>(INITIAL);
 export const useRunStreamContext = (): RunStreamState => useContext(RunStreamContext);
 
+/** Run-level token rollup folded across nodes — MIRRORS core `buildRunView` (runView.ts): every field sums
+ *  except `contextPeak`, which is the MAX. Recomputed whenever a `node-enriched` delta lands. */
+export function foldTokenTotal(nodes: LiveNode[]): RunTokens {
+  return nodes.reduce<RunTokens>(
+    (acc, n) => {
+      const t = n.tokens;
+      if (!t) return acc;
+      acc.input += t.input || 0;
+      acc.output += t.output || 0;
+      acc.cacheRead += t.cacheRead || 0;
+      acc.cacheWrite += t.cacheWrite || 0;
+      acc.cost += t.cost || 0;
+      acc.billable += t.billable || 0;
+      acc.contextPeak = Math.max(acc.contextPeak, t.contextPeak || 0);
+      return acc;
+    },
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, billable: 0, contextPeak: 0 },
+  );
+}
+
 function reduce(prev: RunStreamState, f: Frame): RunStreamState {
   switch (f.kind) {
     case "meta":
@@ -71,6 +133,13 @@ function reduce(prev: RunStreamState, f: Frame): RunStreamState {
       if (!prev.model) return prev;
       const nodes = prev.model.nodes.map((n) => (n.id === f.id ? { ...n, status: f.status } : n));
       return { ...prev, model: { ...prev.model, nodes } };
+    }
+    case "node-enriched": {
+      // Merge the FULL re-assembled enriched node into the model (DR3/M4 — the delta carries the whole node,
+      // not just tokens+derived, so no rendered field blanks), then recompute the run-level token rollup.
+      if (!prev.model) return prev;
+      const nodes = prev.model.nodes.map((n) => (n.id === f.id ? f.node : n));
+      return { ...prev, model: { ...prev.model, nodes, tokenTotal: foldTokenTotal(nodes) } };
     }
     case "node-event":
       return { ...prev, recent: [...prev.recent, { id: f.id, event: f.event }].slice(-RECENT_CAP) };

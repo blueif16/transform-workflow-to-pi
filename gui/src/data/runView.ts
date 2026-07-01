@@ -5,6 +5,7 @@
 import type { FlowNode, FlowNodeData, NodeStatus } from "../components/WorkflowNode";
 import type { DirEntry } from "../components/DirectoryPanel";
 import type { Edge } from "@xyflow/react";
+import type { LiveModel, LiveNode } from "./runStream";
 import { apiFetch, apiUrl } from "./apiBase";
 
 export type ScopeKind = "run" | "skill" | "template" | "package" | "repo";
@@ -424,6 +425,63 @@ export const NODE_H = 64;
 /** Top-left anchor of a node, given its stage/lane — the one formula `toFlowGraph` lays out by. */
 export function nodePosition(stageIndex: number | undefined, lane: number | undefined): { x: number; y: number } {
   return { x: 40 + ((stageIndex ?? 1) - 1) * COL, y: 60 + (lane ?? 0) * ROW };
+}
+
+/** Map one enriched LiveNode (SSE fold) → the RunViewNode `toFlowGraph` renders. Since P1 aligned the shapes
+ *  this is largely a passthrough of the enriched fields; the ONE job here is to DEFAULT every field the batch
+ *  RunViewNode requires but a lean/early live node may lack (toolCalls/collections/flags), so `toFlowGraph`
+ *  never dereferences `undefined`. A streamed value (e.g. `tokens.billable`, a `derived` tone) reaches the
+ *  rendered FlowNode verbatim — the GUI computes nothing. PURE. */
+function liveNodeToRunViewNode(n: LiveNode): RunViewNode {
+  return {
+    id: n.id,
+    label: n.label,
+    phase: n.phase,
+    status: n.status,
+    model: n.model ?? null,
+    // provider is carried run-level on the LiveModel, not per-node — the node inherits it in the adapter below.
+    contextWindow: n.contextWindow ?? null,
+    toolCalls: n.toolCalls ?? 0,
+    toolBreakdown: n.toolBreakdown ?? {},
+    timeline: n.timeline ?? [],
+    reads: n.reads ?? [],
+    scopes: [], // scope buckets are a settled-node fold; live nodes render reads directly (empty ⇒ no bucket rail)
+    writes: n.writes ?? [],
+    artifacts: n.artifacts ?? [],
+    bash: [], // bash calls are folded from the timeline server-side; absent on the live delta ⇒ empty
+    tokens: n.tokens,
+    retries: n.retries ?? 0,
+    stopReason: n.stopReason ?? null,
+    truncated: n.truncated ?? false,
+    thinkingChars: 0, // not carried on the live delta (not rendered on the graph) ⇒ default
+    derived: n.derived,
+    summary: n.summary,
+    stageIndex: n.stageIndex,
+    lane: n.lane,
+  };
+}
+
+/** Adapt a LIVE SSE model → the RunView `toFlowGraph` consumes (docs/design/observe-live-sse-single-source.md P3).
+ *  A pure passthrough: enriched LiveNodes → RunViewNodes (defaulting anything the live node lacks), edges →
+ *  RunViewEdges, and the folded `tokenTotal` carried through. The live model has no `stages` array (the graph
+ *  lays out from each node's stageIndex/lane), so `stages` is empty — `toFlowGraph` reads only the nodes+edges.
+ *  Because P1 aligned the shapes, a value the server streamed (billable tokens, a derived tone, a summary) lands
+ *  on the rendered FlowNode UNCHANGED; the GUI re-derives nothing. */
+export function liveModelToRunView(model: LiveModel): RunView {
+  return {
+    run: model.run,
+    provider: model.provider,
+    model: model.model,
+    done: model.done,
+    ok: model.ok,
+    durationMs: model.durationMs,
+    totals: model.totals ?? undefined,
+    tokenTotal: model.tokenTotal,
+    stages: [],
+    edges: (model.edges ?? []).map((e) => ({ from: e.from, to: e.to, path: e.path })),
+    // provider is run-level on the live model; carry it onto each node so the HUD's Provider meta renders.
+    nodes: model.nodes.map((n) => ({ ...liveNodeToRunViewNode(n), provider: model.provider ?? null })),
+  };
 }
 
 /** Build the React Flow graph (positions by stage column / parallel-lane row) from a run-view. The optional
