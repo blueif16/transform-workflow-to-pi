@@ -78,6 +78,17 @@ export interface AttemptOverride {
   resumeSessionId?: string;
 }
 
+/**
+ * The SINGLE choke point for the run-start executor override: pick `pi` vs `claude-code` for THIS node
+ * WITHOUT editing the template. PRECEDENCE: `ctx.executorOverride[node.id]` (per-node) → `ctx.executorDefault`
+ * (run-level) → `node.executor` (the authored value). Both ctx fields absent ⇒ the authored executor, so a
+ * run with no override is byte-identical. The caller clones `{ ...node, executor: <this> }` and threads the
+ * clone to BOTH `effectiveModel` and `ctx.buildCommand` (which already branch on `node.executor`).
+ */
+function resolveExecutor(node: NodeSpec, ctx: RunContext): NodeSpec['executor'] {
+  return ctx.executorOverride?.[node.id] ?? ctx.executorDefault ?? node.executor;
+}
+
 // Exported as the lifecycle seam: ./retry.ts drives the retry/escalate loop around `runNode`.
 export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, over: AttemptOverride = {}): Promise<NodeStatusRecord> {
   const rec = ctx.status.nodes[node.id];
@@ -171,6 +182,11 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
   try {
     node = {
       ...srcNode,
+      // Run-start executor override (the SINGLE choke point): fold the effective executor into the SAME
+      // resolved clone the runner consumes downstream, so EVERY `node.executor` read below — the claude
+      // credential-env injection, `effectiveModel`, both `buildCommand` sites (first exec + G8 repair), and
+      // the `isClaude` verdict path — sees the resolved value uniformly. Absent override ⇒ the authored value.
+      executor: resolveExecutor(srcNode, ctx),
       io: {
         ...srcNode.io,
         artifacts: srcNode.io.artifacts.map((a) => ({ ...a, path: resolveTokens(a.path, resolveCtx) })),

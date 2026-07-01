@@ -197,7 +197,7 @@ export type { HookReport, RunHooksOpts } from './hooks/index.js';
 
 // Runner (M1 execution loop — create→stage→exec→collect→dispose; watchdogs · halt-on-failure ·
 // --from resume · run-status.json). The pi-spawn is injectable (buildCommand/execRunner) so it runs offline.
-export { runWorkflow, defaultExecRunner, defaultPiCommand, lastJsonBlock, writeStatus, artifactState, nowISO } from './runner/index.js';
+export { runWorkflow, defaultExecRunner, defaultPiCommand, dispatchCommand, lastJsonBlock, writeStatus, artifactState, nowISO } from './runner/index.js';
 // buildNodeConfig — the curated per-node config-slice builder (the SKIN channel mirror). Surfaced so a test
 // can pin the slice mapping (e.g. the `fullAccess`/`programmatic` carve-outs) directly off the resolved NodeSpec.
 export { buildNodeConfig } from './runner/index.js';
@@ -217,6 +217,9 @@ export type { RunFromTemplateOpts } from './runner/index.js';
 // G1 — per-node model/provider ROUTING: the single home of the override order (model > tier > run > default).
 export {
   resolveNodeModel,
+  effectiveModel,
+  resolveClaudeModel,
+  isClaudeModel,
   ModelRoutingError,
   loadModelTiers,
   writeModelTiers,

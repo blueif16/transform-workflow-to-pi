@@ -23,8 +23,8 @@ import {
   compile,
   seededRegistry,
   SUBMIT_RESULT_TOOL,
-  defaultPiCommand,
-  resolveNodeModel,
+  dispatchCommand,
+  effectiveModel,
   loadModelTiers,
   loadModelsIndex,
   expandFusion,
@@ -135,6 +135,15 @@ export type SandboxChoice = 'inmemory' | 'local' | 'danger-full-access' | 'dayto
 /** The accepted `--sandbox` values — a typo (e.g. `seatbelt`) must error loudly, not silently degrade to inmemory. */
 export const SANDBOX_CHOICES: readonly SandboxChoice[] = ['inmemory', 'local', 'danger-full-access', 'daytona', 'e2b'];
 
+/** The accepted `--executor` values — a typo must error loudly (never silently pick the wrong agent binary). */
+export const EXECUTOR_CHOICES: readonly ['pi', 'claude-code'] = ['pi', 'claude-code'];
+
+/** Validate + narrow a `--executor` value; throws loudly on a typo (so a mistyped executor never silently degrades). */
+function parseExecutorValue(v: string, ctxLabel: string): 'pi' | 'claude-code' {
+  if ((EXECUTOR_CHOICES as readonly string[]).includes(v)) return v as 'pi' | 'claude-code';
+  throw new Error(`piflowctl run: unknown --executor ${ctxLabel}"${v}" (expected one of ${EXECUTOR_CHOICES.join(', ')}).`);
+}
+
 /** The parsed `run` argv. `args` carries the repeated `--arg k=v` pairs (and the run id, mirrored in). */
 export interface ParsedRunArgs {
   templateDir: string;
@@ -167,6 +176,17 @@ export interface ParsedRunArgs {
   thinking?: string;
   /** Optional model pin → `pi --model <m>`. */
   model?: string;
+  /**
+   * Run-level EXECUTOR default — `--executor pi|claude-code` (no `=`): pick the executor for EVERY node at
+   * run start WITHOUT editing the template. A per-node `--executor <nodeId>=…` entry wins over this.
+   */
+  executor?: 'pi' | 'claude-code';
+  /**
+   * PER-NODE executor overrides — `--executor <nodeId>=pi|claude-code` (repeatable): pick the executor for
+   * SPECIFIC nodes at run start. A per-node entry wins over the run-level `executor` default and the node's
+   * authored `executor`.
+   */
+  executorOverride?: Record<string, 'pi' | 'claude-code'>;
   /** Max node processes in-flight at once (the G2 concurrency cap) → runner `maxConcurrent`. Default 8, clamped [1,16]. */
   maxConcurrent?: number;
   /**
@@ -196,6 +216,19 @@ export function parseRunArgs(argv: string[]): ParsedRunArgs {
     else if (k === '--cloud-secret') out.cloudSecret = argv[++i];
     else if (k === '--thinking') out.thinking = argv[++i];
     else if (k === '--model') out.model = argv[++i];
+    else if (k === '--executor') {
+      // TWO forms, both repeatable: `--executor claude-code` (run-level default) and
+      // `--executor <nodeId>=claude-code` (per-node override, wins over the default). A per-node form has an
+      // '=' AFTER the first char (a run-level value never does); validate both loudly.
+      const raw = argv[++i] ?? '';
+      const eq = raw.indexOf('=');
+      if (eq > 0) {
+        const nodeId = raw.slice(0, eq);
+        (out.executorOverride ??= {})[nodeId] = parseExecutorValue(raw.slice(eq + 1), `for node "${nodeId}": `);
+      } else {
+        out.executor = parseExecutorValue(raw, '');
+      }
+    }
     else if (k === '--max-concurrent') out.maxConcurrent = Number(argv[++i]);
     else if (k === '--detach' || k === '--unattended') out.detach = true;
     else if (k === '--arg') {
@@ -221,12 +254,16 @@ export interface DryRunPlanOpts {
   thinking?: string;
   /** Active profile name → noted in the header (so the plan shows WHICH reduced DAG it reflects). */
   profile?: string;
+  /** Run-level executor default (mirrors the LIVE run-start override) — pick pi vs claude-code for every node. */
+  executor?: 'pi' | 'claude-code';
+  /** Per-node executor overrides (keyed by node id) — win over `executor`, mirroring the LIVE run. */
+  executorOverride?: Record<string, 'pi' | 'claude-code'>;
 }
 
 /**
  * Render the realized per-node `pi` command(s) for a compiled workflow — the dry-run preview. PURE: it
  * resolves each node's toolset (the SEEDED registry the canonical run path now assembles via
- * `assembleRunTools`) and builds the headless command via `defaultPiCommand`, but spawns NOTHING. A node
+ * `assembleRunTools`) and builds the headless command via `dispatchCommand` (executor-aware), but spawns NOTHING. A node
  * whose declared tools are not in the catalog still renders — its unresolved tools are NOTED rather than
  * crashing the free preview. (G11) Seeding here stops the free preview from falsely reporting `oc.*`/`mcp.*`
  * as unresolved.
@@ -259,15 +296,21 @@ export function dryRunPlan(wf: Workflow, opts: DryRunPlanOpts = {}): string {
         resolved = { piTools: [] as string[] };
         note = `  # NOTE: tools unresolved at preview (${(e as Error).message})`;
       }
-      // Resolve THIS node's effective model/provider (precedence in core's model-routing.ts). An
-      // unresolvable tier is NOTED in the preview rather than crashing the free dry-run.
+      // Run-start executor override (mirrors the LIVE resolveExecutor precedence: per-node → run-level →
+      // authored) so the free preview shows the SAME agent binary the live run will spawn — never lie.
+      const effExec = opts.executorOverride?.[id] ?? opts.executor ?? node.executor;
+      const eNode = effExec === node.executor ? node : { ...node, executor: effExec };
+      // Resolve THIS node's effective model/provider (precedence in core's model-routing.ts, executor-aware:
+      // a claude-code node resolves via the parallel `claude` tier block). An unresolvable tier is NOTED in
+      // the preview rather than crashing the free dry-run.
       let eff: { model?: string; provider?: string } = { model: opts.model, provider };
       try {
-        eff = resolveNodeModel(node, { model: opts.model, provider, tiers, modelsIndex });
+        eff = effectiveModel(eNode, { model: opts.model, provider, tiers, modelsIndex });
       } catch (e) {
         note += `  # NOTE: model routing — ${(e as Error).message}`;
       }
-      const cmd = defaultPiCommand(node, resolved, { promptFile, provider: eff.provider ?? provider, model: eff.model }, { thinking: opts.thinking });
+      // dispatchCommand routes pi vs claude-code off `eNode.executor` (the same seam the runner uses).
+      const cmd = dispatchCommand(eNode, resolved, { promptFile, provider: eff.provider ?? provider, model: eff.model }, { thinking: opts.thinking });
       lines.push(`    [${id}] ${cmd}${note}`);
     }
   }
@@ -472,7 +515,7 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     await writeStatus(outDir, dryStatus);
     // reference the actual realized prompt path the run materialized (engine-owned layout helper).
     const samplePromptDir = nodePromptFile(outDir, '<id>').replace(/\/<id>\/prompt\.md$/, '');
-    print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: parsed.provider ?? 'cp', model: parsed.model, thinking: parsed.thinking, profile: parsed.profile }));
+    print(dryRunPlan(wf, { promptDir: samplePromptDir, provider: parsed.provider ?? 'cp', model: parsed.model, thinking: parsed.thinking, profile: parsed.profile, executor: parsed.executor, executorOverride: parsed.executorOverride }));
     print(`piflowctl run: dry-run materialized a viewable plan at ${outDir} (open it: piflowctl gui / piflowctl status ${outDir}). Nodes are status "dry" — no model ran.`);
     return undefined;
   }
@@ -595,6 +638,11 @@ export async function runTemplate(parsed: ParsedRunArgs, deps: RunDeps = {}): Pr
     providerName: parsed.provider,
     thinking: parsed.thinking,
     model: parsed.model,
+    // Run-start executor selection (run-level default + per-node overrides) — pick pi vs claude-code WITHOUT
+    // editing the template. Threaded through RunOptions (executor/executorOverride) to node-lifecycle's
+    // resolveExecutor. Omitted when absent so a run with no --executor stays byte-identical.
+    ...(parsed.executor ? { executor: parsed.executor } : {}),
+    ...(parsed.executorOverride ? { executorOverride: parsed.executorOverride } : {}),
     ...(parsed.maxConcurrent !== undefined ? { maxConcurrent: parsed.maxConcurrent } : {}),
     ...(parsed.detach ? { checkpointReply: 'default' as const } : {}),
     ...(provider ? { provider } : {}),

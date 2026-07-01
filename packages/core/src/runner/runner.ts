@@ -93,6 +93,21 @@ export interface RunOptions {
   /** Optional model pin. */
   model?: string;
   /**
+   * RUN-LEVEL EXECUTOR DEFAULT — pick `pi` vs `claude-code` for EVERY node at run start, WITHOUT editing
+   * the template (which is otherwise the only place `NodeSpec.executor` lives). A caller (CLI/GUI) sets
+   * this to run the whole workflow on the other executor. PRECEDENCE: `executorOverride[nodeId]` (per-node)
+   * wins over this; this wins over the node's authored `executor`; absent everywhere ⇒ `pi`. Omit ⇒ each
+   * node keeps its authored executor (today's behavior).
+   */
+  executor?: 'pi' | 'claude-code';
+  /**
+   * PER-NODE EXECUTOR OVERRIDE — pick `pi` vs `claude-code` for SPECIFIC nodes (keyed by node id) at run
+   * start, WITHOUT editing the template. A per-node entry WINS over the run-level `executor` default AND
+   * over the node's authored `executor`. A node id absent from this map falls through to `executor` then to
+   * its authored value. Omit ⇒ no per-node override (today's behavior).
+   */
+  executorOverride?: Record<string, 'pi' | 'claude-code'>;
+  /**
    * (G1) Routing config injection seam — the activatable tier map + pi's models.json index. Omit ⇒ the
    * runner loads both from disk (`loadModelTiers`/`loadModelsIndex`, today's behavior). A test injects a
    * deterministic map so escalation's `escalate.tier`/`escalate.model` resolution is model-free.
@@ -327,6 +342,10 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
     execRunner: opts.execRunner ?? defaultExecRunner,
     providerName: opts.providerName ?? 'cp',
     model: opts.model,
+    // Run-start executor selection (run-level default + per-node override) — resolved per node by
+    // `resolveExecutor` (override wins → default → the node's authored executor). Absent ⇒ authored value.
+    executorDefault: opts.executor,
+    executorOverride: opts.executorOverride,
     // G1 — the global routing config (read-only; graceful absence ⇒ inactive tiers + empty index). An
     // injected `modelRouting` (tests / a host) wins so escalation's tier/model resolution stays model-free.
     modelRouting: opts.modelRouting ?? { tiers: loadModelTiers(), modelsIndex: loadModelsIndex() },

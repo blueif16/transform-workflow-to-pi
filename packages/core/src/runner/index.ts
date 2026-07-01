@@ -41,7 +41,7 @@ export type { ConfigArgs, LoadConfigInput, ResolvedRunOpts } from './config.js';
 // alongside the runner finds it here too).
 export { defaultSecretResolver } from '../types.js';
 export type { SecretResolver } from '../types.js';
-export { defaultPiCommand } from './command.js';
+export { defaultPiCommand, claudeCommand, dispatchCommand } from './command.js';
 export type { CommandBuilder, CommandContext } from './command.js';
 export { validateArtifactSchemas, defaultSchemaValidator } from './schema.js';
 export type { SchemaValidator, SchemaCheckResult } from './schema.js';
@@ -90,6 +90,9 @@ export type { NodeToolAudit } from './audit.js';
 // G1 — per-node model/provider routing: the single home of the override order.
 export {
   resolveNodeModel,
+  effectiveModel,
+  resolveClaudeModel,
+  isClaudeModel,
   ModelRoutingError,
   loadModelTiers,
   writeModelTiers,
