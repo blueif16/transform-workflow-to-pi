@@ -9,6 +9,7 @@ import type { FlowNode, FlowNodeData } from "../components/WorkflowNode";
 import { toNodeStatus, formatMs } from "./runView";
 import type { RunViewNode } from "./runView";
 import { LiveTelemetry } from "./liveTelemetry";
+import { sse } from "./apiBase";
 
 export type LiveNodeStatus =
   | "pending" | "running" | "ok" | "reused" | "gap" | "blocked" | "error" | "dry";
@@ -121,7 +122,7 @@ export function useRunStream(run: string | null | undefined): RunStreamState {
     };
     const foldTimer = window.setInterval(flush, FOLD_MS);
 
-    const es = new EventSource(`/__piflow/stream/${encodeURIComponent(run)}`);
+    const es = sse(`/__piflow/stream/${encodeURIComponent(run)}`);
     esRef.current = es;
     es.onmessage = (e: MessageEvent) => {
       let f: Frame;
