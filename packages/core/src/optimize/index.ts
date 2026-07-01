@@ -11,6 +11,11 @@ export { deriveRecurrence, signatureOf } from './recurrence.js';
 export type { RecurrenceIndex, RecurrenceHit } from './recurrence.js';
 export { memorize } from './memorize.js';
 export type { MemorizeOpts, MemorizeResult, MemorizeLesson } from './memorize.js';
+// The DISTILLATION SEAM (v1.5 §6; memory-slices MODE B) — turns MEMORIZE's `(pending …)` Root/Prevention
+// placeholders into real distilled prose. The write is deterministic (fillLessonProse); the model call is
+// INJECTED as a LessonDistiller (core holds no model/network/prompt) and distillLesson degrades on a bad one.
+export { fillLessonProse, distillLesson } from './distill.js';
+export type { LessonProse, LessonDistiller, DistillLessonOpts } from './distill.js';
 // The cap/retire COMPACTION pass (v1.5 §5.3; memory-slices MODE B) — the out-of-band counterpart of MEMORIZE's
 // per-round append/update that keeps memory.md bounded by RETIRING discrete lowest-value blocks (never re-summarizes).
 export { compactMemory, DEFAULT_MAX_LESSONS } from './compact.js';
