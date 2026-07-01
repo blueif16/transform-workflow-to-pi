@@ -25,7 +25,7 @@ into extra intents BEFORE this compile (see `per-node-routing-and-fusion`).
 
 # Anchors
 AUTHORED TEMPLATE → LOAD
-- `packages/core/src/workflow/template/loader.ts:195` — `loadTemplate` — fail-closed scan+check → `WorkflowSpec`
+- `packages/core/src/workflow/template/loader.ts:203` — `loadTemplate` — fail-closed scan+check → `WorkflowSpec`
 - `packages/core/src/workflow/template/loader.ts:96` — `toNodeIntent` — authored `TemplateNode` → runtime `NodeIntent`
 CONTRACT CODEC (DRIVER-* markers)
 - `packages/core/src/contract.ts:199` — `markersFromNode` — derive a node's contract markers from its `NodeSpec`/resolve
@@ -33,10 +33,10 @@ CONTRACT CODEC (DRIVER-* markers)
 SCHEMA (authored shape)
 - `packages/core/src/workflow/template/schema/node.schema.ts:55` — `agentType` field — one example of the authored node.json surface `toNodeIntent` reads
 WORKFLOWSPEC → DAG (topo-order)
-- `packages/core/src/dag.ts:172` — `compile` — `WorkflowSpec` → dense `Workflow` (or `WorkflowError`)
-- `packages/core/src/dag.ts:64` — `inferEdges` — data-flow edges from `io.reads ⋈ io.produces`
-- `packages/core/src/dag.ts:100` — `stagesOf` — longest-path topological stages (parallel lanes per level)
-- `packages/core/src/types.ts:982` — `Workflow` — the compiled `{meta, nodes, stages, edges}` (the seam to the runner)
+- `packages/core/src/dag.ts:177` — `compile` — `WorkflowSpec` → dense `Workflow` (or `WorkflowError`)
+- `packages/core/src/dag.ts:69` — `inferEdges` — data-flow edges from `io.reads ⋈ io.produces`
+- `packages/core/src/dag.ts:105` — `stagesOf` — longest-path topological stages (parallel lanes per level)
+- `packages/core/src/types.ts:1004` — `Workflow` — the compiled `{meta, nodes, stages, edges}` (the seam to the runner)
 
 # Freshness (anti-drift)
 anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NOTE: the compiled `Workflow`/`NodeSpec`/`Stage`/`Edge` shapes all live in `packages/core/src/types.ts` (982/17/967/975), NOT in dag.ts — dag.ts only computes them. This card is the STATIC compile spine carved out of the former `runtime-core`; the DYNAMIC exec spine (DAG → one pi per node → artifacts) is the sibling `runner` slice, and they meet at the `Workflow` object. `loadTemplate` is async (returns a `Promise<WorkflowSpec>`).
@@ -112,6 +112,11 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `56f1145` 2026-06-28 — feat(core): per-node pi session-id + warm-resume L1
 - `caf6e4e` 2026-06-28 — feat(core): materialize judge gate into a real DAG node at load time
 - `51992b0` 2026-06-28 — feat: per-node stop — persist each node's pi pid, signal its group
+- `ca01064` 2026-06-29 — feat(executor): wire per-node executor selection (pi | claude-code) into dispatch
+- `44b4310` 2026-06-29 — feat(executor): carry `executor` through compile + offline end-to-end dispatch test
+- `a52e6c9` 2026-06-29 — feat(executor): template + CLI authoring can select the claude-code executor
+- `4415ae9` 2026-06-29 — feat(core): per-node fullAccess flag — open the fs jail for one node
+- `a935280` 2026-06-29 — merge: claude-code 2nd node executor + interactive piflowctl init wizard
 
 ### Lessons — memory cluster
 
@@ -133,6 +138,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - [[piflow-init-scaffolder]]
 - [[piflow-memory-system-v1]]
 - [[piflow-optimize-layer-built]]
+- [[piflow-overlord-control-plane]]
 - [[piflow-product-positioning]]
 - [[piflow-rollout-enablement]]
 - [[piflowctl-bin-rename]]
@@ -143,9 +149,9 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 
 - `toNodeIntent` (packages/core/src/workflow/template/loader.ts:96) — 1 caller in `packages/core/src/workflow/template/loader.ts`; ⚠ no covering tests found
 - `parseMarkers` (packages/core/src/contract.ts:139) — 6 callers in `.claude/skills/piflow-init/scripts/parse-claude-workflow.mjs`, `templates/pi-runner/sdk/bridge.mjs`, `packages/core/src/index.ts`; tests: `packages/core/test/contract.test.ts`, `packages/core/test/op-codec-roundtrip.test.ts`
-- `emitMarkers` (packages/core/src/contract.ts:115) — 9 callers in `packages/core/src/runner/node-lifecycle.ts`, `packages/core/src/runner/resume.ts`, `packages/core/src/workflow/template/render.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/contract.test.ts`, `packages/core/test/op-codec-roundtrip.test.ts`
-- `loadTemplate` (packages/core/src/workflow/template/loader.ts:195) — 28 callers in `gui/vite.config.ts`, `packages/cli/src/extract.ts`, `packages/cli/src/inspect.ts`, `packages/cli/src/run.ts` +2 more; tests: `packages/cli/test/inspect.test.ts`, `packages/cli/test/run.test.ts`, `packages/cli/test/scaffold-memory.test.ts`, `packages/cli/test/scaffold.test.ts` +11
-- `NodeSpec` (packages/core/src/types.ts:17) — 46 callers in `packages/cli/src/inspect.ts`, `packages/core/src/contract.ts`, `packages/core/src/dag.ts`, `packages/core/src/runner/command.ts` +9 more; tests: `packages/core/test/command-session.test.ts`, `packages/core/test/command-skill.test.ts`, `packages/core/test/escalate-loop.test.ts`, `packages/core/test/journal.test.ts` +6
+- `emitMarkers` (packages/core/src/contract.ts:115) — 9 callers in `packages/core/src/runner/resume.ts`, `packages/core/src/runner/node-lifecycle.ts`, `packages/core/src/workflow/template/render.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/contract.test.ts`, `packages/core/test/op-codec-roundtrip.test.ts`
+- `loadTemplate` (packages/core/src/workflow/template/loader.ts:203) — 5 callers in `packages/core/src/index.ts`; tests: `packages/cli/test/scaffold.test.ts`, `packages/core/test/agent-preset-expansion.test.ts`, `packages/core/test/load-template.test.ts`
+- `NodeSpec` (packages/core/src/types.ts:17) — 23 callers in `packages/core/src/dag.ts`, `packages/core/src/runner/command.ts`, `packages/core/src/runner/node-lanes.ts`, `packages/core/src/runner/node-lifecycle.ts` +2 more; tests: `packages/core/test/build-node-config-fullaccess.test.ts`, `packages/core/test/claude-command.test.ts`, `packages/core/test/runner.test.ts`
 
-<sub>derived 2026-06-30 · arc=56 commits · files=5 · lessons=22</sub>
+<sub>derived 2026-07-01 · arc=61 commits · files=5 · lessons=23</sub>
 <!-- okf:auto-end -->

@@ -28,9 +28,9 @@ expanded nodes into stages/edges — the terminal: a DAG with nodes the author n
 
 # Anchors
 ROUTING — resolve (precedence)
-- `packages/core/src/runner/model-routing.ts:66` — `resolveNodeModel` — PURE precedence resolver (node.model > tiers[node.tier] > run --model > default)
-- `packages/core/src/runner/model-routing.ts:103` — `loadModelTiers` — read-only `~/.piflow/model-tiers.json`; absent/invalid ⇒ `{active:false}` default
-- `packages/core/src/runner/model-routing.ts:200` — `loadModelsIndex` — read-only pi `~/.pi/agent/models.json`; model id → provider auto-resolve
+- `packages/core/src/runner/model-routing.ts:75` — `resolveNodeModel` — PURE precedence resolver (node.model > tiers[node.tier] > run --model > default)
+- `packages/core/src/runner/model-routing.ts:171` — `loadModelTiers` — read-only `~/.piflow/model-tiers.json`; absent/invalid ⇒ `{active:false}` default
+- `packages/core/src/runner/model-routing.ts:272` — `loadModelsIndex` — read-only pi `~/.pi/agent/models.json`; model id → provider auto-resolve
 ROUTING — thread + per-node + escalate
 - `packages/core/src/runner/runner.ts:332` — `modelRouting: opts.modelRouting ?? { tiers, modelsIndex }` — resolve run config once, thread into `RunContext`
 - `packages/core/src/runner/node-lifecycle.ts:362` — `eff = resolveNodeModel(node, {…})` — per-node resolution at the build call
@@ -48,7 +48,7 @@ FUSION — config + expand
 FUSION — expand-then-compile (terminal)
 - `packages/core/src/runner/entry.ts:116` — `spec = expandFusion(spec, fusionExpandOpts())` — expand before compile (runFromConfig path)
 - `packages/core/src/runner/entry.ts:177` — `spec = expandFusion(spec, fusionExpandOpts())` — expand before compile (runFromTemplate path)
-- `packages/core/src/dag.ts:172` — `compile` — folds the expanded siblings+judge into stages/edges (the DAG the author never wrote)
+- `packages/core/src/dag.ts:177` — `compile` — folds the expanded siblings+judge into stages/edges (the DAG the author never wrote)
 
 # Freshness (anti-drift)
 anchors ✓ (opened + line-verified; corrected from a recon that hallucinated an `effectiveModel` front door — there is none, the single resolver is `resolveNodeModel`) · scope = the seeds above · re-derive when `model-routing.ts`'s precedence or `expand.ts`'s shape changes. DRIFT NOTE: precedence is resolved in ONE place per concern (`model-routing.ts` for routing; `expand.ts`/`fusion-config.ts` for fusion params) — the spec (`docs/specs/per-node-routing-and-fusion.md` §2) is the override contract. Fusion is a PORT of the DAG-expansion idea, not the vendor `pi-fusion`. `FUSION_PRESETS` (presets.ts:24) is shared with the `base-agent-types` slice (preset SHAPE) — this slice owns the EXPANSION, that one owns the preset lifecycle. The CLI dry-run also calls `expandFusion` (`packages/cli/src/run.ts:436`) so previews show the real expanded DAG + resolved models.
@@ -107,6 +107,13 @@ anchors ✓ (opened + line-verified; corrected from a recon that hallucinated an
 - `4a47965` 2026-06-28 — refactor(core): extract retry from runner.ts (step 7/9)
 - `716b9ec` 2026-06-28 — refactor(core): extract node-lifecycle from runner.ts (step 8/9)
 - `2ddf66d` 2026-06-28 — feat(cli): piflowctl model + lazy ~/.piflow bootstrap (seed model-tiers)
+- `2051840` 2026-06-29 — feat(executor): claudeCommand builder for the claude-code executor
+- `af19417` 2026-06-29 — feat(executor): map the 3-tier config to Claude via a parallel `claude` block
+- `ca01064` 2026-06-29 — feat(executor): wire per-node executor selection (pi | claude-code) into dispatch
+- `44b4310` 2026-06-29 — feat(executor): carry `executor` through compile + offline end-to-end dispatch test
+- `1adbe3f` 2026-06-29 — feat(executor): robust §7.2 credential model for claude-code (env token, API-key strip, isolated CLAUDE_CONFIG_DIR)
+- `4415ae9` 2026-06-29 — feat(core): per-node fullAccess flag — open the fs jail for one node
+- `a935280` 2026-06-29 — merge: claude-code 2nd node executor + interactive piflowctl init wizard
 
 ### Lessons — memory cluster
 
@@ -140,9 +147,9 @@ anchors ✓ (opened + line-verified; corrected from a recon that hallucinated an
 
 - `judgePresetId` (packages/core/src/workflow/fusion/presets.ts:43) — 3 callers in `packages/core/src/workflow/fusion/expand.ts`, `packages/core/src/index.ts`; ⚠ no covering tests found
 - `expandNode` (packages/core/src/workflow/fusion/expand.ts:69) — 1 caller in `packages/core/src/workflow/fusion/expand.ts`; ⚠ no covering tests found
-- `loadModelTiers` (packages/core/src/runner/model-routing.ts:103) — 16 callers in `gui/vite.config.ts`, `packages/cli/src/model.ts`, `packages/cli/src/run.ts`, `packages/core/src/runner/entry.ts` +3 more; tests: `packages/core/test/agent-base.test.ts`, `packages/core/test/model-routing.test.ts`, `packages/core/test/piflow-home.test.ts`
-- `FUSION_PRESETS` (packages/core/src/workflow/fusion/presets.ts:24) — 2 callers in `packages/core/src/index.ts`, `packages/core/src/workflow/fusion/expand.ts`; ⚠ no covering tests found
-- `loadModelsIndex` (packages/core/src/runner/model-routing.ts:200) — 7 callers in `packages/cli/src/run.ts`, `packages/core/src/runner/runner.ts`, `packages/core/src/index.ts`, `packages/core/src/runner/index.ts`; tests: `packages/core/test/model-routing.test.ts`
+- `loadModelTiers` (packages/core/src/runner/model-routing.ts:171) — 11 callers in `packages/cli/src/init/steps/claude-code.ts`, `packages/cli/src/init/steps/model-tiers.ts`, `packages/cli/src/model.ts`, `packages/core/src/runner/runner.ts` +2 more; tests: `packages/core/test/model-routing.test.ts`
+- `FUSION_PRESETS` (packages/core/src/workflow/fusion/presets.ts:24) — 2 callers in `packages/core/src/workflow/fusion/expand.ts`, `packages/core/src/index.ts`; ⚠ no covering tests found
+- `loadModelsIndex` (packages/core/src/runner/model-routing.ts:272) — 5 callers in `packages/core/src/runner/runner.ts`, `packages/core/src/index.ts`, `packages/core/src/runner/index.ts`; tests: `packages/core/test/model-routing.test.ts`
 
-<sub>derived 2026-06-30 · arc=34 commits · files=10 · lessons=24</sub>
+<sub>derived 2026-07-01 · arc=41 commits · files=10 · lessons=24</sub>
 <!-- okf:auto-end -->

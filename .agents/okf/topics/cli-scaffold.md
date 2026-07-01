@@ -29,11 +29,11 @@ BIN
 - `packages/cli/src/cli.ts:166` — `main()` switch — the flat-argv subcommand dispatcher (new/add-node/memory/run/…)
 - `packages/core/src/cli.ts:38` — second bin — a SEPARATE `@piflow/core` entry that handles only `logs` (re-exported into the one `piflowctl` bin)
 NEW
-- `packages/cli/src/scaffold.ts:415` — `runNewCli` — parses argv, calls `scaffoldNew`
-- `packages/cli/src/scaffold.ts:198` — `scaffoldNew` — writes meta.json (via `buildMeta`) + seeds system `memory.md`
+- `packages/cli/src/scaffold.ts:697` — `runNewCli` — parses argv, calls `scaffoldNew`
+- `packages/cli/src/scaffold.ts:391` — `scaffoldNew` — writes meta.json (via `buildMeta`) + seeds system `memory.md`
 ADD-NODE
-- `packages/cli/src/scaffold.ts:435` — `runAddNodeCli` — parses the repeatable flags, calls `scaffoldAddNode`
-- `packages/cli/src/scaffold.ts:124` — `buildNode` — PURE: id/phase/deps/contract + optional blocks + derives folded into `op[]`
+- `packages/cli/src/scaffold.ts:717` — `runAddNodeCli` — parses the repeatable flags, calls `scaffoldAddNode`
+- `packages/cli/src/scaffold.ts:196` — `buildNode` — PURE: id/phase/deps/contract + optional blocks + derives folded into `op[]`
 - `packages/cli/src/scaffold.ts:236` — `seedNodeMemory`/`seedNodeCodeMap` — seed memory.md + code-map.md create-if-absent (never clobbers prompt.md)
 RUN
 - `packages/cli/src/run.ts:354` — `runTemplate` — dry-run (print commands) vs live (`runFromTemplate`); injectable `RunDeps` seam
@@ -128,12 +128,29 @@ anchors ✓ · scope = the seeds above · re-derive when they change · BRANCH-S
 - `19addba` 2026-06-28 — feat(cli): piflowctl node <run> <id> --stop — signal a detached run's process (reuse the kill seam)
 - `caf6e4e` 2026-06-28 — feat(core): materialize judge gate into a real DAG node at load time
 - `2ddf66d` 2026-06-28 — feat(cli): piflowctl model + lazy ~/.piflow bootstrap (seed model-tiers)
+- `a52e6c9` 2026-06-29 — feat(executor): template + CLI authoring can select the claude-code executor
+- `81200ca` 2026-06-29 — feat(cli): the skippable claude-code executor setup flow (connect + model --claude)
+- `f9c63b1` 2026-06-29 — feat(cli): interactive, modular `piflowctl init` wizard (model tiers + optional claude-code)
 - `d4418c5` 2026-06-29 — feat(core): memory layer SDK — per-node/template memory.md + code-map seeds
+- `4415ae9` 2026-06-29 — feat(core): per-node fullAccess flag — open the fs jail for one node
 - `bcd44ef` 2026-06-29 — feat(cli): seed the memory layer from new/add-node + `memory scaffold` backfill
+- `a935280` 2026-06-29 — merge: claude-code 2nd node executor + interactive piflowctl init wizard
+- `49bc78f` 2026-06-29 — feat(cli): --agent-type <id> binds a base agent preset to a scaffolded node
+- `4cbf1ad` 2026-06-30 — fix(cli): implement `piflowctl --version` (-v/-V)
 - `c4d79a0` 2026-06-30 — feat(cli): piflowctl optimize <run> — the Score+Triage accessor (lands nothing)
 - `05a98a7` 2026-06-30 — feat(cli): piflowctl optimize --fix --binding — the product→optimizer injection seam (v1.5 §6)
 - `6795a9d` 2026-06-30 — feat(cli): optimize --fix --node <substr> — scope the worklist to one node
 - `5bd7c75` 2026-06-30 — feat(optimize): native live streaming — OptimizeEventSink + optimize --fix --watch
+- `38adfad` 2026-06-30 — feat(cli): full check vocabulary (severity/param/pre lane) + policy.warn
+- `9ad4a7b` 2026-06-30 — feat(cli): judge gate (--judge, rubric from judge.md) + checkpoint (G5 HITL)
+- `ca73114` 2026-06-30 — feat(cli): execution gate (--gate-run) + escalate/reroute control actions
+- `70e5464` 2026-06-30 — feat(cli): fusion + subworkflow topology + contract extras (fullAccess/fillSentinel)
+- `ca3cac6` 2026-06-30 — docs(cli): document the full node-authoring surface (--help + piflow-init skill) + changeset
+- `56d2d37` 2026-06-30 — feat(cli): self-describing `piflowctl schema` — print the SDK authoring schemas
+- `476da6d` 2026-06-30 — feat(cli): `piflowctl skills install` — ship the workflow-authoring skills into a target repo
+- `ee12eee` 2026-06-30 — refactor(cli): make `piflowctl schema` a topic-segmented authoring reference
+- `e63fc09` 2026-06-30 — Merge feat/cli-schema-command: self-describing topic-segmented `piflowctl schema`
+- `dcf97ae` 2026-06-30 — Merge branch 'main' into feat/optimize-prove-landing
 
 ### Lessons — memory cluster
 
@@ -142,6 +159,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · BRANCH-S
 - [[capability-catalog-feed]]
 - [[claude-code-executor]]
 - [[cloud-sandbox-portability]]
+- [[codegraph-best-practices]]
 - [[competitive-gaps-pdw]]
 - [[config-is-truth-gui-is-projection]]
 - [[daytona-cloud-path]]
@@ -161,6 +179,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · BRANCH-S
 - [[piflow-init-scaffolder]]
 - [[piflow-memory-system-v1]]
 - [[piflow-optimize-layer-built]]
+- [[piflow-overlord-control-plane]]
 - [[piflow-product-positioning]]
 - [[piflow-rollout-enablement]]
 - [[piflowctl-bin-rename]]
@@ -173,11 +192,11 @@ anchors ✓ · scope = the seeds above · re-derive when they change · BRANCH-S
 
 ### Code anchors / blast radius (codegraph)
 
-- `buildNode` (packages/cli/src/scaffold.ts:124) — 2 callers in `packages/cli/src/scaffold.ts`, `packages/cli/src/index.ts`; ⚠ no covering tests found
-- `scaffoldNew` (packages/cli/src/scaffold.ts:198) — 4 callers in `packages/cli/src/scaffold.ts`, `packages/cli/src/index.ts`; tests: `packages/cli/test/scaffold-memory.test.ts`, `packages/cli/test/scaffold.test.ts`
+- `buildNode` (packages/cli/src/scaffold.ts:196) — 1 caller in `packages/cli/src/scaffold.ts`; ⚠ no covering tests found
 - `seedNodeCodeMap` (packages/core/src/code-map.ts:59) — 5 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/code-map.test.ts`
-- `seedNodeMemory` (packages/core/src/memory/seed.ts:30) — 6 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/index.ts`, `packages/core/src/memory/index.ts`; tests: `packages/core/test/memory.test.ts`
-- `runNewCli` (packages/cli/src/scaffold.ts:415) — 4 callers in `packages/cli/src/cli.ts`, `packages/cli/src/index.ts`; tests: `packages/cli/test/scaffold.test.ts`
+- `seedNodeMemory` (packages/core/src/memory/seed.ts:30) — 6 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/memory/index.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/memory.test.ts`
+- `runNewCli` (packages/cli/src/scaffold.ts:697) — 3 callers in `packages/cli/src/cli.ts`; tests: `packages/cli/test/scaffold.test.ts`
+- `scaffoldNew` (packages/cli/src/scaffold.ts:391) — 2 callers in `packages/cli/src/scaffold.ts`; tests: `packages/cli/test/scaffold.test.ts`
 
-<sub>derived 2026-06-30 · arc=74 commits · files=8 · lessons=32</sub>
+<sub>derived 2026-07-01 · arc=91 commits · files=8 · lessons=34</sub>
 <!-- okf:auto-end -->

@@ -31,9 +31,9 @@ DEFINED
 - `packages/core/src/code-map.ts:35` — `buildNodeCodeMap()` — PURE per-node Tier-0 OKF slice seed (Leg B)
 - `packages/core/src/memory/seed.ts:17` — `writeIfAbsent()` — create-if-absent guard (never clobbers curated content)
 SEEDED (at scaffold time)
-- `packages/cli/src/scaffold.ts:206` — `scaffoldNew` → `seedSystemMemory` — seeds the template's system `memory.md`
-- `packages/cli/src/scaffold.ts:236` — `scaffoldAddNode` → `seedNodeMemory` + `seedNodeCodeMap` (line 237) — seeds both legs per node
-- `packages/cli/src/scaffold.ts:247` — `scaffoldMemory()` — backfill engine for `piflowctl memory scaffold`
+- `packages/cli/src/scaffold.ts:391` — `scaffoldNew` → `seedSystemMemory` — seeds the template's system `memory.md`
+- `packages/cli/src/scaffold.ts:407` — `scaffoldAddNode` → `seedNodeMemory` + `seedNodeCodeMap` (line 237) — seeds both legs per node
+- `packages/cli/src/scaffold.ts:440` — `scaffoldMemory()` — backfill engine for `piflowctl memory scaffold`
 CONSUMED
 - (none) — no runtime/optimizer reader exists yet; `optimize/triage.ts:14` names Leg-A `memory.md` as a DEFERRED SKILL signal, but reads neither file. Leg B has NO reader at all.
 
@@ -138,13 +138,31 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `df8189b` 2026-06-28 — feat(cli): piflowctl node <run> <id> --resume (warm-resume a node from its stored session)
 - `19addba` 2026-06-28 — feat(cli): piflowctl node <run> <id> --stop — signal a detached run's process (reuse the kill seam)
 - `2ddf66d` 2026-06-28 — feat(cli): piflowctl model + lazy ~/.piflow bootstrap (seed model-tiers)
+- `a52e6c9` 2026-06-29 — feat(executor): template + CLI authoring can select the claude-code executor
+- `81200ca` 2026-06-29 — feat(cli): the skippable claude-code executor setup flow (connect + model --claude)
+- `f9c63b1` 2026-06-29 — feat(cli): interactive, modular `piflowctl init` wizard (model tiers + optional claude-code)
 - `d4418c5` 2026-06-29 — feat(core): memory layer SDK — per-node/template memory.md + code-map seeds
+- `4415ae9` 2026-06-29 — feat(core): per-node fullAccess flag — open the fs jail for one node
 - `bcd44ef` 2026-06-29 — feat(cli): seed the memory layer from new/add-node + `memory scaffold` backfill
+- `a935280` 2026-06-29 — merge: claude-code 2nd node executor + interactive piflowctl init wizard
+- `49bc78f` 2026-06-29 — feat(cli): --agent-type <id> binds a base agent preset to a scaffolded node
+- `d71e46c` 2026-06-29 — feat(core): inherit agentType preset role-prompt at render time
+- `4cbf1ad` 2026-06-30 — fix(cli): implement `piflowctl --version` (-v/-V)
 - `c4d79a0` 2026-06-30 — feat(cli): piflowctl optimize <run> — the Score+Triage accessor (lands nothing)
 - `633f9d3` 2026-06-30 — feat(core): lift the FIX→GATE→LAND + replay/mine surface to the @piflow/core root
 - `05a98a7` 2026-06-30 — feat(cli): piflowctl optimize --fix --binding — the product→optimizer injection seam (v1.5 §6)
 - `6795a9d` 2026-06-30 — feat(cli): optimize --fix --node <substr> — scope the worklist to one node
 - `5bd7c75` 2026-06-30 — feat(optimize): native live streaming — OptimizeEventSink + optimize --fix --watch
+- `38adfad` 2026-06-30 — feat(cli): full check vocabulary (severity/param/pre lane) + policy.warn
+- `9ad4a7b` 2026-06-30 — feat(cli): judge gate (--judge, rubric from judge.md) + checkpoint (G5 HITL)
+- `ca73114` 2026-06-30 — feat(cli): execution gate (--gate-run) + escalate/reroute control actions
+- `70e5464` 2026-06-30 — feat(cli): fusion + subworkflow topology + contract extras (fullAccess/fillSentinel)
+- `ca3cac6` 2026-06-30 — docs(cli): document the full node-authoring surface (--help + piflow-init skill) + changeset
+- `56d2d37` 2026-06-30 — feat(cli): self-describing `piflowctl schema` — print the SDK authoring schemas
+- `476da6d` 2026-06-30 — feat(cli): `piflowctl skills install` — ship the workflow-authoring skills into a target repo
+- `ee12eee` 2026-06-30 — refactor(cli): make `piflowctl schema` a topic-segmented authoring reference
+- `e63fc09` 2026-06-30 — Merge feat/cli-schema-command: self-describing topic-segmented `piflowctl schema`
+- `dcf97ae` 2026-06-30 — Merge branch 'main' into feat/optimize-prove-landing
 
 ### Lessons — memory cluster
 
@@ -158,11 +176,11 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 
 ### Code anchors / blast radius (codegraph)
 
-- `seedNodeMemory` (packages/core/src/memory/seed.ts:30) — 6 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/index.ts`, `packages/core/src/memory/index.ts`; tests: `packages/core/test/memory.test.ts`
+- `seedNodeMemory` (packages/core/src/memory/seed.ts:30) — 6 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/memory/index.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/memory.test.ts`
 - `seedNodeCodeMap` (packages/core/src/code-map.ts:59) — 5 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/code-map.test.ts`
-- `buildNodeMemory` (packages/core/src/memory/skeleton.ts:15) — 5 callers in `packages/core/src/memory/seed.ts`, `packages/core/src/index.ts`, `packages/core/src/memory/index.ts`; tests: `packages/core/test/memory.test.ts`
-- `seedSystemMemory` (packages/core/src/memory/seed.ts:36) — 6 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/index.ts`, `packages/core/src/memory/index.ts`; tests: `packages/core/test/memory.test.ts`
-- `scaffoldMemory` (packages/cli/src/scaffold.ts:247) — 2 callers in `packages/cli/src/scaffold.ts`; tests: `packages/cli/test/scaffold-memory.test.ts`
+- `buildNodeMemory` (packages/core/src/memory/skeleton.ts:15) — 5 callers in `packages/core/src/memory/seed.ts`, `packages/core/src/memory/index.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/memory.test.ts`
+- `seedSystemMemory` (packages/core/src/memory/seed.ts:36) — 6 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/memory/index.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/memory.test.ts`
+- `scaffoldMemory` (packages/cli/src/scaffold.ts:440) — 1 caller in `packages/cli/src/scaffold.ts`; ⚠ no covering tests found
 
-<sub>derived 2026-06-30 · arc=88 commits · files=7 · lessons=6</sub>
+<sub>derived 2026-07-01 · arc=106 commits · files=7 · lessons=6</sub>
 <!-- okf:auto-end -->

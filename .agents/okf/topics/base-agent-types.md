@@ -29,14 +29,14 @@ DEFINED
 - `packages/core/src/workflow/fusion/presets.ts:24` — `FUSION_PRESETS` — built-in judge/obligations presets
 DERIVED at workflow-start
 - `packages/core/src/workflow/template/schema/node.schema.ts:55` — `agentType` field — declares the preset id on a node
-- `packages/core/src/workflow/agent-preset.ts:214` — `loadAgentPreset()` — read-only load from ~/.piflow/agents/<id>.md
+- `packages/core/src/workflow/agent-preset.ts:218` — `loadAgentPreset()` — read-only load from ~/.piflow/agents/<id>.md
 CONSUMED
 - `packages/core/src/workflow/template/loader.ts:159` — carries agentType onto `NodeIntent`
 - `packages/core/src/runner/node-lifecycle.ts:778` — stamps `node.agentType` into `NodeConfig` at run time
 PASSED THROUGH
 - `packages/core/src/observe/runView.ts:291` — agentType passthrough into `RunViewNode`
 RENDERED
-- `gui/src/data/runView.ts:371` — `toFlowGraph()` resolves agentType → icon/color/label off `AgentCatalog`
+- `gui/src/data/runView.ts:383` — `toFlowGraph()` resolves agentType → icon/color/label off `AgentCatalog`
 - `gui/src/components/NodeModeStrip.tsx:85` — renders the base-agent chip
 
 # Freshness (anti-drift)
@@ -120,6 +120,14 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `a72b89f` 2026-06-28 — feat(gui): basis view — face-forward base-agent card + Critic/Scribe cast icons
 - `54747af` 2026-06-28 — fix(core): advertise in-place staged paths (MCP config, skill) under the run dir
 - `22523e9` 2026-06-29 — Merge branch 'main' into worktree-feat+expert-representations
+- `ca01064` 2026-06-29 — feat(executor): wire per-node executor selection (pi | claude-code) into dispatch
+- `1adbe3f` 2026-06-29 — feat(executor): robust §7.2 credential model for claude-code (env token, API-key strip, isolated CLAUDE_CONFIG_DIR)
+- `a52e6c9` 2026-06-29 — feat(executor): template + CLI authoring can select the claude-code executor
+- `4415ae9` 2026-06-29 — feat(core): per-node fullAccess flag — open the fs jail for one node
+- `e1371b1` 2026-06-29 — feat(gui): 3-mode node skin — neutral 'unlocked' from node config
+- `b4152e9` 2026-06-29 — fix(executor): a successful claude-code node reports `ok`, not a spurious `gap`
+- `a935280` 2026-06-29 — merge: claude-code 2nd node executor + interactive piflowctl init wizard
+- `62326b7` 2026-06-30 — fix(core): resolve the agents catalog under PIFLOW_HOME (hermetic agentType tests)
 
 ### Lessons — memory cluster
 
@@ -137,11 +145,11 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 
 ### Code anchors / blast radius (codegraph)
 
-- `FUSION_PRESETS` (packages/core/src/workflow/fusion/presets.ts:24) — 2 callers in `packages/core/src/index.ts`, `packages/core/src/workflow/fusion/expand.ts`; ⚠ no covering tests found
-- `mergePreset` (packages/core/src/workflow/agent-preset.ts:64) — 5 callers in `packages/core/src/index.ts`; tests: `packages/core/test/agent-preset-expansion.test.ts`, `packages/core/test/agent-preset-roleprompt.test.ts`, `packages/core/test/agent-preset.test.ts`
-- `PresetMergeable` (packages/core/src/workflow/agent-preset.ts:37) — 6 callers in `packages/core/src/index.ts`; tests: `packages/core/test/agent-preset-expansion.test.ts`, `packages/core/test/agent-preset-roleprompt.test.ts`, `packages/core/test/agent-preset.test.ts`
-- `loadAgentPreset` (packages/core/src/workflow/agent-preset.ts:214) — 6 callers in `gui/vite.config.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/agent-preset-expansion.test.ts`, `packages/core/test/agent-preset-roleprompt.test.ts`, `packages/core/test/agent-preset.test.ts`
-- `AgentPreset` (packages/core/src/workflow/agent-preset.ts:23) — 9 callers in `packages/core/src/index.ts`, `packages/core/src/workflow/fusion/presets.ts`, `packages/core/src/workflow/agent-preset.ts`; tests: `packages/core/test/agent-preset-expansion.test.ts`, `packages/core/test/agent-preset.test.ts`
+- `FUSION_PRESETS` (packages/core/src/workflow/fusion/presets.ts:24) — 2 callers in `packages/core/src/workflow/fusion/expand.ts`, `packages/core/src/index.ts`; ⚠ no covering tests found
+- `mergePreset` (packages/core/src/workflow/agent-preset.ts:64) — 6 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/agent-preset-expansion.test.ts`, `packages/core/test/agent-preset-roleprompt.test.ts`
+- `PresetMergeable` (packages/core/src/workflow/agent-preset.ts:37) — 6 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/agent-preset-expansion.test.ts`, `packages/core/test/agent-preset-roleprompt.test.ts`
+- `loadAgentPreset` (packages/core/src/workflow/agent-preset.ts:218) — 8 callers in `packages/cli/src/scaffold.ts`, `packages/core/src/workflow/template/render.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/agent-preset-expansion.test.ts`, `packages/core/test/agent-preset-roleprompt.test.ts`
+- `AgentPreset` (packages/core/src/workflow/agent-preset.ts:23) — 5 callers in `packages/core/src/index.ts`, `packages/core/src/workflow/agent-preset.ts`; tests: `packages/core/test/agent-preset-expansion.test.ts`
 
-<sub>derived 2026-06-30 · arc=60 commits · files=8 · lessons=10</sub>
+<sub>derived 2026-07-01 · arc=68 commits · files=8 · lessons=10</sub>
 <!-- okf:auto-end -->

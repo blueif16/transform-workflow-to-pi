@@ -91,16 +91,17 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - [[optimize-loop-native-not-adhoc]]
 - [[piflow-memory-system-v1]]
 - [[piflow-optimize-layer-built]]
+- [[piflow-overlord-control-plane]]
 - [[piflow-product-positioning]]
 - [[piflow-rollout-enablement]]
 
 ### Code anchors / blast radius (codegraph)
 
 - `scoreRun` (packages/core/src/optimize/score.ts:93) — 4 callers in `packages/cli/src/optimize.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`; ⚠ no covering tests found
-- `CheckableTask` (packages/core/src/optimize/replay.ts:34) — 10 callers in `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`, `packages/core/src/optimize/mine.ts`, `packages/core/src/optimize/replay.ts`; tests: `packages/core/test/optimize-replay.test.ts`, `packages/core/test/optimize-root-exports.test.ts`
+- `CheckableTask` (packages/core/src/optimize/replay.ts:34) — 10 callers in `packages/core/src/optimize/mine.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`, `packages/core/src/optimize/replay.ts`; tests: `packages/core/test/optimize-replay.test.ts`, `packages/core/test/optimize-root-exports.test.ts`
 - `makeReplayStages` (packages/core/src/optimize/replay.ts:87) — 7 callers in `packages/cli/src/optimize-fix.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`; tests: `packages/core/test/optimize-mine.test.ts`, `packages/core/test/optimize-replay.test.ts`, `packages/core/test/optimize-root-exports.test.ts`
-- `runFixGate` (packages/core/src/optimize/driver.ts:79) — 9 callers in `packages/cli/src/optimize-fix.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`; tests: `packages/core/test/optimize-driver.test.ts`, `packages/core/test/optimize-loop-gs01.test.ts`, `packages/core/test/optimize-replay.test.ts`, `packages/core/test/optimize-driver-events.test.ts` +1
-- `NodeScore` (packages/core/src/optimize/types.ts:73) — 17 callers in `packages/cli/src/optimize-fix.ts`, `packages/cli/src/optimize.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/score.ts` +1 more; tests: `packages/core/test/optimize-loop-gs01.test.ts`, `packages/core/test/optimize-triage.test.ts`
+- `runFixGate` (packages/core/src/optimize/driver.ts:86) — 4 callers in `packages/cli/src/optimize-fix.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`; ⚠ no covering tests found
+- `NodeScore` (packages/core/src/optimize/types.ts:79) — 11 callers in `packages/cli/src/optimize-fix.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/triage.ts`; tests: `packages/core/test/optimize-triage.test.ts`
 
-<sub>derived 2026-06-30 · arc=9 commits · files=11 · lessons=10</sub>
+<sub>derived 2026-07-01 · arc=9 commits · files=11 · lessons=11</sub>
 <!-- okf:auto-end -->

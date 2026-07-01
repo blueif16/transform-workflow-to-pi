@@ -101,6 +101,7 @@ anchors ✓ (every line opened + confirmed) · scope = the seeds above · re-der
 - [[capability-catalog-feed]]
 - [[claude-code-executor]]
 - [[cloud-sandbox-portability]]
+- [[codegraph-best-practices]]
 - [[competitive-gaps-pdw]]
 - [[daytona-cloud-path]]
 - [[expert-representations]]
@@ -115,6 +116,7 @@ anchors ✓ (every line opened + confirmed) · scope = the seeds above · re-der
 - [[piflow-init-scaffolder]]
 - [[piflow-memory-system-v1]]
 - [[piflow-optimize-layer-built]]
+- [[piflow-overlord-control-plane]]
 - [[piflow-product-positioning]]
 - [[piflow-rollout-enablement]]
 - [[piflowctl-bin-rename]]
@@ -126,8 +128,8 @@ anchors ✓ (every line opened + confirmed) · scope = the seeds above · re-der
 - `resolveRunTools` (packages/core/src/runner/entry.ts:38) — 3 callers in `packages/core/src/runner/entry.ts`; tests: `packages/core/test/catalog-client.test.ts`
 - `listServerTools` (packages/tool-bridge/src/index.ts:105) — 2 callers in `packages/core/src/catalog/introspect.ts`; tests: `packages/tool-bridge/test/list-server-tools.test.ts`
 - `seededRegistry` (packages/core/src/tools/catalog.ts:58) — 8 callers in `packages/cli/src/inspect.ts`, `packages/cli/src/run.ts`, `packages/core/src/runner/tool-config.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/catalog.test.ts`
-- `mcpToolsToEntries` (packages/core/src/tools/ingest.ts:38) — 9 callers in `packages/core/src/catalog/introspect.ts`, `packages/core/src/runner/tool-config.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/runner.test.ts`, `packages/core/test/tools-ingest.test.ts`, `packages/core/test/tools-verify.test.ts`
+- `mcpToolsToEntries` (packages/core/src/tools/ingest.ts:38) — 9 callers in `packages/core/src/catalog/introspect.ts`, `packages/core/src/runner/tool-config.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/tools-ingest.test.ts`, `packages/core/test/tools-verify.test.ts`, `packages/core/test/runner.test.ts`
 - `loadMcpCatalog` (packages/core/src/catalog/client.ts:60) — 5 callers in `packages/core/src/catalog/client.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/catalog-client.test.ts`, `packages/core/test/catalog-introspect.test.ts`, `packages/core/test/catalog-sync.test.ts`
 
-<sub>derived 2026-06-30 · arc=27 commits · files=9 · lessons=23</sub>
+<sub>derived 2026-07-01 · arc=27 commits · files=9 · lessons=25</sub>
 <!-- okf:auto-end -->

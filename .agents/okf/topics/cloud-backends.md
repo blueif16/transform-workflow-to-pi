@@ -38,7 +38,7 @@ EXECUTE
 - `packages/core/src/runner/env-staging.ts:18` — `CLOUD_KINDS` — `{daytona,e2b}`: the no-host-trust gate
 - `packages/core/src/runner/env-staging.ts:45` — `effectiveSandboxLocation` — per-node workdir/output by kind (isolated for cloud)
 SECRETS
-- `packages/core/src/types.ts:636` — `SecretResolver` — `(varName,{nodeId,isCloud}) => value`; mint scoped tokens cloud-side
+- `packages/core/src/types.ts:658` — `SecretResolver` — `(varName,{nodeId,isCloud}) => value`; mint scoped tokens cloud-side
 - `packages/core/src/runner/env-staging.ts:141` — `cloudCredEnvAdditions` — resolve the DECLARED cred allowlist into the VM (cloud-only)
 
 # Freshness (anti-drift)
@@ -129,6 +129,10 @@ anchors ✓ (all opened + line-verified in this worktree) · scope = the seeds a
 - `caf6e4e` 2026-06-28 — feat(core): materialize judge gate into a real DAG node at load time
 - `51992b0` 2026-06-28 — feat: per-node stop — persist each node's pi pid, signal its group
 - `4e9d4fd` 2026-06-28 — fix(core): in-place node runs IN the run dir so relative artifacts land under {{RUN}}
+- `ca01064` 2026-06-29 — feat(executor): wire per-node executor selection (pi | claude-code) into dispatch
+- `44b4310` 2026-06-29 — feat(executor): carry `executor` through compile + offline end-to-end dispatch test
+- `4415ae9` 2026-06-29 — feat(core): per-node fullAccess flag — open the fs jail for one node
+- `a935280` 2026-06-29 — merge: claude-code 2nd node executor + interactive piflowctl init wizard
 
 ### Lessons — memory cluster
 
@@ -167,5 +171,5 @@ anchors ✓ (all opened + line-verified in this worktree) · scope = the seeds a
 - `createDaytonaProvider` (packages/daytona/src/daytona-sdk.ts:179) — 2 callers in `packages/daytona/src/index.ts`; tests: `packages/daytona/test/sandbox-daytona-e2e.test.ts`
 - `CLOUD_KINDS` (packages/core/src/runner/env-staging.ts:18) — 2 callers in `packages/core/src/runner/node-lifecycle.ts`, `packages/core/src/runner/runner.ts`; ⚠ no covering tests found
 
-<sub>derived 2026-06-30 · arc=67 commits · files=8 · lessons=25</sub>
+<sub>derived 2026-07-01 · arc=71 commits · files=8 · lessons=25</sub>
 <!-- okf:auto-end -->

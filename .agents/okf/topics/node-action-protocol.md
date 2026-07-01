@@ -119,6 +119,13 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `4e9d4fd` 2026-06-28 — fix(core): in-place node runs IN the run dir so relative artifacts land under {{RUN}}
 - `54747af` 2026-06-28 — fix(core): advertise in-place staged paths (MCP config, skill) under the run dir
 - `22523e9` 2026-06-29 — Merge branch 'main' into worktree-feat+expert-representations
+- `ca01064` 2026-06-29 — feat(executor): wire per-node executor selection (pi | claude-code) into dispatch
+- `44b4310` 2026-06-29 — feat(executor): carry `executor` through compile + offline end-to-end dispatch test
+- `1adbe3f` 2026-06-29 — feat(executor): robust §7.2 credential model for claude-code (env token, API-key strip, isolated CLAUDE_CONFIG_DIR)
+- `4415ae9` 2026-06-29 — feat(core): per-node fullAccess flag — open the fs jail for one node
+- `b4152e9` 2026-06-29 — fix(executor): a successful claude-code node reports `ok`, not a spurious `gap`
+- `a935280` 2026-06-29 — merge: claude-code 2nd node executor + interactive piflowctl init wizard
+- `d71e46c` 2026-06-29 — feat(core): inherit agentType preset role-prompt at render time
 
 ### Lessons — memory cluster
 
@@ -127,6 +134,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - [[capability-catalog-feed]]
 - [[claude-code-executor]]
 - [[cloud-sandbox-portability]]
+- [[codegraph-best-practices]]
 - [[competitive-gaps-pdw]]
 - [[config-is-truth-gui-is-projection]]
 - [[daytona-cloud-path]]
@@ -146,6 +154,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - [[piflow-init-scaffolder]]
 - [[piflow-memory-system-v1]]
 - [[piflow-optimize-layer-built]]
+- [[piflow-overlord-control-plane]]
 - [[piflow-product-positioning]]
 - [[piflow-rollout-enablement]]
 - [[piflowctl-bin-rename]]
@@ -158,9 +167,9 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 ### Code anchors / blast radius (codegraph)
 
 - `CHECK_KINDS` (packages/core/src/checks.ts:62) — 2 callers in `packages/core/src/index.ts`; tests: `packages/core/test/checks.test.ts`
-- `collectChecks` (packages/core/src/workflow/template/render.ts:21) — 3 callers in `packages/core/src/workflow/template/loader.ts`, `packages/core/src/workflow/template/render.ts`; ⚠ no covering tests found
+- `collectChecks` (packages/core/src/workflow/template/render.ts:22) — 3 callers in `packages/core/src/workflow/template/loader.ts`, `packages/core/src/workflow/template/render.ts`; ⚠ no covering tests found
 - `evaluateChecks` (packages/core/src/checks.ts:117) — 6 callers in `packages/core/src/runner/node-lanes.ts`, `packages/core/src/runner/node-lifecycle.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/checks.test.ts`
 - `runHooks` (packages/core/src/hooks/index.ts:65) — 6 callers in `packages/core/src/runner/node-lanes.ts`, `packages/core/src/runner/node-lifecycle.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/hooks.test.ts`
 
-<sub>derived 2026-06-30 · arc=56 commits · files=8 · lessons=31</sub>
+<sub>derived 2026-07-01 · arc=63 commits · files=8 · lessons=33</sub>
 <!-- okf:auto-end -->

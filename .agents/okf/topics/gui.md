@@ -103,11 +103,14 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `a72b89f` 2026-06-28 — feat(gui): basis view — face-forward base-agent card + Critic/Scribe cast icons
 - `22523e9` 2026-06-29 — Merge branch 'main' into worktree-feat+expert-representations
 - `10722b4` 2026-06-29 — feat(observe-views): render the live ThreadRow fields in the GUI + TUI
+- `e1371b1` 2026-06-29 — feat(gui): 3-mode node skin — neutral 'unlocked' from node config
+- `85d4205` 2026-06-29 — Merge per-node fullAccess: open the fs jail for one node (config-is-truth, skin is projection)
 
 ### Lessons — memory cluster
 
 **Alias matches** (review — may include false positives):
 - [[claude-code-executor]]
+- [[codegraph-best-practices]]
 - [[competitive-gaps-pdw]]
 - [[config-is-truth-gui-is-projection]]
 - [[daytona-cloud-path]]
@@ -130,11 +133,9 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 
 ### Code anchors / blast radius (codegraph)
 
-- `toFlowGraph` (gui/src/data/runView.ts:373) — 2 callers in `gui/src/components/WorkflowCanvas.tsx`; ⚠ no covering tests found
 - `NodeHud` (gui/src/components/NodeHud.tsx:92) — 2 callers in `gui/src/components/NodeExpandOverlay.tsx`; ⚠ no covering tests found
 - `loadIndex` (gui/src/data/runIndex.ts:60) — 2 callers in `gui/src/components/WorkflowCanvas.tsx`; ⚠ no covering tests found
-- `loadRunView` (gui/src/data/runView.ts:105) — 2 callers in `gui/src/components/WorkflowCanvas.tsx`; ⚠ no covering tests found
 - `watchRun` (packages/cli/src/watch.ts:60) — 14 callers in `gui/vite.config.ts`, `packages/cli/src/telemetry.ts`, `packages/cli/src/watch.ts`, `packages/langgraph/src/stream.ts` +4 more; tests: `packages/cli/test/watch.test.ts`, `packages/core/test/observe.test.ts`
 
-<sub>derived 2026-06-30 · arc=43 commits · files=8 · lessons=20</sub>
+<sub>derived 2026-07-01 · arc=45 commits · files=8 · lessons=21</sub>
 <!-- okf:auto-end -->
