@@ -133,6 +133,19 @@ describe('SeatbeltSandbox — read-scope EPERM enforcement (darwin)', () => {
     expect(profile).not.toContain('@TMPDIR@');
   });
 
+  it('normalizes a glob `owns` entry to a recursive (subpath dir) write grant, not a literal "*" (E11a)', () => {
+    // A `owns` entry like `…/shape-primitives/*` must become a RECURSIVE write grant on the DIR so the
+    // node can CREATE new files under it. SBPL has no glob expansion, so the emitted rule must be
+    // `(subpath "…/shape-primitives")`, never `(subpath "…/shape-primitives/*")` (a bogus dir named "*").
+    const profile = buildSeatbeltProfile({
+      workdir: '/tmp/piflow-x',
+      readScope: [],
+      writeScope: ['/x/owns/*'],
+    });
+    expect(profile).toContain('(subpath "/x/owns")');
+    expect(profile).not.toContain('/x/owns/*');
+  });
+
   darwinIt(
     'writes an in-scope file but EPERMs an out-of-scope sibling write under the sandbox',
     async () => {
