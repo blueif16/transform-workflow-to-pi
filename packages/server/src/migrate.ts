@@ -99,10 +99,14 @@ export function makePiflowMigrate(allowedTemplates?: string[] | null): Middlewar
       const argv = buildStartRunArgv(tpl.templateDir, run, body);
       const cliBin = findUp("packages/cli/dist/cli.js");
       const cwd = tpl.productRoot ?? process.cwd();
+      // PIN the resume to the LOCAL context: it must run HERE (this serve just unpacked the run-dir), never
+      // redirect. `piflowctl run` redirects to a REMOTE active context (P7); a stray `current` on this host
+      // would send the adopted run's own resume back out over HTTP → a redirect loop instead of finishing it.
+      const env = { ...process.env, PIFLOW_CONTEXT: "local" };
       try {
         const child = cliBin
-          ? spawn(process.execPath, [cliBin, ...argv], { cwd, detached: true, stdio: "ignore" })
-          : spawn("piflowctl", argv, { cwd, detached: true, stdio: "ignore" });
+          ? spawn(process.execPath, [cliBin, ...argv], { cwd, detached: true, stdio: "ignore", env })
+          : spawn("piflowctl", argv, { cwd, detached: true, stdio: "ignore", env });
         child.on("error", (e) => { process.stderr.write(`migrate/adopt: resume spawn failed (${String(e)})\n`); });
         child.unref();
       } catch (e) {

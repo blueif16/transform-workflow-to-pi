@@ -143,5 +143,9 @@ describe("POST /api/migrate", () => {
     // the spawned argv includes the CLI migrate verb with the target + run (order-sensitive)
     const argv = (spawnSpy.mock.calls[0] as unknown[]).flat().map(String).join(" ");
     expect(argv).toContain("context migrate cloud r1");
+    // the source is PINNED to this serve's local fleet (not the mutable `current` pointer) — else a prior
+    // `context use`/migrate makes source==target and the migration silently no-ops behind the 202.
+    const opts = (spawnSpy.mock.calls[0] as [unknown, unknown, { env?: Record<string, string> }])[2];
+    expect(opts.env?.PIFLOW_CONTEXT).toBe("local");
   });
 });

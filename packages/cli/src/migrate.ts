@@ -113,10 +113,15 @@ const base = (entry: ContextEntry): string => entry.baseUrl.replace(/\/$/, '');
 /** The default detached local resume — mirrors the server's adopt spawn (crash-durable via the journal). */
 function spawnResumeDefault(templateDir: string, run: string, sandbox: string, cwd: string): void {
   const argv = ['run', templateDir, '--run', run, '--sandbox', sandbox];
+  // PIN the resume to the LOCAL context so it runs HERE and never redirects: `piflowctl run` redirects to a
+  // REMOTE active context (P7), and at this point in a DOWNLOAD the persisted `current` is still the remote
+  // source (the `context use <target>` switch runs AFTER this spawn) — so an unpinned resume would bounce the
+  // downloaded run back out over HTTP instead of finishing it locally. PIFLOW_CONTEXT out-ranks `current`.
+  const env = { ...process.env, PIFLOW_CONTEXT: 'local' };
   // In the built monorepo, `piflowctl` is packages/cli/dist/cli.js; fall back to the bin on PATH.
-  const child = spawn('piflowctl', argv, { cwd, detached: true, stdio: 'ignore' });
+  const child = spawn('piflowctl', argv, { cwd, detached: true, stdio: 'ignore', env });
   child.on('error', () => {
-    const alt = spawn(process.execPath, [path.resolve(cwd, 'node_modules/.bin/piflowctl'), ...argv], { cwd, detached: true, stdio: 'ignore' });
+    const alt = spawn(process.execPath, [path.resolve(cwd, 'node_modules/.bin/piflowctl'), ...argv], { cwd, detached: true, stdio: 'ignore', env });
     alt.on('error', () => {});
     alt.unref();
   });

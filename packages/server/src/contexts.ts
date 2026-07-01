@@ -98,10 +98,15 @@ export const piflowMigrateRun: Middleware = async (req, res, next) => {
   const cliBin = findUp("packages/cli/dist/cli.js");
   const argv = ["context", "migrate", target, run];
   const cwd = resolved.workspaceRoot ?? process.cwd();
+  // PIN the SOURCE to THIS serve's local fleet: server-orchestrated migrate always means "from HERE to
+  // target". Without this, the spawned migrate derives its source from the persisted `current` pointer — which
+  // may already BE the target (a prior `context use`/migrate), yielding a source==target no-op that a
+  // fire-and-forget 202 would silently swallow. PIFLOW_CONTEXT out-ranks `current` in the resolve ladder.
+  const env = { ...process.env, PIFLOW_CONTEXT: "local" };
   try {
     const child = cliBin
-      ? spawn(process.execPath, [cliBin, ...argv], { cwd, detached: true, stdio: "ignore" })
-      : spawn("piflowctl", argv, { cwd, detached: true, stdio: "ignore" });
+      ? spawn(process.execPath, [cliBin, ...argv], { cwd, detached: true, stdio: "ignore", env })
+      : spawn("piflowctl", argv, { cwd, detached: true, stdio: "ignore", env });
     child.on("error", (e) => process.stderr.write(`migrate: failed to spawn the migration (${String(e)})\n`));
     child.unref();
   } catch (e) {

@@ -124,6 +124,9 @@ describe("migrate endpoints", () => {
     const destRunDir = join(scratch, "wf", "runs", "mig1");
     expect(readFileSync(join(destRunDir, "a.txt"), "utf8")).toBe("carried"); // bundle landed on the target
     expect(spawnSpy).toHaveBeenCalledTimes(1); // resume was launched
+    // the resume is PINNED to the local context so it runs HERE and never redirects (P7) back out over HTTP.
+    const opts = (spawnSpy.mock.calls[0] as [unknown, unknown, { env?: Record<string, string> }])[2];
+    expect(opts.env?.PIFLOW_CONTEXT).toBe("local");
   });
 
   it("POST adopt is allow-list gated: a non-listed template ⇒ 403 and NO resume spawn", async () => {
