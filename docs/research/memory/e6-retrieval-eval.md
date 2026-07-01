@@ -106,3 +106,37 @@ gate-backed (`--check` resolves `line∈span`); freshness/sufficiency from each 
 2. Land the skill clarifications S3–S6 (one batched edit, via `agentic-prompt-design`).
 3. After re-derive: MAINTAIN pass for C2/C3 (promote anchors), C4 (alias decision), C1 (author claude-executor card).
 4. Round 2: add `cost`-style adversarial queries + re-run the same 8 to confirm fixes (regression guard).
+
+---
+
+## Results — Round 2 (2026-07-01, after re-derive on main + C1–C4)
+
+Re-ran the 4 queries that targeted the fixed gaps (Q2/Q3/Q4/Q6), blind and verbatim from Round 1, on the cards
+now at **main-parity** (68-commit merge + re-derive) with C1–C4 landed. The 4 unchanged queries (Q1/Q5/Q7/Q8)
+touch cards whose retrieval-relevant content didn't change — skipped for efficiency (Q5's Round-1 branch caveat,
+`--agent-type` "not on this branch", is resolved by the merge). These retrievers also exercised the updated
+`explore`-first skill + the `status`→`sync` hygiene note.
+
+| # | Round 1 | Round 2 | Verdict |
+|---|---|---|---|
+| Q4 claude-executor | `uncovered` (branch-stale; no card owned it) | **`claude-executor`, sliceSufficient:TRUE**, `--check ok`; both halves (command build + verdict) from the slice | **FIXED** — C1 card works |
+| Q2 cost | observe+gui, **insufficient** (`cost` 0 hits, inferred) | observe+gui, **sufficient**; `cost` a declared alias in both, cited `costScalar`; correctly demoted claude-executor's own cost | **FIXED** — C4 |
+| Q3 sandbox per-node | sandbox, **insufficient** (per-node not anchored) | sandbox, **sufficient**; cited `fullAccess`@`node.schema.ts:155`, distinguished per-node vs run-level | **FIXED** — C3 |
+| Q6 optimize `--watch` | optimize, **insufficient** (2/3 parts) | optimize, `--watch` **now anchored** (STREAM group); fixer-model reported absent | **IMPROVED** — C2; model note then added (correct scope: model is a binding choice, not an SDK fact) |
+
+**No regressions. Retrieval 4/4, Honesty 4/4.** Every fix measurably moved insufficient→sufficient. Q6's residual
+"fixer model" gap was *correct behavior* (the model lives in the product `--binding`, not the SDK) and is now
+answerable via a one-line scope note (`core doesn't choose it; the binding does — game-omni uses Claude Code deep-tier`).
+
+### What this proves about the loop
+The dogfood → debug → fix → re-measure cycle **closed**: Round 1 surfaced 4 MAINTAIN gaps + the branch confound;
+we re-derived on main (E3 gate caught 22 anchor drifts), fixed C1–C4, and Round 2 confirmed the fixes with no
+regression. The system's weakness was never retrieval (8/8 both rounds) — it was **completeness**, and completeness
+is now measurably higher. The skill/gate refinements S1–S6 (branch-awareness, sufficiency≠freshness signal, etc.)
+remain the next improvement batch; S2 (silent unknown key) is already fixed.
+
+### Standing eval protocol (repeatable)
+Run this after any slice/skill change or a re-derive: dispatch N blank subagents (no session memory) with the FIND
+contract, verbatim task-phrased queries + committed answer key, grade Retrieval/Anchor/Sufficiency/Honesty, append a
+Round. A query "passes" at Retrieval=Pass AND Sufficiency≥2. This file IS the regression guard — new gaps become new
+`C#`/`S#` findings; fixes are confirmed by a re-run.
