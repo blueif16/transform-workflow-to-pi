@@ -29,6 +29,7 @@ import { runTelemetryCli } from './telemetry.js';
 import { runOptimizeCli } from './optimize.js';
 import { runOptimizeFixCli } from './optimize-fix.js';
 import { runGuiCli } from './gui.js';
+import { runServeCli } from '@piflow/server';
 import { runTuiCli } from './tui.js';
 import { runSkillsCli } from './skills.js';
 import { createRequire } from 'node:module';
@@ -66,6 +67,10 @@ USAGE
   piflowctl model   [list | set <tier> <modelId> [--claude] | activate | deactivate]  the model-tier config
   piflowctl claude-code [connect [--token <t>] | status]  OPTIONAL credential for the claude-code executor
   piflowctl gui     [--port <n>] [--no-open]  launch the browser run viewer, scoped to the project at cwd
+  piflowctl serve   [--port <n>] [--host <h>] [--token <t>] [--roots <p>]  host the control plane (control API +
+                                            built GUI) on THIS machine — the \`local\` context's server, the SAME
+                                            binary a cloud control VM runs. Long-lived; Ctrl-C stops. Serves gui/dist
+                                            (build it: cd gui && npm run build) + POST /api/runs/start.
   piflowctl tui     [<rundir>] [--every <s>]  launch the terminal run viewer, scoped to the project at cwd
   piflowctl skills  install [targetDir] [--force] [--with <id>|--all|--wizard]  install the authoring skills (+ add-ons) into a repo
   piflowctl --version                       print the piflowctl version
@@ -266,6 +271,9 @@ async function main(): Promise<void> {
       break;
     case 'gui':
       await runGuiCli(rest);
+      break;
+    case 'serve':
+      await runServeCli(rest);
       break;
     case 'tui':
       await runTuiCli(rest);

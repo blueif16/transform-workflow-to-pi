@@ -1,0 +1,49 @@
+{
+  "name": "@piflow/server",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi Flow control server — the hostable control plane over the .pi/ run layout. Serves the GUI (gui/dist) + the control API (live run status via SSE, run-view/file/tree read-back, checkpoint reply, node write-back, the two-way `pi --mode rpc` console, and POST /api/runs/start to launch a run). The SAME handlers back the Vite dev middleware and `piflowctl serve` (one implementation, no fork), so the control plane behaves identically on a laptop or a cloud VM.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "server",
+    "control-plane",
+    "workflow",
+    "orchestration",
+    "pi",
+    "agents",
+    "sse"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blueif16/PiFlow.git",
+    "directory": "packages/server"
+  },
+  "homepage": "https://github.com/blueif16/PiFlow/tree/main/packages/server#readme",
+  "bugs": "https://github.com/blueif16/PiFlow/issues",
+  "author": "blueif16",
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@piflow/core": "workspace:*"
+  }
+}
