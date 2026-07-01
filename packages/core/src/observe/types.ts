@@ -9,6 +9,12 @@
 // two stay disjoint and merge clean.
 
 import type { NodeStatus, RunStatus } from '../runner/status.js';
+// The enriched per-node shapes the LIVE graph renders — REUSED verbatim from the batch builder (runView.ts)
+// and the display derivation (derive.ts) so the SSE snapshot/delta and the on-demand run-view carry
+// byte-identical fields. Type-only imports: runView.ts (and its transitive deps) never import this module,
+// so this introduces NO cycle.
+import type { RunTokens, TimelineSpan, ReadRef, WriteRef, ArtifactRef } from './runView.js';
+import type { NodeDerived } from './derive.js';
 
 /**
  * (G5) The HUMAN CHECKPOINT payload a view renders — the marker (the question) cross-checked against the
@@ -63,6 +69,40 @@ export interface NodeView {
    * marker is on disk). The GUI's notification points here; the reply flows back via the courier endpoint.
    */
   checkpoint?: CheckpointView;
+
+  // ── ENRICHED live-graph fields (optional; present when the SSE fold enriches the node) ─────────────────
+  // The live graph renders these directly. They are ADDITIVE (every field optional): a lean consumer
+  // (`piflowctl status`/`watch`, remote, TUI) reads the superset unaffected; the enriched producer folds
+  // them in (P2). Shapes are REUSED from runView.ts/derive.ts — the SSE fold and buildRunView compute the
+  // SAME values from the SAME code, so live and loaded views render byte-identical per-node data.
+  /** agent-neutral token/cost/context rollup (input/output/cache/cost/contextPeak/billable). */
+  tokens?: RunTokens;
+  /** the per-node DISPLAY projection (zones/rankings/unified outputs), computed ONCE — the view re-derives nothing. */
+  derived?: NodeDerived;
+  /** the effective model label the node ran on. */
+  model?: string | null;
+  /** the context-window denominator for the context-pressure bar. */
+  contextWindow?: number | null;
+  /** how many tool invocations this node made. */
+  toolCalls?: number;
+  /** per-tool call counts (the ranking + dominance source). */
+  toolBreakdown?: Record<string, number>;
+  /** the per-tool execution timeline (spans with real durMs/ok once closed). */
+  timeline?: TimelineSpan[];
+  /** scope-bucketed reads (absolute path + display path + via + scope). */
+  reads?: ReadRef[];
+  /** declared/observed writes (absolute path + display path + verified + bytes). */
+  writes?: WriteRef[];
+  /** declared artifacts with on-disk existence + bytes. */
+  artifacts?: ArtifactRef[];
+  /** provider rate-limit/overload retries (count of `auto_retry_start`). */
+  retries?: number;
+  /** the assistant's final `message.stopReason` (null if none seen). */
+  stopReason?: string | null;
+  /** the output was cut off by the token cap (stopReason `'max_tokens'`/`'length'`). */
+  truncated?: boolean;
+  /** the node's self-reported summary line. */
+  summary?: string;
 }
 
 /** A reconstructed stage (a parallel barrier groups its concurrent nodes into one `parallel` stage). */
@@ -107,6 +147,9 @@ export interface RunModel {
   stage: RunStatus['stage'];
   /** The run-level rollup at completion (null while running). */
   totals: RunStatus['totals'];
+  /** (enriched, optional) run-level token/cost rollup folded across nodes — the sum the live graph shows.
+   *  Present when the SSE fold enriches the snapshot; absent on the lean status snapshot. */
+  tokenTotal?: RunTokens;
   nodes: NodeView[];
   stages: StageView[];
   edges: EdgeView[];
@@ -114,10 +157,18 @@ export interface RunModel {
 
 /**
  * One live delta on the single stream. `snapshot` is yielded FIRST (the full model); then `node-status`
- * on a node's status change, `node-event` per new events.jsonl line, and `done` when the run completes.
+ * on a node's status change, `node-event` per new events.jsonl line, `node-enriched` when a node's folded
+ * telemetry materially changes (the FULL re-assembled enriched node, DR3/M4), and `done` when the run
+ * completes.
+ *
+ * ADDITIVE INVARIANT (DR7): a new kind is additive ONLY when it is registered in every stream
+ * allowlist/switch — `node-enriched` is added to `packages/cli/src/remote.ts` `RUN_UPDATE_KINDS`, else
+ * the remote CLI silently drops it.
  */
 export type RunUpdate =
   | { kind: 'snapshot'; model: RunModel }
   | { kind: 'node-status'; id: string; status: NodeStatus }
   | { kind: 'node-event'; id: string; event: import('../runner/events.js').PiEvent }
+  /** the WHOLE re-assembled enriched node (not just tokens+derived — DR3/M4), on a material fold change. */
+  | { kind: 'node-enriched'; id: string; node: NodeView }
   | { kind: 'done' };

@@ -34,8 +34,10 @@ export function resolveRemote(flagContext?: string): { name: string; entry: Cont
   return { name, entry };
 }
 
-/** The RunUpdate kinds the server streams — used to filter the meta/keepalive/stream-error frames it interleaves. */
-const RUN_UPDATE_KINDS = new Set(['snapshot', 'node-status', 'node-event', 'done']);
+/** The RunUpdate kinds the server streams — used to filter the meta/keepalive/stream-error frames it interleaves.
+ *  MUST list EVERY `RunUpdate` kind (observe/types.ts) or a new kind is silently dropped here (DR7 additive
+ *  invariant): `node-enriched` (the enriched-fold delta) is registered so the remote CLI passes it through. */
+const RUN_UPDATE_KINDS = new Set(['snapshot', 'node-status', 'node-event', 'node-enriched', 'done']);
 
 /** Injectable transport + cancellation for every remote call (a test passes a fake fetch + no real socket). */
 export interface RemoteOpts {

@@ -5,7 +5,7 @@
 // omit the Bearer header) are noted at each block.
 
 import { describe, it, expect } from 'vitest';
-import type { RunModel, NodeView, RunUpdate } from '@piflow/core';
+import type { RunModel, NodeView, RunUpdate, NodeDerived } from '@piflow/core';
 import {
   parseSseFrames,
   sseEvents,
@@ -20,6 +20,39 @@ function nodeView(id: string, status: NodeView['status']): NodeView {
   return {
     id, label: id, phase: null, status, reported: status,
     artifactsVerified: 0, artifactsTotal: 0, missing: [], stageIndex: 1, lane: 0,
+  };
+}
+
+/**
+ * An ENRICHED node as the P2 SSE fold produces it — the lean `NodeView` PLUS the optional live-graph fields
+ * (`tokens`/`derived`/spine, all widened in P1). `derived` is a concrete `NodeDerived` literal (P1 only wires
+ * the TRANSPORT; the derivation itself is proven in P0a/P2). The passthrough test asserts these EXACT values
+ * reach the consumer, so the frame must carry the WHOLE node — a tokens-only delta would blank them. Used by
+ * the `node-enriched` passthrough test.
+ */
+function enrichedNode(id: string, billable: number): NodeView {
+  const tokens = { input: billable, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPeak: billable, billable };
+  const derived: NodeDerived = {
+    cacheHit: null,
+    toolError: { errors: 0, rate: 0, tone: 'ok' },
+    dominance: { tool: 'Bash', ratio: 0.8, dominant: false },
+    context: { frac: billable / 200_000, tone: 'ok' }, // ≈2% of a 200k window ⇒ ok
+    time: null,
+    retries: { count: 0, tone: 'ok' },
+    topTools: [{ name: 'Bash', count: 4, pct: 0.8 }, { name: 'Read', count: 1, pct: 0.2 }],
+    outputs: [],
+  };
+  return {
+    ...nodeView(id, 'running'),
+    tokens,
+    contextWindow: 200_000,
+    toolCalls: 5,
+    toolBreakdown: { Bash: 4, Read: 1 },
+    timeline: [{ name: 'Bash', tStartMs: 0, durMs: 10, ok: true }],
+    retries: 0,
+    artifacts: [],
+    writes: [],
+    derived,
   };
 }
 function model(nodes: NodeView[], extra: Partial<RunModel> = {}): RunModel {
@@ -178,6 +211,49 @@ describe('remoteUpdates — the RunUpdate iterable for watch', () => {
       kinds.push((u as { kind: string }).kind);
     }
     expect(kinds).toEqual(['snapshot', 'node-status', 'done']);
+  });
+
+  // P1 wire-widening: a `node-enriched` delta INTERLEAVED into the sequence must survive the SSE client
+  // (parse → allowlist filter → yield) and reach the consumer carrying the FULL enriched node (DR3/M4).
+  // THE MUTATION: drop 'node-enriched' from remote.ts `RUN_UPDATE_KINDS` and `sseEvents` filters it out —
+  // `kinds` loses 'node-enriched' and the tokens/derived assertions never run → RED.
+  it('passes a `node-enriched` delta through with its FULL enriched node (tokens + derived)', async () => {
+    const entry: ContextEntry = { baseUrl: 'http://remote:5273' };
+    const enriched = enrichedNode('w1', 4200); // billable = 4200, contextPeak = 4200 / 200k window
+    const events: RunUpdate[] = [];
+    for await (const u of remoteUpdates(entry, 'r', {
+      fetchImpl: fakeFetch([
+        frame({ kind: 'snapshot', model: model([nodeView('w0', 'running'), nodeView('w1', 'running')]) }),
+        frame({ kind: 'node-enriched', id: 'w1', node: enriched }), // INTERLEAVED between snapshot and terminal frames
+        frame({ kind: 'node-status', id: 'w1', status: 'ok' }),
+        frame({ kind: 'done' }),
+      ]),
+    })) {
+      events.push(u);
+    }
+    // 1) the interleaved kind SURVIVES the allowlist (order preserved). Without the widening it is dropped.
+    expect(events.map((e) => e.kind)).toEqual(['snapshot', 'node-enriched', 'node-status', 'done']);
+    // 2) it carries the FULL enriched node, not just an id — REAL values reach the consumer.
+    const ne = events.find((e) => e.kind === 'node-enriched');
+    if (ne?.kind !== 'node-enriched') throw new Error('node-enriched frame did not survive the SSE client');
+    expect(ne.id).toBe('w1');
+    expect(ne.node.tokens?.billable).toBe(4200);
+    // 3) the `derived` display projection rode along — a concrete tone the live graph renders (context peak
+    //    4200 / 200k ≈ 2% ⇒ 'ok'), proving the delta is the whole node (DR3/M4), not tokens-only.
+    expect(ne.node.derived?.context.tone).toBe('ok');
+    expect(ne.node.derived?.dominance.tool).toBe('Bash'); // 4 Bash > 1 Read
+  });
+});
+
+describe('parseSseFrames — node-enriched frame', () => {
+  it('parses a `node-enriched` frame into the events (pure splitter is kind-agnostic)', () => {
+    const buf =
+      frame({ kind: 'node-enriched', id: 'w1', node: enrichedNode('w1', 100) }) + frame({ kind: 'done' });
+    const { events } = parseSseFrames(buf);
+    expect(events.map((e) => (e as { kind: string }).kind)).toEqual(['node-enriched', 'done']);
+    const ne = events[0];
+    if (ne.kind !== 'node-enriched') throw new Error('expected node-enriched');
+    expect(ne.node.tokens?.billable).toBe(100);
   });
 });
 
