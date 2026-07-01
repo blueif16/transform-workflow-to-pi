@@ -20,7 +20,13 @@ export type OptimizeEvent =
   | { type: 'gated'; node: string; verdict: GateVerdict }
   | { type: 'landed'; node: string; decision: 'adopted' | 'staged' | 'discarded' }
   | { type: 'fix-cycle-ceiling'; node: string; cycles: number; ceiling: number } // node hit the per-node re-attempt bound → skipped, escalate to a human
-  | { type: 'stopped'; reason: FixGateResult['stoppedReason'] };
+  | { type: 'stopped'; reason: FixGateResult['stoppedReason'] }
+  // ── multi-round OVERLORD events (loop.ts) — round boundaries in the SAME stream as the per-fix events above.
+  // `reason` mirrors loop.ts LoopStopReason (inlined to avoid an events↔loop import cycle).
+  | { type: 'round-started'; round: number; of: number }
+  | { type: 'round-complete'; round: number; defectCount: number; accepted: number; attempted: number }
+  | { type: 'loop-converged'; round: number }                                    // triage returned 0 defects → nothing left to fix
+  | { type: 'loop-stopped'; reason: 'budget-exhausted' | 'converged' | 'stalled' | 'circuit-broken'; roundsRun: number };
 
 export type OptimizeEventSink = (event: OptimizeEvent) => void;
 
@@ -56,5 +62,13 @@ export function renderOptimizeEvent(e: OptimizeEvent): string {
       return `fix-cycle-ceiling [${e.node}] ${e.cycles}/${e.ceiling} — escalate`;
     case 'stopped':
       return `stopped: ${e.reason}`;
+    case 'round-started':
+      return `round-started [${e.round}/${e.of}]`;
+    case 'round-complete':
+      return `round-complete [${e.round}] accepted=${e.accepted}/${e.attempted} (defects=${e.defectCount})`;
+    case 'loop-converged':
+      return `loop-converged [${e.round}] — no defects left`;
+    case 'loop-stopped':
+      return `loop-stopped: ${e.reason} (ran ${e.roundsRun} round(s))`;
   }
 }

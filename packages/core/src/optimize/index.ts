@@ -33,6 +33,12 @@ export type {
 export { writeStagingManifest, adoptFile } from './land.js';
 export type { StageOpts } from './land.js';
 
+// The multi-round OVERLORD (v1.5 §6) — the deterministic straight-line driver that composes the injected
+// round stages (run → score+triage → fix+gate → memorize) over N rounds, bounding by run-count + convergence +
+// stall + a circuit-breaker. All intelligence stays in the injected stages; the loop only sequences/bounds/records.
+export { runOptimizeLoop } from './loop.js';
+export type { OptimizeLoopStages, OptimizeLoopOpts, OptimizeLoopResult, RoundRecord, LoopStopReason } from './loop.js';
+
 // The LIVE progress surface for the FIX→GATE loop — its OWN dedicated event sink (NOT the runner's EventSink):
 // the driver emits one typed OptimizeEvent per phase boundary, fire-and-forget, and `renderOptimizeEvent` is
 // the pure one-line projection the `--watch` CLI prints.
