@@ -10,6 +10,34 @@
 > **Status (2026-06-29):** the four-way triage (§3) and the gate clarification (§2) are FIRM. The scoring
 > design (§4) is now **research-grounded** (three Exa briefs folded into §4d) — the cascade is settled in
 > principle; the held-out replay+scoring HARNESS that feeds it (§5.1) is the remaining critical path to build.
+>
+> **Update (2026-07-01):** the **Leg-A ↔ Leg-B cross-reference is WIRED**. A SKILL defect now carries a two-leg
+> `DefectScope` — cross-run recurrence + the lesson's distilled root/prevention (Leg A) + the lesson's
+> `[[okf-slice]]` link (Leg B) — and the CLI seam dereferences that link to the slice's curated code-map at fix
+> time (`resolveSlice` → `enrichCodeMap`), so the fixer reads *how the code works* beside *what recurred*. The
+> store-side fork (embed a condensed copy vs. keep the legs separate and resolve the link) is **CLOSED for
+> POINTER + RESOLVE-AT-READ — never an embedded copy**: confirmed 2026-07-01 by an external SOTA sweep (cache-
+> coherence / GitOfThoughts fusion-buys-nothing / Memex-RL dereference-on-demand) *and* our own "pointers +
+> semantics, never a copy" law (v1 §5b) — a copy has no `--check` to ride, so a lesson's freshness rides the
+> linked slice's gate instead. Captured in the `memory-leg` + `optimize` OKF slices (the understanding system
+> holds the decision).
+>
+> **Update (2026-07-01, cont.):** the OVERLORD is now ASSEMBLED end-to-end in `@piflow/core` + the CLI. Shipped
+> this pass (all thin/deterministic-driver + injected-stage, SkillOpt §7 + goalmode §4 grounded; test-first,
+> mutation-verified): **(1)** the multi-round loop `runOptimizeLoop` (`optimize/loop.ts`) — a thin driver over
+> injected `run→score+triage→fix+gate→memorize` stages with CONVERGED/STALLED early-stop + a circuit-breaker
+> (goalmode's "honest reconciliation": the outcome gate IS the verifier, so early-stop is deterministic);
+> **(2)** cap/retire compaction `compactMemory` (`optimize/compact.ts`, §5.3) — deletes discrete lowest-value
+> lessons, never re-summarizes (ACE); **(3)** the MEMORIZE distillation seam `fillLessonProse`/`distillLesson`
+> (`optimize/distill.ts`) — turns the `(pending …)` placeholders into real prose, the model INJECTED as a
+> `LessonDistiller` (core holds no model/network); **(4)** CLI activation — single-shot `optimize --fix` now
+> MEMORIZEs (closes the cross-invocation recurrence loop) + `optimize --rounds N` (autonomous-propose) composes
+> the loop with a product `run` binding; **(5)** the LONG-HORIZON outer-loop SEAM `runLongHorizon`
+> (`optimize/long-horizon.ts`) — the counterpart to the multi-round loop: each GENERATION optimizes workflow W,
+> then an INJECTED redesign subgraph authors the blueprint of the next workflow W' (analyze past nodes → design
+> future nodes). Still deferred (the named STOPs): the **redesign subgraph** itself (self-design intelligence,
+> product-side) + its `--generations` CLI wiring; multi-candidate **Pareto** at FIX+GATE (goalmode's #1 gap);
+> Tier-2/3 hardened judgment (§4d); a `piflowctl memory find|check` verb.
 
 ---
 

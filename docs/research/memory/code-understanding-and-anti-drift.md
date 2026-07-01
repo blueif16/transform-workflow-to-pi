@@ -207,7 +207,8 @@ wrong). The hand-trace in §1 is our **ground truth** for base-agent-types. Stat
 
 ## 6. Decisions pending (forks to resolve as experiments land)
 1. **One-off dogfood vs port into the SDK.** Reuse game-omni's `_generate.mjs` in a scratch dir first, or build
-   `piflowctl okf build|check` into `@piflow/core` with tests? (Recommend: dogfood E0–E3 first, then port.)
+   `piflowctl understand --check|--rebuild` into `@piflow/core` with tests? (RESOLVED: shipped `piflowctl understand`
+   as a THIN CLI wrapper over the repo-local `_generate.mjs` — one engine, no TS port to drift from the hook.)
 2. **Build vs adopt** the drift gate: port `_generate.mjs --check`, or take `docdrift`/`Staleguard` as deps
    (E3/E4 decides).
 3. **Codegraph on piflow:** `codegraph init` over this repo to unlock E2/E5/E7 (one command; ~100MB index).

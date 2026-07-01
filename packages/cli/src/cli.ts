@@ -28,12 +28,14 @@ import { runInspectCli } from './inspect.js';
 import { runTelemetryCli } from './telemetry.js';
 import { runOptimizeCli } from './optimize.js';
 import { runOptimizeFixCli } from './optimize-fix.js';
+import { runOptimizeLoopCli } from './optimize-loop.js';
 import { runGuiCli } from './gui.js';
 import { runContextCli } from './context.js';
 import { runCloudCli } from './cloud.js';
 import { runServeCli } from '@piflow/server';
 import { runTuiCli } from './tui.js';
 import { runSkillsCli } from './skills.js';
+import { runUnderstandCli } from './understand.js';
 import { createRequire } from 'node:module';
 
 // CLI version, read from this package's own package.json (always shipped in the tarball; resolved
@@ -87,6 +89,7 @@ USAGE
                                             + Claude OAuth as Fly secrets, the same way a node sandbox does.
   piflowctl tui     [<rundir>] [--every <s>]  launch the terminal run viewer, scoped to the project at cwd
   piflowctl skills  install [targetDir] [--force] [--with <id>|--all|--wizard]  install the authoring skills (+ add-ons) into a repo
+  piflowctl understand [subsystem] [--check|--rebuild]  how a subsystem works / where to change it (code slices)
   piflowctl --version                       print the piflowctl version
 
 RUN
@@ -211,12 +214,21 @@ SKILLS
                             workflows against the SDK. Default targetDir = cwd. An existing skill dir is
                             kept unless --force. (The skills are bundled in the npm tarball; a source checkout
                             falls back to this repo's canonical .claude/skills.)
-      ADD-ONS: the trio always installs; opt in extra skill packs (currently 'okf' = OKF code-slices):
-      --with <id>           add one add-on (repeatable), e.g. --with okf.
+      ADD-ONS: the trio always installs; opt in extra skill packs (currently 'understand' = the code slices):
+      --with <id>           add one add-on (repeatable), e.g. --with understand.
       --all                 add every add-on.
       --wizard              interactively choose which add-ons to install.
       A chosen set is remembered in <targetDir>/.piflow/skills.json ({ "addons": [...] }); a later bare
       install replays it. No flag + no manifest = the trio ONLY.
+
+UNDERSTAND  (the code-understanding slices — how each subsystem works + where to change it)
+  (no arg)      list the covered subsystems (the index).
+  <subsystem>   the owning slice: the mental model (Why/how) + the exact path:line anchors to edit + known drift.
+                Matches a subsystem name, a file path, or a symbol; ownership beats a bare prose mention.
+  --check [key] the drift GATE — blocks only when an anchor's file/symbol moved (HEALTH); an out-of-date
+                machine-derived region is advisory. Runs over every slice, or scope to one [key].
+  --rebuild [key]  regenerate the slices' machine-derived regions from git + memory + the code index.
+  Needs a repo with .agents/okf/ seeded; errors clearly if absent (seeding it is a separate step).
 
 LOGS (from @piflow/core)
   -f --follow · --node <id> · --summary · --raw · --poll <ms>   (see 'piflowctl logs --help' semantics)
@@ -270,8 +282,11 @@ async function main(): Promise<void> {
       await runTelemetryCli(rest);
       break;
     case 'optimize':
-      // `--fix` routes to the FIX→GATE→LAND driver (writes a staging manifest); bare `optimize` is read-only.
-      if (rest.includes('--fix')) await runOptimizeFixCli(rest);
+      // `--rounds N` routes to the MULTI-ROUND overlord (autonomous-propose: run→score→fix→memorize per round;
+      // the `run` stage is product-side, so N>1 needs a binding that exports `run`). `--fix` routes to the
+      // single-shot FIX→GATE→LAND driver (writes a staging manifest); bare `optimize` is read-only.
+      if (rest.includes('--rounds')) await runOptimizeLoopCli(rest);
+      else if (rest.includes('--fix')) await runOptimizeFixCli(rest);
       else await runOptimizeCli(rest);
       break;
     case 'logs':
@@ -300,6 +315,9 @@ async function main(): Promise<void> {
       break;
     case 'skills':
       await runSkillsCli(rest);
+      break;
+    case 'understand':
+      await runUnderstandCli(rest);
       break;
     case '--version':
     case '-v':
