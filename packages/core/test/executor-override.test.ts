@@ -121,6 +121,48 @@ describe('runWorkflow — run-start executor override (per-node, wins over the t
     await fs.rm(outDir, { recursive: true, force: true });
   });
 
+  it('a claude-code node PERSISTS its result-event telemetry into rec.usage (previously parsed-then-discarded)', async () => {
+    // The claude verdict path parses cost/tokens/context/session from the ONE stream-json `result` event.
+    // This proves it now lands on the record (the observe spine) — the command both writes the artifact
+    // (so the node is ok) AND emits a realistic `result` line on stdout for parseClaudeResult to read.
+    const g = compile(wf([n('NodeA', [], ['a.txt'])]));
+    const resultJson = JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, num_turns: 2, result: 'Done.',
+      stop_reason: 'end_turn', session_id: 'sess-xyz', ttft_ms: 1712, total_cost_usd: 0.0130002,
+      usage: { input_tokens: 18, output_tokens: 337, cache_read_input_tokens: 17172, cache_creation_input_tokens: 4790 },
+      modelUsage: { 'claude-haiku-4-5-20251001': { contextWindow: 200000 } },
+    });
+    const emitClaudeResult = ((node: NodeSpec): string => {
+      const out = node.sandbox.output;
+      const a = node.io.artifacts[0].path;
+      return `mkdir -p ${out} && printf '%s' ${node.id} > ${out}/${a} && printf '%s\n' '${resultJson}'`;
+    }) as unknown as Parameters<typeof runWorkflow>[1]['buildCommand'];
+
+    const outDir = await tmpOut();
+    const { status } = await runWorkflow(g, {
+      run: 'claude-usage',
+      outDir,
+      executor: 'claude-code',
+      buildCommand: emitClaudeResult,
+      secretResolver: (name) => (name === 'CLAUDE_CODE_OAUTH_TOKEN' ? 'test-oauth-token' : undefined),
+    });
+
+    expect(status.nodes.nodea.status).toBe('ok');
+    const u = status.nodes.nodea.usage;
+    expect(u).toBeDefined();
+    expect(u!.cost).toBeCloseTo(0.0130002, 5);
+    expect(u!.inputTokens).toBe(18);
+    expect(u!.outputTokens).toBe(337);
+    expect(u!.cacheRead).toBe(17172);
+    expect(u!.contextWindow).toBe(200000);
+    expect(u!.numTurns).toBe(2);
+    expect(u!.ttftMs).toBe(1712);
+    // the minted session id is rescued onto the record (was discarded before).
+    expect(status.nodes.nodea.sessionId).toBe('sess-xyz');
+
+    await fs.rm(outDir, { recursive: true, force: true });
+  });
+
   it('a RUN-LEVEL executor default (RunOptions.executor) flips EVERY node; a per-node override still wins over it', async () => {
     const g = compile(wf([
       n('NodeA', [], ['a.txt'], { tier: 'deep' }),
