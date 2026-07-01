@@ -41,11 +41,18 @@ function renderList(t: ModelTiers): string {
       return `  ${k.padEnd(10)} ${v ? v : '(unset)'}${canonical ? '' : '  [custom]'}`;
     })
     .join('\n');
+  // The PARALLEL claude-code tier map (the `--claude` set target) — shown only when configured.
+  const claudeRows = t.claude
+    ? '\nclaude-code tiers (executor: claude-code)\n' +
+      Object.entries(t.claude)
+        .map(([k, v]) => `  ${k.padEnd(10)} ${v || '(unset)'}`)
+        .join('\n')
+    : '';
   return [
     `model tiers (${homeTiersFile()})`,
     `  active: ${t.active}${t.active ? '' : '  — tier references will NOT resolve until active'}`,
-    rows,
-    `set a model:  piflowctl model set <tier> <modelId>   (canonical tiers: ${CANONICAL_TIERS.join(' | ')})`,
+    rows + claudeRows,
+    `set a model:  piflowctl model set <tier> <modelId> [--claude]   (canonical tiers: ${CANONICAL_TIERS.join(' | ')})`,
     `then enable:  piflowctl model activate`,
   ].join('\n');
 }
@@ -56,8 +63,14 @@ function renderList(t: ModelTiers): string {
  * error and leave `next` unchanged (never throws — agent/CI safe).
  */
 export function applyModelCommand(current: ModelTiers, argv: string[]): ModelCommandResult {
-  // Defensive clone so a caller's `current` is never mutated in place (pure-function contract).
-  const clone = (): ModelTiers => ({ active: current.active, tiers: { ...current.tiers } });
+  // Defensive clone so a caller's `current` is never mutated in place (pure-function contract). Preserve the
+  // optional `claude` tier block — this command mutates only the `pi` map, and dropping `claude` on every
+  // write would silently erase the user's claude-code tier mappings (model-routing.ts ModelTiers.claude).
+  const clone = (): ModelTiers => ({
+    active: current.active,
+    tiers: { ...current.tiers },
+    ...(current.claude ? { claude: { ...current.claude } } : {}),
+  });
   const [sub, ...rest] = argv;
 
   switch (sub) {
@@ -66,15 +79,19 @@ export function applyModelCommand(current: ModelTiers, argv: string[]): ModelCom
       return { next: current, output: renderList(current) };
 
     case 'set': {
-      const [tier, modelId] = rest;
+      // `--claude` (position-free) targets the PARALLEL `claude` tier map (the claude-code executor reads it
+      // via resolveClaudeModel). It is gated by the SAME `active` flag, so it activates exactly like the pi set.
+      const claude = rest.includes('--claude');
+      const [tier, modelId] = rest.filter((a) => a !== '--claude');
       if (!tier || !modelId) {
         return {
           next: current,
-          output: `error: usage — piflowctl model set <tier> <modelId> (required: a tier name and a model id)`,
+          output: `error: usage — piflowctl model set <tier> <modelId> [--claude] (required: a tier name and a model id)`,
         };
       }
       const next = clone();
-      next.tiers[tier] = modelId;
+      if (claude) (next.claude ??= {})[tier] = modelId;
+      else next.tiers[tier] = modelId;
       next.active = true; // `set` is the ACTIVATING action — so the runner resolves the tier immediately.
       const canonical = (CANONICAL_TIERS as readonly string[]).includes(tier);
       const warn = canonical
@@ -82,7 +99,7 @@ export function applyModelCommand(current: ModelTiers, argv: string[]): ModelCom
         : `warning: "${tier}" is not a canonical tier (${CANONICAL_TIERS.join(' | ')}); set anyway (free product name).\n`;
       return {
         next,
-        output: `${warn}set tier "${tier}" = ${modelId} (active: true)`,
+        output: `${warn}set ${claude ? 'claude ' : ''}tier "${tier}" = ${modelId} (active: true)`,
       };
     }
 

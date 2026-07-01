@@ -14,11 +14,14 @@
 // NO run model of their own — the shared reader VERIFIES artifacts on disk (verified, not trusted).
 
 import { runLogsCli, ensurePiflowHome } from '@piflow/core';
+import { runInitCli } from './init/index.js';
 import { runNewCli, runAddNodeCli, runMemoryCli } from './scaffold.js';
 import { runModelCli } from './model.js';
+import { runClaudeCodeCli } from './claude-code.js';
 import { runStatusCli } from './status.js';
 import { runWatchCli } from './watch.js';
 import { runExtractCli } from './extract.js';
+import { runSchemaCli, renderAddNodeHelp } from './schema.js';
 import { runRunCli } from './run.js';
 import { runNodeCli } from './node.js';
 import { runInspectCli } from './inspect.js';
@@ -26,10 +29,17 @@ import { runTelemetryCli } from './telemetry.js';
 import { runOptimizeCli } from './optimize.js';
 import { runOptimizeFixCli } from './optimize-fix.js';
 import { runGuiCli } from './gui.js';
+import { runSkillsCli } from './skills.js';
+import { createRequire } from 'node:module';
+
+// CLI version, read from this package's own package.json (always shipped in the tarball; resolved
+// relative to the compiled dist/cli.js → ../package.json = the package root).
+const VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
 const HELP = `piflowctl — drive + observe a pi-flow run over the .pi/ run layout
 
 USAGE
+  piflowctl init                            interactive setup wizard for ~/.piflow (model tiers + optional executors)
   piflowctl new     <templateDir> [flags]   scaffold meta.json + the nodes/ dir (then add-node + Write prose)
   piflowctl add-node <templateDir> --id <id> [flags]  emit one schema-valid node.json (prose is yours)
   piflowctl memory  scaffold <templateDir>  seed the memory layer (template + per-node memory.md/code-map.md)
@@ -37,6 +47,7 @@ USAGE
   piflowctl node    <run> <nodeId> --resume [-m "<msg>"]  warm-resume a node's stored pi session (--stop too)
   piflowctl inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
   piflowctl extract <templateDir>           free DAG preview (node count + parallel lanes; no model)
+  piflowctl schema  [<topic>]               the add-node authoring reference (bare = topic index; --json = JSON Schema)
   piflowctl status  <rundir> [--every <s>]  per-node table + stage/rollup (verified on disk)
   piflowctl watch   <rundir> [--notify]     silent sentinel — one line on done / fail / dead-stall
   piflowctl telemetry <rundir> [nodeId] [--watch] [--verbose] [--json]  agent-facing digest:
@@ -51,8 +62,11 @@ USAGE
                                             a candidate copy → STAGES a manifest. --node scopes the worklist to
                                             one node; --watch streams live progress (--watch-json = JSON lines).
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
-  piflowctl model   [list | set <tier> <modelId> | activate | deactivate]  the model-tier config
+  piflowctl model   [list | set <tier> <modelId> [--claude] | activate | deactivate]  the model-tier config
+  piflowctl claude-code [connect [--token <t>] | status]  OPTIONAL credential for the claude-code executor
   piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
+  piflowctl skills  install [targetDir] [--force]  install the workflow-authoring skills into a repo
+  piflowctl --version                       print the piflowctl version
 
 RUN
   <templateDir> an authored template/ dir (meta.json + nodes/*/). Required.
@@ -90,6 +104,13 @@ NODE
                 per-RUN stop, not just one node: the runner records the run controller's pid in .pi/run.json
                 and spawns each node detached in that group. A run with no recorded pid (older run) errors.
 
+INIT
+  (no args)     an interactive wizard over ~/.piflow. Core step: your pi provider's model tiers
+                (fast/balanced/deep). Optional, gated, skippable step: the Claude Code executor —
+                authorize your local Claude coding plan (a 'claude setup-token', or your existing login)
+                then map the Claude-side tier models. Writes the SAME config as 'model set' / 'claude-code
+                connect'; non-interactive callers (agents/CI) use those granular commands instead.
+
 NEW
   <templateDir> the template dir to create (e.g. .piflow/<wf>/template). Writes meta.json + nodes/.
   --id / --name / --description  meta fields (default id/name = the dir's workflow basename).
@@ -98,15 +119,12 @@ NEW
 
 ADD-NODE
   <templateDir> the template dir (must hold meta.json). --id <id> is required.
-  Edges/contract: --dep <id> · --artifact <p> · --owns <glob> · --read <p>  (each repeatable;
-                owns defaults out/**, read defaults {{RUN}}).
-  Tools/io:     --tool <t> · --deny <t> · --inject <p> · --mcp <name=url>  (each repeatable).
-  Hooks:        --seed <to=from> (PRE) · --promote <from=to[:reducer]> · --project <to=from[,from2]> ·
-                --merge-run <cmd[:args][@cwd]> · --registry-project <source=,mapRef=,key=>  (emit canonical
-                op[] derives; seed runs PRE, the rest POST in project→merge→promote order; each repeatable).
-  Gates:        --check <kind[:path]> (repeatable) · --on-fail block|warn|stop · --return-mode optional|required.
-  Routing:      --model · --provider · --tier · --timeout <ms> · --retries <n> · --schema <p> · --skill <p>.
-  --programmatic  a no-pi node (omits prompt/tools; its declarative ops ARE the node).
+  The authoring flags below render from the SAME CLI_TOPICS source as 'piflowctl schema <topic>'
+  (schema.ts), so this help and the topic reference can never diverge. Pull one topic at a time with
+  'piflowctl schema <topic>'.
+
+${renderAddNodeHelp()}
+
   Emits/overwrites node.json from the flags; NEVER touches nodes/<id>/prompt.md (yours to Write).
 
 MEMORY
@@ -125,6 +143,14 @@ INSPECT
 
 EXTRACT
   <templateDir> an authored template/ dir. Prints stages + parallel lanes. FREE (no model).
+
+SCHEMA  (the self-describing add-node authoring reference — pull one topic at a time)
+  (no arg)      a concise INDEX: one '<topic> — <summary>' line per topic, then 'piflowctl schema <topic>'.
+  <topic>       that topic's concise flag grammar ONLY (node · tools · agent · routing · derive · checks ·
+                control · judge · hitl · topology · contract · commands). Unknown topic ⇒ non-zero exit,
+                listing the valid topics. Same CLI_TOPICS source as the ADD-NODE help (can't diverge).
+  --json [node|meta|workflow]  the escape hatch: the formal @piflow/core JSON Schema (draft 2020-12,
+                default 'node') — re-exported from the SDK, never copied, so it can't drift.
 
 STATUS
   <rundir>      a run dir holding .pi/run.json. Default '.'.
@@ -147,7 +173,23 @@ MODEL
   list (or bare)            print the tier map (~/.piflow/model-tiers.json) + active + the canonical keys.
   set <tier> <modelId>      map a tier alias → a model id AND set active:true (written atomically). Canonical
                             tiers: fast | balanced | deep; a free product name is allowed (warns, never fails).
+  set <tier> <modelId> --claude  map the tier in the PARALLEL claude-code map (Claude ids/aliases:
+                            opus|sonnet|haiku|claude-*) — what an --executor claude-code node resolves.
   activate / deactivate     flip whether tier references resolve (precedence: node.model > tier > --model).
+
+CLAUDE-CODE  (OPTIONAL — a node runs on a headless local Claude session via 'node --executor claude-code')
+  connect [--token <t>]     persist the subscription OAuth token → ~/.piflow/claude-code.json (chmod 600).
+                            Token: --token, else $CLAUDE_CODE_OAUTH_TOKEN. Mint one with: claude setup-token.
+  status                    show whether the explicit credential is configured + if the claude CLI is found.
+  SKIPPABLE: on macOS an existing 'claude' login is used automatically; the file is the portable layer for
+  Linux/cloud. The runner resolves env → ~/.piflow/claude-code.json → local login (runner/claude-executor.ts).
+
+SKILLS
+  install [targetDir] [--force]  copy piflow's workflow-authoring skills (piflow-init/start/enhance) into
+                            <targetDir>/.claude/skills/ so a fresh Claude Code agent there can compose
+                            workflows against the SDK. Default targetDir = cwd. An existing skill dir is
+                            kept unless --force. (The skills are bundled in the npm tarball; a source checkout
+                            falls back to this repo's canonical .claude/skills.)
 
 LOGS (from @piflow/core)
   -f --follow · --node <id> · --summary · --raw · --poll <ms>   (see 'piflowctl logs --help' semantics)
@@ -164,6 +206,9 @@ async function main(): Promise<void> {
   ensurePiflowHome();
   const [sub, ...rest] = process.argv.slice(2);
   switch (sub) {
+    case 'init':
+      await runInitCli(rest);
+      break;
     case 'new':
       await runNewCli(rest);
       break;
@@ -185,6 +230,9 @@ async function main(): Promise<void> {
     case 'extract':
       await runExtractCli(rest);
       break;
+    case 'schema':
+      runSchemaCli(rest);
+      break;
     case 'status':
       await runStatusCli(rest);
       break;
@@ -205,8 +253,19 @@ async function main(): Promise<void> {
     case 'model':
       await runModelCli(rest);
       break;
+    case 'claude-code':
+      await runClaudeCodeCli(rest);
+      break;
     case 'gui':
       await runGuiCli(rest);
+      break;
+    case 'skills':
+      await runSkillsCli(rest);
+      break;
+    case '--version':
+    case '-v':
+    case '-V':
+      process.stdout.write(`${VERSION}\n`);
       break;
     case 'help':
     case '--help':

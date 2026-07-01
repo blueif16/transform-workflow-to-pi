@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Pi Flow ↔ LangGraph.js connector — ACTIVATE a pi workflow run and GROUND @piflow/core's shared run-status stream (watchRun/RunUpdate — the same one the CLI + TUI render) into a LangGraph graph (streamMode:'custom' via config.writer). Generic: ZERO product/domain vocabulary; the connector only transports run status.",
   "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "keywords": [
     "langgraph",
     "langchain",
@@ -37,10 +40,10 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@piflow/core": "^0.1.0"
+    "@piflow/core": "workspace:*"
   },
   "peerDependencies": {
     "@langchain/langgraph": ">=0.4 <1",

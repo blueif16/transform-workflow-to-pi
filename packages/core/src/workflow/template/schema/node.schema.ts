@@ -60,6 +60,15 @@ export const nodeSchema = {
       minLength: 1,
       description: 'Agent-preset LABEL (branding) — expanded into tools/prompt at init; GUI icon key. Omitted ⇒ none.',
     },
+    executor: {
+      // Which agent ENGINE runs this node: the `pi` fleet (default) or a headless local Claude Code
+      // session (`claude -p`). Omitted ⇒ 'pi' (byte-identical to today). A 'claude-code' node dispatches
+      // via the claudeCommand builder + the host-resolved OAuth credential (runner/claude-executor.ts);
+      // see docs/design/agent-executor-interface.md.
+      type: 'string',
+      enum: ['pi', 'claude-code'],
+      description: "Agent engine for this node: 'pi' (default fleet) or 'claude-code' (headless local Claude). Omitted ⇒ pi.",
+    },
     tools: {
       type: 'object',
       additionalProperties: false,
@@ -142,6 +151,14 @@ export const nodeSchema = {
           type: 'array',
           description: 'KIND 2 exposed dirs the model explores via `read` + the OS allow-list (§6a).',
           items: { type: 'string', minLength: 1 },
+        },
+        fullAccess: {
+          // Per-node JAIL-OFF posture → `node.sandbox.fullAccess`. When true, this node's `pi` runs OUTSIDE
+          // the local fs jail (full host read+write — the per-node `--sandbox danger-full-access`), nullifying
+          // `readScope`/`owns` for THIS node only. Loosen-only, LOCAL-only (a no-op in a cloud VM). Sits with
+          // readScope/owns (the fs-scope axis). Omitted/false ⇒ jailed exactly as today.
+          type: 'boolean',
+          description: 'Per-node jail-off: run this node OUTSIDE the local fs jail (full host access). Omitted ⇒ jailed.',
         },
         schema: {
           type: 'string',

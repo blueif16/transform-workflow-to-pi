@@ -1,0 +1,77 @@
+# Release — Changesets + npm OIDC Trusted Publishing (no NPM_TOKEN secret).
+#
+# ONE-TIME BOOTSTRAP CAVEAT:
+#   npm has NO "pending publisher" concept, so Trusted Publishing cannot be
+#   configured for a package that does not yet exist on the registry. Therefore
+#   the FIRST publish of each @piflow/* package MUST be a manual, LOCAL run:
+#       pnpm release        # build + changeset publish, authenticated locally
+#   AFTER that first version exists on npmjs.com, configure a per-package
+#   Trusted Publisher for EACH published package at
+#   https://www.npmjs.com/package/<pkg>/access :
+#       Provider:    GitHub Actions
+#       Org/user:    blueif16
+#       Repository:  PiFlow
+#       Workflow:    release.yml
+#       Environment: release
+#   Once configured, every subsequent publish flows through this workflow via
+#   OIDC automatically — no token required, with provenance attestations.
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write # required for npm OIDC trusted publishing
+
+concurrency:
+  # NO cancel-in-progress — a publish must never be interrupted mid-flight.
+  group: release-${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      # action-setup MUST run before setup-node so `cache: pnpm` can find pnpm on PATH.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      # OIDC trusted publishing requires npm >= 11.5.1 (ships with Node >= 22.14);
+      # upgrade to latest to be safe regardless of the bundled npm version.
+      - name: Upgrade npm (OIDC trusted publishing)
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      # Opens/updates the "Version Packages" PR when changesets are pending;
+      # when that PR merges (changesets already consumed), runs `pnpm release`
+      # to publish via OIDC. Private packages are auto-skipped by changeset publish.
+      - name: Create Release PR or publish
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          publish: pnpm release
+          version: pnpm version-packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true

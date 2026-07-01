@@ -47,7 +47,7 @@ that is how a silent, wrong workflow gets built.
 |---|---|---|
 | A proven Claude Code Workflow `.js` (`agent()`/`parallel()`/`pipeline()`/`phase()`) | **PORT** | `references/parse-claude-workflow.md` + `scripts/parse-claude-workflow.mjs` — `extractWorkflow` runs it under recording stubs and captures the EXACT realized prompts + DAG; you author the rest (tools/mcp/contract-as-data/hooks/refs). ✅ implemented |
 | A workflow in another engine's format (n8n / YAML / JSON) | **IMPORT** | Map the foreign graph → the template's DAG manifest + per-node defs. ⛔ not yet — do not improvise; stop and flag the missing importer |
-| Only a task/goal, no workflow yet | **COMPOSE** | Author `.piflow/<wf>/template/` from the task per `docs/design/template-format.md`. ⛔ not yet — stop and flag |
+| Only a task/goal, or a skill/agent system described in prose | **COMPOSE** | The agent REASONS the task into a DAG — START from a blueprint shape (`references/blueprints/`) and stamp it with the scaffold loop (below), each lane bound to a base agent. ✅ |
 
 - **The PORT script is the bridge; its 0 exit is the oracle.** It ends by `compile()`ing its own output and
   asserting the DAG survived — trust the exit code, not a glance at the JSON. A non-zero exit means the spec is
@@ -56,6 +56,37 @@ that is how a silent, wrong workflow gets built.
   CANNOT recover (data-flow reads, hooks, the contract decisions) and how to refine it. Read that before you
   ship the template.
 - **New conditions are a new row + a new reference + (if programmatic) a new script — never more prose here.**
+- **The scaffold loop IS the convenience pathway — author by flags, never by hand-writing node JSON.** Stamp any
+  template (COMPOSE, or extend a PORT) with the CLI: `piflowctl new <dir>` → per node `piflowctl add-node <dir>
+  --id <id> [--dep …] [--tool …] [--artifact …] [--owns …] [--on-fail block] [--agent-type <base>]` (config is
+  emitted from flags, re-runnable as a deterministic function of them; the FULL gate/judge/checkpoint/control
+  surface is flags too — see the gate-authoring bullet below) → `Write` each `nodes/<id>/prompt.md` (the
+  PROSE — the only part that's yours) → `piflowctl extract <dir>` to TEST (free DAG preview, no model — the real
+  loadTemplate gate). `--agent-type <base>` binds a whole base agent (its tools + skill + the OBSERVABLE label,
+  via the real `mergePreset`) in one flag. This is how a node is scaffolded or customized in a single line —
+  reach for it before hand-authoring, and `extract` after every change to confirm the DAG still compiles.
+- **Gates, judges, checkpoints, and control are FLAGS — never hand-edit `node.json` for them.** The WHOLE
+  per-node gate surface is reachable from `add-node`; each flag emits the exact schema field the loader honors,
+  so `node.json` stays a deterministic function of the flags and `piflowctl extract` (the loadTemplate gate) is
+  the oracle. Author by flag; the only prose you Write is `prompt.md` (and a judge's `judge.md`):
+  - **Checks** — `--check <kind[:path[:severity[:param]]]>` (post lane) · `--check-pre …` (pre lane) ·
+    `--on-fail`/`--on-warn block|warn|stop`. `severity`=fail|warn; `param`=a dotted field, a regex, or a JSON
+    object (`{min,path}` for count-floor) — JSON-parsed when it parses. (terse `kind`/`kind:path` still works.)
+  - **Execution gate** — `--gate-run <cmd[:args][@cwd]>`: a POST shell gate whose non-zero exit BLOCKS the node.
+    Distinct from `--merge-run` (a `transform.merge` data-derive with NO verdict) — use `--gate-run` for a test/
+    build/lint gate, `--merge-run` to generate an asset.
+  - **Judge** (a DIFFERENT-model verdict, materialized at load into a real `<id>__judge` node) — Write the rubric
+    prose to `nodes/<id>/judge.md` FIRST, then `--judge <judgeTier[:threshold]>`; the CLI inlines `judge.md` into
+    `judgeGate.rubric`. `judgeTier` MUST differ from the node's `--tier` (no self-judging — the CLI rejects a
+    collision before any write). `--judge-on-fail … · --judge-retry-max <n> · --judge-retry-scope feedback|fix`.
+  - **HITL** — `--checkpoint <confirm|input|select:prompt>` (+ `--checkpoint-choice/-default/-headless/-timeout`):
+    the G5 human gate. It is NOT programmatic — it still needs its `prompt.md`.
+  - **Control** — `--escalate <tier|model>` (on failure, retry on a stronger model → `io.escalate`) ·
+    `--reroute <node[:max]>` (on failure, loop back to an upstream node — the target MUST be a strict ANCESTOR).
+  - **Topology** — `--fusion <moa|best-of-n>` (+ `--fusion-n/-panel/-judge/-obligations/-no-verify`: panel/
+    best-of-n + judge expansion) · `--subworkflow <ref>` (inline a sub-template as a sub-DAG in place of the node).
+  - **Contract** — `--full-access` (per-node jail-off, LOCAL only) · `--fill-sentinel <s>` · `--schema <p>` ·
+    `--return-mode required` (the zero-artifact gate-node idiom). These ride INSIDE `contract`.
 
 > **The per-run shape (designed, partially confident — not a separate "store" to build).** There is no
 > database/registry layer: the TEMPLATE itself (`.piflow/<wf>/template/`, D8) is the canonical source — authored
@@ -67,8 +98,9 @@ that is how a silent, wrong workflow gets built.
 > THIS skill) vs init-RUN (runtime instantiation). The shape is specified in
 > `docs/design/sdk-canonical-build-plan.md` (D7 per-run `.pi/` layout · D8 source-of-truth · D9 `.piflow/`
 > namespaces) + `docs/design/template-format.md` §10, and **partially landed** (U6a); the template loader +
-> init-RUN (U6b–U8) are the remaining build, with open naming nits (`.pi/` vs `_meta/`). **INIT today is PORT
-> (+ the deferred IMPORT/COMPOSE rows); do not finalize the template format or those open items here.**
+> init-RUN (U6b–U8) are the remaining build, with open naming nits (`.pi/` vs `_meta/`). **INIT today is PORT +
+> COMPOSE (the scaffold loop + blueprints); IMPORT is still deferred. Do not finalize the template format or
+> those open per-run items here.**
 
 ## Standing up the project (after the template exists)
 The engine is the **`@piflow/core`** package; a project does NOT copy an engine, it installs the package and
@@ -126,6 +158,15 @@ are in `reference/sdk-consumer.md` — read it first.** The flow:
 - **The criteria fixture** — standing up a workflow seeds `<repo>/.agents/skill-system-criteria.md`, the
   per-node human-judged quality bar (NEVER injected into a prompt). Maintained by `hermes-skill-system` (the
   improve loop — see piflow-enhance).
+- **Claude Code executor (per-node, OPTIONAL)** — a node may run on a headless local **Claude Code** session
+  instead of a `pi`: author `--executor claude-code` on `piflowctl add-node` (or `"executor":"claude-code"` in
+  `node.json`), and map its Claude-side tier models with `piflowctl model set <tier> <id> --claude` (aliases
+  `opus|sonnet|haiku` or full `claude-*` ids). The credential is a ONE-TIME, freely-SKIPPABLE step:
+  `piflowctl claude-code connect` persists a `claude setup-token` to `~/.piflow/claude-code.json` (chmod 600).
+  **Skip it on macOS** — an existing `claude` login (keychain) is used automatically; the file is the portable
+  layer for Linux/cloud. The runner resolves the token host-side (env → that file → local login) and strips
+  `ANTHROPIC_API_KEY` so a stray key never silently bills the API. Absent on a node ⇒ `pi`, byte-identical to
+  today. `docs/design/agent-executor-interface.md`.
 
 ## The laws (do not violate)
 - **Single source of truth = the structured template.** Improve a wave by editing its node def / its skill in
@@ -216,11 +257,12 @@ are in `reference/sdk-consumer.md` — read it first.** The flow:
   render Gemini-safe automatically (`StringEnum`, `tools/params.ts` / `tools/compile.ts` #21) — authoring is
   unchanged. CAVEAT: an `oc.*` tool with a pure native execute runs end-to-end TODAY; a `mcp.*` tool routed
   through the bridge still needs the `$VAR`→value EXPANSION, a `@piflow/tool-bridge` follow-on **deferred
-  (#14)** — `template/checks.ts:271-273`. FORWARD-POINTER: `docs/design/node-action-protocol.md` is the
-  CONVERGING canonical node-action format (a unified `op[]` envelope), but its `op[]` is milestone M5 and is
-  **NOT loadable today** (no `op`/`OpSpec` field in the loader/template types — the loader will REJECT it). So
-  author today's loadable shape — `tools`/`mcp` above + `hooks`/`checks`/`policy` — and treat that doc as the
-  target the format moves toward; **do NOT emit `op[]` yet.**
+  (#14)** — `template/checks.ts:271-273`. NODE-ACTION FORMAT: `docs/design/node-action-protocol.md` is the
+  canonical node-action format (a unified `op[]` envelope) and it is **AS-BUILT — `op[]` LOADS today**: the `op`
+  field is in the node schema and the loader lowers it (`lowerToOps`/`lowerActions` → `intent.op`/`actions`,
+  `template/loader.ts:102-160`). `tools`/`mcp`/`hooks`/`checks`/`policy` are the ergonomic ALIASES the loader
+  lowers INTO `op[]`, so authoring EITHER the aliases or `op[]` directly is fine — they converge on the same
+  canonical envelope.
 - **Hand-roll the orchestration; reach for pi-native only at the interpretation surfaces.** The
   driver's own deterministic plumbing (the DAG, filesystem coordination, artifact `stat()`, worktree)
   is YOURS — pi is minimal by design (no sub-agents, no native typed-return) and *expects* you to own
@@ -332,11 +374,16 @@ them, and where an edit must be reconciled against the rest. For every node:
   merge them deterministically. (The script has no fs at eval time, so the join is a NODE, never raw fs in the workflow.)
 
 - **Agent-type presets (G6) — a node may START from a branded preset, then customize above it.** When an
-  author assigns a node `agentType: <id>` (e.g. `market-research`), EXPAND it at author time — do not treat the
-  name as magic: read `~/.piflow/agents/<id>.md`, call `mergePreset` (`@piflow/core`) to fold its base tools +
-  role-prompt INTO the node's concrete `tools`/`prompt` (additive: the node ADDS tools and its task is appended
-  to the role), keep `agentType` as the branding LABEL (the GUI renders its icon via observe), and choose the
-  node's `model`/`tier` yourself — a preset NEVER sets a model. Unknown `<id>` ⇒ HALT, never invent one.
+  author assigns a node `agentType: <id>` (e.g. `market-research`), EXPAND it at author time. **The scaffolder
+  does this for you:** `piflowctl add-node --agent-type <id>` folds the preset's tools + skill + the OBSERVABLE
+  `agentType` label into `node.json` via the real `mergePreset` (the GUI then renders the base agent the node
+  INHERITS from). **The role-prompt is inherited BY REFERENCE at render** — keyed off `agentType`,
+  single-sourced from `~/.piflow/agents/<id>.md` (role first, the node's TASK after, applied exactly once by
+  `renderRealizedPrompt`) — so you `Write` into `prompt.md` ONLY the node's TASK, NEVER the role body; the
+  scaffolder still never touches prose. To bind BY HAND instead — do not treat the name as magic: add the
+  preset's base `tools` to the node and set `agentType: <id>` (the role-prompt then comes free at render; the
+  GUI renders the base agent's icon via observe), and choose the node's `model`/`tier` yourself — a preset NEVER
+  sets a model. Unknown `<id>` ⇒ HALT, never invent one.
   Presets are an optional convenience, not a lock-in — skipping them and wiring `tools`/`prompt`/`model` by
   hand is the common path. **Full contract + the seed presets + how to author a new one:**
   `references/agent-presets/README.md`. On init, materialize any missing seed into `~/.piflow/agents/`
@@ -374,6 +421,9 @@ every one; after, verify no consumer reads the stale shape.
 - `docs/design/sdk-canonical-build-plan.md` — D1–D9 + the U-unit table (the runtime build status).
 - `references/parse-claude-workflow.md` + `scripts/parse-claude-workflow.mjs` — **the PORT condition** (Step 0):
   the `.js` → template bridge + what it cannot recover. (These live inside this skill.)
+- `references/blueprints/` — **the COMPOSE starting shapes** (Step 0): parametric DAG topologies (`README.md` +
+  e.g. `research-synthesize-author.md`) the agent stamps via the scaffold loop, each lane bound to a base agent;
+  the graph-level sibling of `references/agent-presets/`. (Inside this skill.)
 - `templates/pi-runner/` — **copy this into a repo: the SDK consumer.** `sdk/` (the thin glue) + `hooks/`
   (the deterministic op engine) + `extract.mjs` + `logs.mjs` + `extensions/` + `package.json` + `.env.example`.
   Generic + byte-identical; only `.env`/`package.json`/`hooks/` are yours. See `reference/sdk-consumer.md`.

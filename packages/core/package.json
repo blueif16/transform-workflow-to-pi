@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Pi Flow core — the L1 node-envelope schema spine, the DAG compiler (data-flow edge inference), the contract-marker codec, and reference primitives (in-memory sandbox, builtin tool registry, hook runner).",
   "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "keywords": [
     "workflow",
     "orchestration",
@@ -46,10 +49,16 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@piflow/tool-bridge": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@piflow/tool-bridge": "workspace:*",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "esbuild": "^0.28.1"
+  },
+  "devDependencies": {
+    "zod": "^3.25"
   }
 }

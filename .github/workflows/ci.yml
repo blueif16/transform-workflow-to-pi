@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Lint + build + per-package publish hygiene (publint / attw / tarball contents).
+  # Single ubuntu runner — cheap gate that fails fast on the common mistakes.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # action-setup MUST run before setup-node so `cache: pnpm` can find pnpm on PATH.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Verify packable output
+        run: pnpm pack-verify
+
+  # Full build + test matrix across OSes and supported Node versions.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # piflow is posix-only: seatbelt (macOS) + bwrap (Linux) sandbox backends; macOS is the dev host.
+        # Windows has no sandbox backend and isn't a target, so the matrix is the two supported OSes.
+        os: [ubuntu-latest, macos-latest]
+        # Node 22 is the floor: the openclaw dev-tooling pins undici 8.x, which calls
+        # worker_threads.markAsUncloneable (Node >=22.10), absent on Node 20.
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # action-setup MUST run before setup-node so `cache: pnpm` can find pnpm on PATH.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # bubblewrap is required by the sandbox-bwrap kernel test cases (Linux only).
+      - name: Install bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user namespaces via an AppArmor profile AND two
+      # sysctls — the single sysctl alone is NOT enough (bwrap still aborts). Best-effort: load a permissive
+      # AppArmor profile for /usr/bin/bwrap granting `userns`, then relax both sysctls. All `|| true` so a
+      # runner where this is absent/unneeded never reds the job — the bwrap test self-probes namespace
+      # capability and skips-with-reason if a namespace still can't be built (it never silently passes).
+      - name: Allow unprivileged user namespaces for bwrap (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF' || true
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0 || true
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm test
+
+  # End-to-end pack + install + run of the piflowctl CLI on each OS.
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # action-setup MUST run before setup-node so `cache: pnpm` can find pnpm on PATH.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Smoke test CLI
+        run: pnpm smoke:cli

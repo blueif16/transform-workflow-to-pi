@@ -1,0 +1,8 @@
+packages:
+  - 'packages/*'
+  - 'tui'
+  - 'gui'
+
+# Keep adapter peerDependencies (@langchain/*, e2b, @daytona/sdk) truly OPTIONAL —
+# don't auto-install them into the workspace; each adapter's own devDeps cover build/test.
+autoInstallPeers: false

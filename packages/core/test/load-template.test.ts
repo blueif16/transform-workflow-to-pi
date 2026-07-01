@@ -31,6 +31,23 @@ const writeJson = async (p: string, v: unknown): Promise<void> =>
   fs.writeFile(p, JSON.stringify(v, null, 2) + '\n');
 const nodeJson = (dir: string, id: string): string => path.join(dir, 'nodes', id, 'node.json');
 
+// Hermetic agents catalog (see scaffold.test.ts): seed the in-repo presets into a temp PIFLOW_HOME so the
+// agentType-label case resolves market-research without the dev's real ~/.piflow/agents (absent in CI).
+const AGENT_SEEDS = path.join(HERE, '../../..', '.claude/skills/piflow-init/references/agent-presets');
+let PIFLOW_HOME_DIR: string;
+let SAVED_PIFLOW_HOME: string | undefined;
+beforeEach(async () => {
+  PIFLOW_HOME_DIR = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-home-'));
+  await fs.cp(AGENT_SEEDS, path.join(PIFLOW_HOME_DIR, 'agents'), { recursive: true });
+  SAVED_PIFLOW_HOME = process.env.PIFLOW_HOME;
+  process.env.PIFLOW_HOME = PIFLOW_HOME_DIR;
+});
+afterEach(async () => {
+  if (SAVED_PIFLOW_HOME === undefined) delete process.env.PIFLOW_HOME;
+  else process.env.PIFLOW_HOME = SAVED_PIFLOW_HOME;
+  await fs.rm(PIFLOW_HOME_DIR, { recursive: true, force: true });
+});
+
 /** Run loadTemplate and capture the thrown TemplateError (or fail loudly if it did NOT throw). */
 async function expectReject(dir: string): Promise<TemplateError> {
   try {
@@ -167,6 +184,21 @@ describe('loadTemplate — HAPPY PATH (the unmodified fixture LOADS)', () => {
     expect(wf.nodes['w2a-levels'].agentType).toBeUndefined();
   });
 
+  // claude-code executor — the loader must CARRY the authored `executor` selector through to the compiled
+  // NodeSpec so dispatch routes the node to `claude -p` instead of `pi` (RunOptions.buildCommand reads it).
+  // The runtime already READS executor at the 3 dispatch seams; this guards the TEMPLATE authoring path —
+  // the last gap (node.json → NodeSpec). Mirrors the G6 agentType carry.
+  it('carries the authored `executor` selector onto the compiled NodeSpec (claude-code)', async () => {
+    dir = await cloneFixture();
+    const n = await readJson(nodeJson(dir, 'w0-classify'));
+    n.executor = 'claude-code';
+    await writeJson(nodeJson(dir, 'w0-classify'), n);
+    const wf = compile(await loadTemplate(dir));
+    expect(wf.nodes['w0-classify'].executor).toBe('claude-code');
+    // additive: a node that declares none stays undefined downstream (⇒ pi, byte-identical to today).
+    expect(wf.nodes['w2a-levels'].executor).toBeUndefined();
+  });
+
   it('a NodeIntent with NO derives compiles to a NodeSpec with op[] undefined (additive — absence stays absent)', () => {
     // The additivity guarantee: an authored node that declares no derives is byte-for-byte op-free
     // downstream (`op[]` is the SOLE derive rep since U6 — no `op` ⇒ derivesFromOp yields five empty lists).
@@ -186,6 +218,16 @@ describe('loadTemplate — §8 STATIC CHECKS (each goes RED when violated)', () 
     // A typo'd top-level key the schema's `additionalProperties:false` must reject — `contract` stays
     // INTACT so the ONLY thing that can fail this node is the schema check (an unambiguous RED signal).
     n.depz = n.deps;
+    await writeJson(nodeJson(dir, 'w0-classify'), n);
+    const e = await expectReject(dir);
+    expect(e.message).toMatch(/schema/i);
+    expect(e.message).toContain('w0-classify');
+  });
+
+  it('(1b) an unknown executor value (not pi|claude-code) → REJECT (enum guard)', async () => {
+    dir = await cloneFixture();
+    const n = await readJson(nodeJson(dir, 'w0-classify'));
+    n.executor = 'gpt-cli'; // not one of the two recognized executors
     await writeJson(nodeJson(dir, 'w0-classify'), n);
     const e = await expectReject(dir);
     expect(e.message).toMatch(/schema/i);
@@ -290,6 +332,40 @@ describe('loadTemplate — §8 STATIC CHECKS (each goes RED when violated)', () 
     await loadTemplate(dir); // second load on a synced lock must NOT rewrite
     const after2 = await fs.readFile(path.join(dir, 'workflow.json'), 'utf8');
     expect(after2).toBe(after1);
+  });
+});
+
+// per-node `fullAccess` — the AUTHORED jail-off flag. It is a per-node fs-scope posture, so it is authored
+// where the OTHER fs scope lives: under `contract` (alongside `readScope`/`owns`), and the loader threads it
+// onto `node.sandbox.fullAccess` exactly as it threads `contract.readScope`→`sandbox.read`/`owns`→`write`.
+// The schema must ACCEPT a boolean and REJECT a non-boolean (an unchecked field is the bug this guards).
+describe('loadTemplate — per-node contract.fullAccess (the jail-off authoring flag)', () => {
+  it('ACCEPTS contract.fullAccess:true and threads it onto the compiled node.sandbox.fullAccess', async () => {
+    // The authored boolean must (a) pass the schema gate (no REJECT) and (b) ride loader→compile onto the
+    // dense NodeSpec at `sandbox.fullAccess`, which is the field the runner (scope.create) + buildNodeConfig
+    // both key off. If the schema dropped it (additionalProperties:false) loadTemplate would REJECT; if the
+    // loader failed to thread it, `sandbox.fullAccess` would be undefined and the second assertion fails.
+    dir = await cloneFixture();
+    const n = await readJson(nodeJson(dir, 'w0-classify'));
+    n.contract.fullAccess = true;
+    await writeJson(nodeJson(dir, 'w0-classify'), n);
+    const wf = compile(await loadTemplate(dir)); // must NOT throw (schema accepts the field)
+    expect(wf.nodes['w0-classify'].sandbox.fullAccess).toBe(true);
+    // additive: a node that declares none stays undefined downstream (byte-identical to today).
+    expect(wf.nodes['w2a-levels'].sandbox.fullAccess).toBeUndefined();
+  });
+
+  it('REJECTS a non-boolean contract.fullAccess (the schema actually validates the type)', async () => {
+    // The negative control that makes the ACCEPT test meaningful: a string `fullAccess` must be REJECTED by
+    // the schema's `type: boolean`. If the schema accepted any type (or omitted the field), this would NOT
+    // reject and the ACCEPT test above could be passing for the wrong reason (a loose/absent schema).
+    dir = await cloneFixture();
+    const n = await readJson(nodeJson(dir, 'w0-classify'));
+    n.contract.fullAccess = 'yes'; // wrong type
+    await writeJson(nodeJson(dir, 'w0-classify'), n);
+    const e = await expectReject(dir);
+    expect(e.message).toMatch(/schema/i);
+    expect(e.message).toContain('w0-classify');
   });
 });
 

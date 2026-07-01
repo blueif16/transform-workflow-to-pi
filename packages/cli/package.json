@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Pi Flow CLI — the docker-style front door to a run. `piflowctl status` (per-node table + stage/rollup) and `piflowctl watch` (a silent-until-it-matters sentinel) read the engine-owned `.pi/` run layout via @piflow/core's path helpers; `logs` is re-exported from core (one front door).",
   "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "keywords": [
     "cli",
     "workflow",
@@ -35,17 +38,19 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "skills"
   ],
   "scripts": {
     "build": "tsc -b",
-    "prepublishOnly": "npm run build"
+    "prepack": "node scripts/bundle-skills.mjs",
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@piflow/core": "^0.1.0"
+    "@piflow/core": "workspace:*"
   },
   "optionalDependencies": {
-    "@piflow/daytona": "^0.1.0",
-    "@piflow/e2b": "^0.1.0"
+    "@piflow/daytona": "workspace:*",
+    "@piflow/e2b": "workspace:*"
   }
 }

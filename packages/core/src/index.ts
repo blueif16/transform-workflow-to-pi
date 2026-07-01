@@ -36,7 +36,12 @@ export type { LoadTemplateOpts } from './workflow/template/loader.js';
 // deferred · markersFromNode tail · EMPTY io.json/events.jsonl/state.json stubs). Template ≅ run (D7).
 export { instantiateRun } from './workflow/template/instantiate.js';
 export type { InstantiateRunOpts, InstantiateRunResult, InstantiatedNode } from './workflow/template/instantiate.js';
-export { renderRealizedPrompt } from './workflow/template/render.js';
+// `renderRealizedPrompt` + the `withRolePrompt` role-inheritance seam: when a node sets `agentType`, the
+// realized prompt INHERITS the named preset's role-prompt at the head (role first, the node's task after),
+// resolved BY REFERENCE from the preset — single-sourced, never copied into prompt.md. A missing preset is a
+// fail-closed `MissingPresetError` (never a silently un-bound node). Both render sites share this one path.
+export { renderRealizedPrompt, withRolePrompt, MissingPresetError } from './workflow/template/render.js';
+export type { RenderOpts } from './workflow/template/render.js';
 
 // G6 — agentType presets: the PURE author-time merge utility + the read-only catalog adapter. The catalog
 // (named types, icons, role-prompts) is PRODUCT DATA in ~/.piflow/agents/ — only this LOGIC lives in core.
@@ -193,6 +198,9 @@ export type { HookReport, RunHooksOpts } from './hooks/index.js';
 // Runner (M1 execution loop — create→stage→exec→collect→dispose; watchdogs · halt-on-failure ·
 // --from resume · run-status.json). The pi-spawn is injectable (buildCommand/execRunner) so it runs offline.
 export { runWorkflow, defaultExecRunner, defaultPiCommand, lastJsonBlock, writeStatus, artifactState, nowISO } from './runner/index.js';
+// buildNodeConfig — the curated per-node config-slice builder (the SKIN channel mirror). Surfaced so a test
+// can pin the slice mapping (e.g. the `fullAccess`/`programmatic` carve-outs) directly off the resolved NodeSpec.
+export { buildNodeConfig } from './runner/index.js';
 // (op⊖ops) derivesFromOp / gatesFromOp / runOpsFromOp — reconstruct the per-family executor inputs from a
 // node's canonical `op[]` (the SOLE derive rep; the legacy `node.ops` was retired in U6). The runner reads
 // derives/gates/run ops through these three adapters (one home), and consumers (inspector) render via them.

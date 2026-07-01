@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Pi Flow ↔ Daytona connector — the Daytona cloud-sandbox backend for @piflow/core's sandbox seam, packaged as a CHOOSE-TO-INSTALL extension. `npm i @piflow/daytona` and `piflowctl run --sandbox daytona` boots one long-lived Daytona VM per run (per-node workdir subtrees, torn down once) — boot from a pre-built snapshot (the promoted `piflow-node-runtime`) with the pi gateway credential allowlisted into the VM.",
   "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "keywords": [
     "daytona",
     "sandbox",
@@ -38,10 +41,10 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@piflow/core": "^0.1.0"
+    "@piflow/core": "workspace:*"
   },
   "peerDependencies": {
     "@daytona/sdk": ">=0.185 <1"

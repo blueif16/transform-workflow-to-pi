@@ -33,6 +33,12 @@ export interface TemplateNode {
    * the runner treats it as opaque; observe carries it so the GUI renders the preset's icon. Omitted ⇒ none.
    */
   agentType?: string;
+  /**
+   * Which agent ENGINE runs this node: the `pi` fleet (default) or a headless local Claude Code session
+   * (`claude -p`). Omitted ⇒ 'pi' (byte-identical). Carried verbatim onto the dense `NodeSpec.executor`,
+   * which the runner reads at the 3 dispatch seams (command/model/credential). See node.schema.ts `executor`.
+   */
+  executor?: 'pi' | 'claude-code';
   tools?: { allow?: string[]; deny?: string[] };
   mcp?: { servers?: Record<string, unknown>; ref?: string };
   inject?: string[];
@@ -50,6 +56,12 @@ export interface TemplateNode {
     artifacts: string[];
     owns: string[];
     readScope: string[];
+    /**
+     * Per-node JAIL-OFF posture → runtime `node.sandbox.fullAccess`. When true, this node's `pi` runs OUTSIDE
+     * the local fs jail (full host read+write), nullifying `readScope`/`owns` for THIS node only. Loosen-only;
+     * LOCAL-only (a no-op in a cloud VM). Sits with `readScope`/`owns` (the fs-scope axis). Omitted ⇒ jailed.
+     */
+    fullAccess?: boolean;
     schema?: string;
     returnMode?: 'optional' | 'required';
     fillSentinel?: string | null;

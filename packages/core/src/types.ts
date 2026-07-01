@@ -42,6 +42,13 @@ export interface NodeSpec {
   provider?: string;
   /** Per-node tier ALIAS resolved to a model via `~/.piflow/model-tiers.json` (when active). Undefined ⇒ none. */
   tier?: string;
+  /**
+   * Which agent binary runs this node. Absent/`'pi'` → the pi coding agent (today's path, BYTE-IDENTICAL).
+   * `'claude-code'` → a headless `claude -p` session on the LOCAL logged-in subscription (builtins only, for
+   * read/write/fix/debug); it resolves its model from the `claude` tier block (`resolveClaudeModel`) and runs
+   * with no provider gateway. See docs/design/agent-executor-interface.md.
+   */
+  executor?: 'pi' | 'claude-code';
 
   /** 1. Where it runs. */
   sandbox: SandboxSpec;
@@ -222,6 +229,14 @@ export interface SandboxSpec {
   read: string[];
   /** Owned write paths (a contract assertion on cloud; isolated via worktree locally). */
   write: string[];
+  /**
+   * Per-node FULL-ACCESS posture: when `true`, this node's `pi` runs OUTSIDE the local fs jail (full host
+   * read+write — the per-node equivalent of the run-level `--sandbox danger-full-access`), nullifying
+   * `read`/`write` scoping for this node ONLY. Loosen-only; LOCAL-only (a no-op in a cloud VM, where the VM
+   * is the boundary). Omitted/false ⇒ the node stays jailed exactly as today. Sits with `read`/`write` (the
+   * fs-scope axis); does NOT touch model/tools/timeout/backend.
+   */
+  fullAccess?: boolean;
   /** Dedicated owned output dir — collected back via `downloadDir`. */
   output: string;
   /** Container image (cloud providers). */
@@ -508,6 +523,13 @@ export interface CreateOpts {
   writeScope?: string[];
   outputDir: string;
   workdir: string;
+  /**
+   * PER-NODE jail override (the `fullAccess` posture). `false` ⇒ jail OFF for THIS node — its exec runs
+   * BARE (unsandboxed, full host filesystem) regardless of the provider's run-level policy. Omitted ⇒
+   * inherit the provider's policy (the common case; every non-`fullAccess` node). Loosen-only: a `fullAccess`
+   * node passes `false`; a normal node passes nothing. Local-only — cloud/in-memory providers ignore it.
+   */
+  enforceReadScope?: boolean;
   image?: string;
   env?: Record<string, string>;
   timeoutMs?: number;
@@ -883,7 +905,7 @@ export interface SubworkflowSpec {
  * metadata (a display label, §5) carried through so a PROFILE predicate can select nodes by it — it
  * NEVER drives ordering/parallelism (deps + owns do).
  */
-export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentType' | 'tools' | 'model' | 'provider' | 'tier'> & {
+export type NodeIntent = Pick<NodeSpec, 'label' | 'prompt' | 'skill' | 'agentType' | 'tools' | 'model' | 'provider' | 'tier' | 'executor'> & {
   io: NodeIO;
   /** Generic phase label (display metadata; the elision predicate may select by it). Optional/additive. */
   phase?: string;

@@ -171,6 +171,64 @@ describe('LocalSandbox — exec contract (nonzero exit, process-group kill on si
   }, 15000);
 });
 
+// ── 5b. FAIL-CLOSED: enforce requested + NO kernel backend ⇒ REFUSE to run (never bare) ──────────────
+//
+// `--sandbox local` is secure by default, so when enforcement is requested but the host has NO kernel
+// jail backend (an unsupported OS, or linux without bubblewrap → localJailPlan returns null), exec MUST
+// REFUSE rather than silently run the command UNSANDBOXED (the old fail-OPEN bare fallback). The ONLY way
+// to run unsandboxed is the explicit `enforceReadScope:false` danger-full-access bypass, which is unchanged.
+// We force process.platform='sunos' so localJailPlan hits its default branch (null) on every host; on the
+// real macOS kernel the actual spawn/touch still works, so the danger-path test below genuinely runs bare.
+
+describe('LocalSandbox — exec is FAIL-CLOSED when no kernel jail backend exists', () => {
+  it('enforceReadScope=true + no jail backend ⇒ exec REFUSES and never runs the command', async () => {
+    // Force an OS with no jail backend so localJailPlan returns null. The secure-default LocalSandbox must
+    // then REFUSE: resolve a nonzero ExecResult with an actionable message AND never spawn the command — so
+    // the observable side effect (the MARKER file) must NOT exist. On the old bare-fallback code this would
+    // spawn `touch`, create MARKER, and resolve code 0 → this test goes RED on that code (the fail-closed
+    // load-bearing assertion is `fs.access(marker)` rejecting).
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'sunos', configurable: true });
+    const work = await tmpWork();
+    const marker = path.join(work, 'MARKER');
+    try {
+      const sb = await LocalSandbox.create({ readScope: [], outputDir: 'out', workdir: work }); // secure default
+      const r = await sb.exec(`touch ${JSON.stringify(marker)}`);
+      expect(r.code).not.toBe(0); // refusal surfaced as a failure ExecResult (126)
+      expect(r.stderr).toMatch(/refusing to run unsandboxed|danger-full-access/i);
+      // THE load-bearing assertion: nothing was spawned, so the side effect never happened.
+      await expect(fs.access(marker)).rejects.toThrow();
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      await fs.rm(work, { recursive: true, force: true });
+    }
+  });
+
+  it('danger bypass (enforceReadScope=false) + no jail backend ⇒ exec STILL runs the command bare', async () => {
+    // The complement: the explicit danger-full-access bypass must NOT be caught by the fail-closed guard —
+    // it short-circuits before localJailPlan and runs bare. Same forced no-backend platform; the identical
+    // command must SUCCEED and the MARKER must appear. Guards against an over-broad guard that also breaks
+    // the documented escape hatch. (On the real macOS kernel `touch` genuinely runs even with platform
+    // spoofed to 'sunos', since spoofing only changes localJailPlan's JS branch, not the real syscall.)
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'sunos', configurable: true });
+    const work = await tmpWork();
+    const marker = path.join(work, 'MARKER');
+    try {
+      const sb = await LocalSandbox.create(
+        { readScope: [], outputDir: 'out', workdir: work },
+        { enforceReadScope: false }, // the danger-full-access bypass
+      );
+      const r = await sb.exec(`touch ${JSON.stringify(marker)}`);
+      expect(r.code).toBe(0); // bare run succeeded
+      await expect(fs.access(marker)).resolves.toBeUndefined(); // the side effect really happened
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      await fs.rm(work, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── 6. READ-SCOPE JAIL: secure by default (darwin), with a danger bypass that actually turns it off ───
 
 // On darwin the in-place LocalSandbox now wraps every exec in the shared sandbox-exec read-scope jail by
@@ -467,4 +525,79 @@ describe('LocalSandboxProvider — enforceReadScope posture (what the CLI flag s
     expect(new LocalSandboxProvider().enforceReadScope).toBe(true);
     expect(new LocalSandboxProvider({ enforceReadScope: false }).enforceReadScope).toBe(false);
   });
+});
+
+// ── 8. PER-NODE jail OVERRIDE: CreateOpts.enforceReadScope flows through the provider (fullAccess) ─────
+//
+// `fullAccess` is a per-NODE posture: a single node may opt OUT of the jail while the rest of the run stays
+// jailed. The runner expresses this by passing `enforceReadScope:false` in that node's `CreateOpts`, which
+// the provider must honor OVER its own run-level policy (per-node `false` wins; absent ⇒ inherit the
+// provider). This is the seam the §5.3/§5.4 wiring depends on — without it a `fullAccess` node would still
+// run jailed because the provider would ignore the override and apply only its own `this.enforceReadScope`.
+describe('LocalSandboxProvider — per-node CreateOpts.enforceReadScope override (fullAccess)', () => {
+  darwinIt(
+    'a SECURE provider still UNJAILS the one node whose CreateOpts says enforceReadScope:false (per-node false wins)',
+    async () => {
+      // The load-bearing per-node assertion: the provider is secure-by-default (jail ON for the run), but a
+      // single node's CreateOpts carries `enforceReadScope:false`. That node's exec must run BARE — the
+      // identical out-of-scope read that EPERMs under the provider's default posture (asserted below) must
+      // LEAK here. If `create` ignored the per-node flag and applied only `this.enforceReadScope`, the read
+      // would be denied and this would fail — proving the override genuinely flows CreateOpts → exec.
+      const scratch = await homeScratch('pernode-override');
+      const work = path.join(scratch, 'work');
+      const denied = path.join(scratch, 'denied');
+      await fs.mkdir(work, { recursive: true });
+      await fs.mkdir(denied, { recursive: true });
+      await fs.writeFile(path.join(denied, 'secret.txt'), 'PERNODE_LEAK');
+      try {
+        const provider = new LocalSandboxProvider(); // secure by default (enforceReadScope === true)
+        const sb = await provider.create({
+          readScope: [work],
+          writeScope: [work],
+          outputDir: 'out',
+          workdir: work,
+          enforceReadScope: false, // the per-node fullAccess override
+        });
+        const leak = await sb.exec(`cat ${JSON.stringify(path.join(denied, 'secret.txt'))}`);
+        expect(leak.code).toBe(0);
+        expect(leak.stdout).toContain('PERNODE_LEAK');
+      } finally {
+        await fs.rm(scratch, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
+
+  darwinIt(
+    'ABSENT CreateOpts.enforceReadScope inherits the provider policy: a secure provider STILL jails the node',
+    async () => {
+      // The complement: when a node does NOT carry the override (the common case — every non-fullAccess
+      // node), `create` must fall back to the provider's run-level policy. A secure provider therefore
+      // STILL jails this node, so the identical out-of-scope read EPERMs. This proves the override is a
+      // genuine `?? this.enforceReadScope` fallthrough, not a blanket `false`.
+      const scratch = await homeScratch('pernode-inherit');
+      const work = path.join(scratch, 'work');
+      const denied = path.join(scratch, 'denied');
+      await fs.mkdir(work, { recursive: true });
+      await fs.mkdir(denied, { recursive: true });
+      await fs.writeFile(path.join(denied, 'secret.txt'), 'STILL_JAILED');
+      try {
+        const provider = new LocalSandboxProvider(); // secure by default
+        const sb = await provider.create({
+          readScope: [work],
+          writeScope: [work],
+          outputDir: 'out',
+          workdir: work,
+          // NO enforceReadScope → inherit the provider's secure policy.
+        });
+        const blocked = await sb.exec(`cat ${JSON.stringify(path.join(denied, 'secret.txt'))}`);
+        expect(blocked.code).not.toBe(0);
+        expect(blocked.stdout).not.toContain('STILL_JAILED');
+        expect(blocked.stderr).toMatch(/Operation not permitted|Permission denied/i);
+      } finally {
+        await fs.rm(scratch, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
 });

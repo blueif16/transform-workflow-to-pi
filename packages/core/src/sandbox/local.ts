@@ -131,6 +131,24 @@ export class LocalSandbox implements Sandbox {
               profileDir: os.tmpdir(),
             })
           : null;
+      // FAIL-CLOSED: enforcement was requested for a real command but the host has NO kernel jail
+      // backend (unsupported OS, or linux without bubblewrap → localJailPlan returned null). REFUSE to
+      // run rather than silently run UNSANDBOXED — resolve a failure ExecResult (code 126, "cannot
+      // execute") so the runner classifies it as a failure; NEVER reject (exec never throws by contract).
+      // Nothing is spawned (no listeners) and no plan exists (no profilePath to unlink), so there is
+      // nothing to clean up. The ONLY way to run unsandboxed is the explicit danger-full-access bypass
+      // (enforceReadScope:false), which short-circuits above and never reaches this guard.
+      if (this.enforceReadScope && cmd && plan === null) {
+        resolve({
+          stdout: '',
+          stderr:
+            `piflow: refusing to run unsandboxed — --sandbox local requires the OS read-scope jail ` +
+            `(macOS seatbelt / Linux bubblewrap), unavailable on this host (${process.platform}). ` +
+            `Install bubblewrap and allow unprivileged user namespaces, or use --sandbox danger-full-access to bypass.`,
+          code: 126,
+        });
+        return;
+      }
       const child = spawn(plan ? plan.file : cmd, plan ? plan.argv : [], {
         cwd,
         env: { ...process.env, ...this.env, ...opts.env },
@@ -257,7 +275,13 @@ export class LocalSandboxProvider implements SandboxProvider {
   }
 
   create(opts: CreateOpts): Promise<Sandbox> {
-    return LocalSandbox.create(opts, { enforceReadScope: this.enforceReadScope });
+    // Per-node jail override (the `fullAccess` posture): a node may opt OUT of the jail (`enforceReadScope:
+    // false`) while the run stays secure. Per-node `false` WINS over the provider's run-level policy; an
+    // absent override inherits `this.enforceReadScope` (the common case). Loosen-only — a node never
+    // re-tightens a danger run (a danger provider's `false` is unaffected by an absent per-node override).
+    return LocalSandbox.create(opts, {
+      enforceReadScope: opts.enforceReadScope ?? this.enforceReadScope,
+    });
   }
 
   /**

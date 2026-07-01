@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +26,25 @@ import { localJailPlan, __resetJailWarningForTest } from '../src/sandbox/jail.js
 // ── platform gate for the KERNEL test (the only part that needs a real bwrap) ────────────────────────
 const linuxIt = process.platform === 'linux' ? it : it.skip;
 const SKIP_MSG = `(skipped on ${process.platform}: bwrap is Linux-only — no mount namespace to assert; PENDING a Linux CI run)`;
+
+// The KERNEL-enforcement case needs a bwrap that can ACTUALLY build a namespace — not merely be installed.
+// GitHub's ubuntu runners clamp unprivileged user namespaces (AppArmor), so a presence-only gate would run
+// the test just for bwrap to abort. Probe REAL capability (spawn a no-op jail): run the test when it can
+// build a namespace (PROVING the boundary), skip-with-reason when it genuinely can't — never a false red,
+// and never a blanket skip that would hide a regression on a capable box.
+function bwrapCanBuildNamespace(): boolean {
+  if (process.platform !== 'linux') return false;
+  // Bind the WHOLE root ro (matches probeBwrapUsable in bwrap.ts), NOT just /usr: on a merged-usr distro
+  // (Debian/Fedora) a /usr-only jail leaves `true`'s ELF loader unreachable, so the probe exits 1 even
+  // though the namespace built — a false skip that would hide a regression on a capable box. `--ro-bind / /`
+  // is the distro-agnostic capability check.
+  const r = spawnSync('bwrap', ['--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev', 'true'], {
+    stdio: 'ignore',
+    timeout: 5000,
+  });
+  return r.status === 0;
+}
+const kernelIt = bwrapCanBuildNamespace() ? it : it.skip;
 
 // A scope fixture under a temp dir. The argv-construction tests only need PATHS (the dirs need not exist
 // for the pure builder — but buildBwrapArgs filters binds to EXISTING host paths, so we create real dirs
@@ -98,6 +118,50 @@ describe('buildBwrapArgs — pure bind-arg construction (cross-platform)', () =>
       expect(argv).not.toContain('--new-session');
     } finally {
       await cleanup();
+    }
+  });
+
+  it('lays --tmpfs /tmp BEFORE any bind nested under /tmp (survival ordering) and never binds the bare /tmp mountpoint', async () => {
+    // BUG B regression. Two failure modes the old builder had:
+    //   (i) it bound the bare host /tmp (tmpDir()) rw — pointless (the tmpfs overmounts it) and a re-exposure
+    //       risk if the order ever flipped;
+    //   (ii) it emitted `--tmpfs /tmp` AFTER all binds, so a write lane nested UNDER /tmp was overmounted by
+    //       the fresh tmpfs → `bwrap: Can't chdir … No such file or directory` (the live `tmp` battery).
+    // The fix lays the tmpfs FIRST so an under-/tmp lane overlays it and survives, and stops binding bare /tmp.
+    // We stage a REAL write lane directly under /tmp (buildBwrapArgs filters binds to existing host paths).
+    const lane = path.join('/tmp', `piflow-bwrap-bugb-${process.pid}`, 'owns');
+    await fs.mkdir(lane, { recursive: true });
+    try {
+      const argv = buildBwrapArgs('true', {
+        workdir: lane,
+        readScope: ['/usr'],
+        writeScope: [lane],
+      });
+
+      // SURVIVAL ORDERING: the private tmpfs must be laid down BEFORE the under-/tmp lane's bind, so the
+      // lane overlays the tmpfs (and survives) instead of being overmounted by it. The lane's DEST is its
+      // realpath-expanded form; locate the FIRST bind whose DEST is lexically under /tmp (the path that
+      // would be shadowed on a real-/tmp Linux box) and assert the tmpfs precedes it.
+      const tmpfsIdx = argv.findIndex((a, i) => a === '--tmpfs' && argv[i + 1] === '/tmp');
+      expect(tmpfsIdx).toBeGreaterThan(-1);
+      const underTmpBindIdx = argv.findIndex(
+        (a, i) =>
+          (a === '--bind' || a === '--ro-bind') &&
+          typeof argv[i + 2] === 'string' &&
+          (argv[i + 2] === '/tmp' || argv[i + 2].startsWith('/tmp/')),
+      );
+      expect(underTmpBindIdx).toBeGreaterThan(-1); // the lane WAS bound (proves the assertion isn't vacuous)
+      expect(tmpfsIdx).toBeLessThan(underTmpBindIdx); // …and the tmpfs comes first → the lane survives
+
+      // PART 1: the bare /tmp mountpoint is NEVER itself bound — no SRC===DEST==='/tmp' triple in either form.
+      // (The writable /tmp is the tmpfs, not a bind of host /tmp.) Genuine lanes UNDER /tmp are still bound.
+      for (let i = 0; i < argv.length - 2; i++) {
+        if (argv[i] === '--bind' || argv[i] === '--ro-bind') {
+          expect(argv[i + 1] === '/tmp' && argv[i + 2] === '/tmp').toBe(false);
+        }
+      }
+    } finally {
+      await fs.rm(path.dirname(lane), { recursive: true, force: true });
     }
   });
 
@@ -256,7 +320,7 @@ describe('localJailPlan — OS dispatch (darwin→seatbelt, linux→bwrap, else�
 // kernel EPERM behavior is UNVERIFIED.
 
 describe('bwrap kernel filesystem jail — EPERM enforcement (linux only)', () => {
-  linuxIt(
+  kernelIt(
     `reads/writes in-scope OK, out-of-scope read+write denied by the namespace ${SKIP_MSG}`,
     async () => {
       // Stage granted (in readScope + writeScope/workdir) and denied (neither) sibling trees, then run

@@ -19,7 +19,8 @@ import { effectiveChecks, evaluateChecks, actionForVerdict, type FileBytes } fro
 import { validateArtifactSchemas } from './schema.js';
 import { runHooks } from '../hooks/index.js';
 import { NodeRecorder, recordingSandbox } from './events.js';
-import { resolveNodeModel, type EffectiveModel } from './model-routing.js';
+import { effectiveModel, type EffectiveModel } from './model-routing.js';
+import { claudeExecutorEnvAdditions } from './claude-executor.js';
 import { resolveTokens, resolveAll, resolveDeep, type ResolveCtx } from '../workflow/resolver.js';
 import { stageSeed } from '../workflow/ops/seed.js';
 import { resolveSkillStage } from '../workflow/ops/skill.js';
@@ -44,6 +45,7 @@ import {
   writeJournalEntry,
 } from './journal.js';
 import { lastJsonBlock } from './return-parse.js';
+import { parseClaudeResult } from './claude-result.js';
 import {
   CLOUD_KINDS,
   IN_PLACE_KINDS,
@@ -195,19 +197,38 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
   // {{RUN}} where the contract verifies it + the next node injects it; isolated kinds keep the throwaway
   // workspace + out/<id>. Shared by scope.create AND the pre/post hookCtx so both agree on the node's cwd.
   const sbLoc = effectiveSandboxLocation(ctx.providerKind, ctx.outDir, node.sandbox);
+  // (claude-code executor — §7.2 credential model, proven live) A claude-code node runs headless `claude -p`
+  // INSIDE the jail, which cannot reach the macOS Keychain and must not write the user's ~/.claude. Resolve
+  // the subscription OAuth token HOST-SIDE and inject CLAUDE_CODE_OAUTH_TOKEN (so the jail never touches the
+  // keychain — portable to Linux/cloud), STRIP ANTHROPIC_API_KEY/AUTH_TOKEN (so `-p` can never silently bill
+  // the API), and point CLAUDE_CONFIG_DIR at a per-node dir under the run dir (the jail-writable workdir lane)
+  // so session/history isolate there. `{}` for a pi node ⇒ byte-identical. The credential rides the ENV, NOT
+  // a jail read-grant — so `readScope` stays exactly the node's declared scope (no ~/.claude widening).
+  const claudeConfigDir = path.join(ctx.outDir, '.claude-config', node.id);
+  const claudeEnv = await claudeExecutorEnvAdditions({
+    executor: node.executor,
+    nodeId: node.id,
+    configDir: claudeConfigDir,
+    resolver: ctx.secretResolver ?? defaultSecretResolver,
+  });
+  if (Object.keys(claudeEnv).length) await fs.mkdir(claudeConfigDir, { recursive: true });
   let sandbox: Sandbox;
   try {
     sandbox = await scope.create({
-      readScope: node.sandbox.read,
+      readScope: node.sandbox.read, // claude-code authenticates via the injected env token, NOT a jail read-grant (§7.2)
       writeScope: node.sandbox.write, // = contract.owns; bounds file-write* to the node's lane (darwin jail)
+      // Per-node FULL-ACCESS: a `fullAccess` node runs its `pi` OUTSIDE the local fs jail (the per-node
+      // danger-full-access). Only a `fullAccess` node overrides — `undefined` ⇒ inherit the run-level provider
+      // policy (the LocalSandboxProvider's `?? this.enforceReadScope`). A no-op for cloud/inmemory providers.
+      enforceReadScope: node.sandbox.fullAccess ? false : undefined,
       outputDir: sbLoc.outputDir,
       workdir: sbLoc.workdir,
       image: node.sandbox.image,
       // Merge the MCP env additions + the cloud provider-cred additions over the node's declared env (so
       // PIFLOW_MCP_CONFIG + the referenced MCP secrets + the pi gateway key land in the child via the
       // provider's exec merge). Both additions are {} when inapplicable, so a local/keyless run is unchanged.
-      env: mcpEnv || Object.keys(credEnv).length
-        ? { ...node.sandbox.env, ...mcpEnv, ...credEnv }
+      env: mcpEnv || Object.keys(credEnv).length || Object.keys(claudeEnv).length
+        ? { ...node.sandbox.env, ...mcpEnv, ...credEnv, ...claudeEnv }
         : node.sandbox.env,
       timeoutMs: nodeTimeoutMs, // cloud per-command cap = the watchdog cap (NOT undefined → E2B's 60s default)
     });
@@ -359,7 +380,7 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
     // unresolvable tier throws → fail the node cleanly (never crash the run, never silently mis-route).
     let eff: EffectiveModel;
     try {
-      eff = resolveNodeModel(node, {
+      eff = effectiveModel(node, {
         model: ctx.model,
         provider: ctx.providerName,
         tiers: ctx.modelRouting.tiers,
@@ -535,7 +556,21 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
     // The status ladder (run.mjs 1876–1883): kill/nonzero ⇒ error; then the driver-verified contract
     // breaches (missing → schema-invalid → blocking integrity check), each beating any self-report; then
     // a non-ok self-report is honored; then a MISSING handshake errors ONLY when it was required; else ok.
-    let parsed = lastJsonBlock(result.stdout);
+    //
+    // EXECUTOR-AWARE SELF-REPORT: the pi RETURN PROTOCOL (a fenced `{status,summary,issues}` tail recovered
+    // by `lastJsonBlock`) is a PI convention — it DOES NOT APPLY to a claude-code node, whose stdout is
+    // `--output-format stream-json` NDJSON. Running `lastJsonBlock` over that NDJSON MISREADS a benign
+    // `rate_limit_event` ({status:"allowed",…}) as the node's structured return → a non-ok, non-gap/blocked
+    // self-report → a false `gap`. For a claude-code node we therefore (a) NEUTER the pi `parsed` self-report
+    // (so the return-protocol clauses below — the self-report, the no-handshake, the return-schema gate, the
+    // G8 re-parse, the `parsed.issues` carry — can never fire on the stream-json misread) and (b) derive the
+    // claude verdict from `parseClaudeResult` instead: `isError ⇒ error` (claude self-reported a failure on
+    // exit 0); else the driver-verified gates alone decide (success ⇒ ok). The driver gates (missing/schema/
+    // integrity/op breaches above the self-report clause) are executor-agnostic and STILL beat the claude
+    // self-report — a claude success with a missing required artifact still blocks.
+    const isClaude = node.executor === 'claude-code';
+    const claudeVerdict = isClaude ? parseClaudeResult(result.stdout) : undefined;
+    let parsed = isClaude ? null : lastJsonBlock(result.stdout);
 
     // POST-NODE RETURN-SCHEMA GATE (mirrors the artifact schema gate, runner.ts above): a node's authored
     // `returnSchema` (node.json top-level `return`) constrains the SHAPE of its structured result. We
@@ -613,7 +648,7 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
         artifacts = await Promise.all(node.io.artifacts.map((a) => artifactState(path.resolve(ctx.outDir, a.path), a.path)));
         missing = artifacts.filter((a) => !a.exists).map((a) => a.path);
         schema = await validateArtifactSchemas(node.io.artifacts, { outDir: ctx.outDir, roots: [ctx.outDir, scope.root], validate: ctx.validateSchema });
-        parsed = lastJsonBlock(result.stdout);
+        parsed = isClaude ? null : lastJsonBlock(result.stdout); // claude: never re-introduce the stream-json misread
         returnSchemaInvalid = validateReturn();
         returnSchemaBreach = returnSchemaInvalid.length > 0 && returnMode === 'required';
       }
@@ -661,9 +696,23 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
     } else if (returnSchemaBreach) {
       st = 'blocked';
       issues.push(`contract breach — return violates the declared returnSchema: ${returnSchemaInvalid.join('; ')}`);
+    } else if (claudeVerdict?.isError && claudeVerdict.subtype !== undefined) {
+      // CLAUDE SELF-REPORT (replaces the pi self-report clause for a claude-code node): the `result` event
+      // was PRESENT and reported a failure on a CLEAN exit 0 (e.g. error_during_execution / error_max_turns).
+      // The exec is formally a success, but claude says it failed → `error`, surfacing claude's reason.
+      // GATED on `subtype !== undefined` so this honors only an ACTUAL `result` event: `parseClaudeResult`
+      // ALSO returns isError=true when NO result event is found (empty/truncated stdout) — but that is an
+      // ABSENT handshake, NOT a claude self-report. The driver gates own the produced-nothing case (a real
+      // empty run fails the artifact gate above); a result-less exit-0 node with its artifact on disk stays
+      // the pi-parity `ok`. (Exit-nonzero is already handled at the top of the ladder.) `parsed` is null for
+      // claude, so the pi clauses below are dead — a claude success (isError=false) falls straight to `ok`.
+      st = 'error';
+      issues.push(`claude reported an error (${claudeVerdict.subtype})${claudeVerdict.text ? `: ${claudeVerdict.text}` : ''}`);
     } else if (parsed?.status && parsed.status !== 'ok') {
       st = parsed.status === 'gap' || parsed.status === 'blocked' ? parsed.status : 'gap';
-    } else if (!parsed && returnMode === 'required') {
+    } else if (!parsed && returnMode === 'required' && !isClaude) {
+      // The pi handshake (a return-protocol block is REQUIRED when the node declares no artifact) does NOT
+      // apply to a claude-code node — its handshake is the `result` event, already verified above (isError).
       st = 'error';
       issues.push('no return-protocol block parsed from output (return:required)');
     } else {
@@ -759,7 +808,7 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
  * location and OMITTED when absent (no `undefined` keys, so the on-disk slice stays minimal). `sandbox` here is
  * per-node SCOPING (workspace/readScope/owns), NOT the chosen backend — that is run-level (`status.sandbox`).
  */
-function buildNodeConfig(node: NodeSpec): NodeConfig {
+export function buildNodeConfig(node: NodeSpec): NodeConfig {
   const cfg: NodeConfig = {};
   if (node.model !== undefined) cfg.model = node.model;                 // types.ts: NodeSpec.model
   if (node.provider !== undefined) cfg.provider = node.provider;        // types.ts: NodeSpec.provider
@@ -777,6 +826,9 @@ function buildNodeConfig(node: NodeSpec): NodeConfig {
   if (node.io.retries !== undefined) cfg.retries = node.io.retries;    // types.ts: NodeIO.retries (per-node budget)
   if (node.agentType !== undefined) cfg.agentType = node.agentType;    // types.ts: NodeSpec.agentType
   if (node.programmatic === true) cfg.programmatic = true;             // types.ts: NodeSpec.programmatic
+  // Jail-off posture: set ONLY on an explicit `true` (OMIT on false/absent — the minimal-slice rule), so a
+  // jailed node's slice is byte-identical to today. Parallels `programmatic`; both are unjailed concepts.
+  if (node.sandbox?.fullAccess === true) cfg.fullAccess = true;        // types.ts: SandboxSpec.fullAccess
   // Per-node SCOPING (the write-authority globs are SandboxSpec.write = the node's `owns`).
   if (sandbox) {
     const sb: NonNullable<NodeConfig['sandbox']> = {};
