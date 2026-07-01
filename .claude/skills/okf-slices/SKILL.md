@@ -37,15 +37,21 @@ it from the repo. **Procedure (stop at the first step that resolves):**
    - SYMBOL → `grep -rl "<symbol>" .agents/okf/topics/` — a card listing it in `symbols:`/`aliases:` or Anchors OWNS it.
    - CONCEPT → match `key`/`aliases`/`title`/`tags` in frontmatter. A bare prose/DRIFT-NOTE mention is a WEAK match —
      do not pick a card just because the word appears in its prose; prefer the card that declares it in frontmatter.
-3. **If no card matches** (the file/symbol is uncovered): escalate to codegraph — `codegraph query <symbol>` /
-   `codegraph explore <symbol>` / `codegraph callers <symbol>` — to find the owning module, then map module → the
-   card whose `seeds:` live in that module. If STILL none, the vertical is **UNCOVERED**: say so plainly (it's a gap
-   to author a card via MAINTAIN), and fall back to reading the code directly. NEVER invent a slice.
+3. **If no card matches** (the file/symbol is uncovered): escalate to codegraph with ONE
+   `codegraph explore "<symbol | how-does-X question>"` call — it returns the owning symbols' verbatim
+   line-numbered source grouped by file + the call paths (incl. dynamic-dispatch hops grep can't follow) + a
+   blast-radius summary in a single round-trip, so it IS the Read and usually the only call you need. Do NOT
+   grep+Read the repo or hand the lookup to a file-reading sub-agent — that repeats work the index already did and
+   makes codegraph pure overhead; query it DIRECTLY. Use `codegraph query <symbol> --json` only for a bare file:line
+   locate. Map the owning module → the card whose `seeds:` live there. If STILL none, the vertical is **UNCOVERED**:
+   say so plainly (a gap to author a card via MAINTAIN) and answer from the `explore` source. NEVER invent a slice.
 4. **Read the matched card**: the *"Why / how it works"* paragraph = the mental model; the **Anchors** (grouped by
    stage) = the exact `path:line` to edit; the **Freshness / DRIFT NOTE** = known gaps and branch caveats.
 5. **VALIDATE before you trust it** (just-in-time; a stale slice is worse than none): run the gate for that one card —
-   `cd .agents/okf/topics && node _generate.mjs --check <key>`. Read WHICH signal it returns — they mean DIFFERENT
-   things, and only one affects whether you can trust the anchors:
+   `cd .agents/okf/topics && node _generate.mjs --check <key>`. (The gate resolves anchors against the codegraph
+   index, so if you just pulled/merged code, make the index current FIRST — `codegraph status --json`, then
+   `codegraph sync -q` when `pendingChanges>0` — else `--check` validates against a stale graph and can lie.) Read
+   WHICH signal it returns — they mean DIFFERENT things, and only one affects whether you can trust the anchors:
    - `HEALTH: anchor …` / `seed missing` → an anchor's symbol/line moved or a file is gone — the anchors you'd return
      may be WRONG. Reconcile against the live file (or re-author per MAINTAIN) before relying on them; flag it.
    - `DRIFT: auto region is stale — run --write` → ONLY the machine-derived region (git arc / lessons cluster / blast
@@ -76,8 +82,13 @@ stale / what's the blast scope." **Three cadences (only the first is wired today
   so expect it routinely; HEALTH should be rare and is the one that matters.) The anchor check resolves definition
   anchors as cited line ∈ the symbol's codegraph span, call-site/field anchors as symbol-present-in-file. Always
   `--write` then re-`--check` until clean before committing.
-- **Post-merge (advisory).** Re-derive and review drift flags; re-author the CURATED half of any flagged card. **NEVER
-  auto-rewrite curated prose** — the machine only refills the region between the `okf:auto` markers.
+- **Post-merge (advisory).** Make the index current FIRST (`codegraph sync -q`). Then re-derive ONLY the cards the
+  merge touched, not all of them: intersect the changed files (`git diff --name-only <base>`) with each card's
+  `seeds:` (the file-level rung), and for the dependency rung run `codegraph impact <anchorSymbol> --json` — a card
+  is affected when a changed file lands in an anchor symbol's `impact.affected[]` even if it is NOT one of its seeds
+  (the case git-log-of-seeds misses). `node _generate.mjs --write <key>…` the affected keys only, review drift
+  flags, and re-author the CURATED half of any flagged card. **NEVER auto-rewrite curated prose** — the machine only
+  refills the region between the `okf:auto` markers.
 - **Rolling (discovery / add-retire).** Re-run the §2 procedure: roots → codegraph reachability (MEMBERSHIP) → cluster
   by module → rank by centrality → name by commit-scope → liveness by git RECENCY (not frequency). A cluster that
   LEFT the reachable set → retire (human-gated); a new reachable cluster + fresh scope → add a card; reachable-but-old
@@ -125,5 +136,7 @@ relative fragments.
 - Design + rationale: `docs/research/memory/code-understanding-and-anti-drift.md` (§2 discovery · §4.1 blast ladder · §5 backlog E0–E8).
 - External SOTA verification: `docs/research/memory/sota-verification-2026-06-30.md`.
 - The generator: `.agents/okf/topics/_generate.mjs` (`--write` / `--check [key]`); config: `.agents/okf/okf.config.json`.
+- Codegraph fullest-use (escalate with `explore` · `impact` for blast · `status`→`sync` hygiene): the tool's own
+  canonical guidance in `src/mcp/server-instructions.ts` / https://colbymchenry.github.io/codegraph/.
 - Promotion path (Stage 2): port FIND/CHECK into a deterministic `piflowctl okf find|check|build` verb, gate on the
   E6 retrieval eval, then add this skill to the `piflowctl skills install` bundle.
