@@ -350,6 +350,12 @@ export {
   discoverRunDirs,
   summarizeRun,
   buildSnapshot,
+  isProductRoot,
+  findProductRoot,
+  findProductRootsUnder,
+  resolveScope,
+  registryFromRoots,
+  loadScopedRegistry,
 } from './observe/index.js';
 export type {
   ProductEntry,

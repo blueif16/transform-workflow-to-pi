@@ -56,7 +56,7 @@ async function resolveRunDir(run: string): Promise<{ runDir: string; workspaceRo
  * Serve the piflow index/products to the GUI — WITHOUT copying collected data into the repo (the data/SDK
  * boundary rule: no index.json under gui/public). `/__piflow/index.json` is LIVE: it recomputes the snapshot
  * on EVERY request via the shared builder (gui/scripts/lib/index-snapshot.mjs) from the SCOPED registry
- * (`loadScopedRegistry` — the `PIFLOW_GUI_ROOTS` set `piflowctl gui` passes for the launched project, else the
+ * (`loadScopedRegistry` — the `PIFLOW_SCOPE_ROOTS` set `piflowctl gui` passes for the launched project, else the
  * global `~/.piflow/products.json`), so a run that starts or progresses after the server launched shows up
  * without a manual `npm run data:index`. `/__piflow/products.json` returns that same scoped registry.
  */

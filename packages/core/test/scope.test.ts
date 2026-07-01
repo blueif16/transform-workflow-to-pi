@@ -1,13 +1,13 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { findProductRootsUnder, resolveGuiScope } from '../src/gui.js';
+import { findProductRootsUnder, resolveScope, loadScopedRegistry } from '../src/observe/scope.js';
 
-// `piflowctl gui` scopes the viewer to the LAUNCHED PROJECT: the enclosing project (walk up) plus every
-// product beneath it (walk down). A "product" is a dir whose `.piflow/` holds a REAL workflow
-// (`<wf>/template/meta.json` or `<wf>/runs/`) — NOT a bare `.piflow` (that shape is the GLOBAL home
-// `~/.piflow`, which holds products.json/index.json/agents and must never be mistaken for a project).
+// The SHARED project-scope resolver (used by `piflowctl gui`, `piflowctl tui`, and the TUI's in-process fleet
+// discovery). A "product" is a dir whose `.piflow/` holds a REAL workflow (`<wf>/template/meta.json` or
+// `<wf>/runs/`) — NOT a bare `.piflow` (that shape is the GLOBAL home `~/.piflow`, which must never be
+// mistaken for a project).
 //
 // Fixture tree (built once under a tmp dir):
 //   root/                         (not a product)
@@ -36,7 +36,7 @@ async function mkProductWithRunOnly(dir: string, wf = 'wf'): Promise<string> {
 }
 
 beforeAll(async () => {
-  ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-gui-scope-'));
+  ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-scope-'));
   projA = await mkProduct(path.join(ROOT, 'projA'), 'wf1');
   await fs.mkdir(path.join(projA, 'src', 'foo'), { recursive: true });
   projA2 = await mkProduct(path.join(projA, 'sub', 'projA2'));
@@ -92,18 +92,17 @@ describe('findProductRootsUnder', () => {
   });
 });
 
-describe('resolveGuiScope', () => {
+describe('resolveScope', () => {
   it('from a subfolder inside a project, scopes to the project root + its sub-products', () => {
-    const { scopeRoot, roots } = resolveGuiScope(path.join(projA, 'src', 'foo'));
+    const { scopeRoot, roots } = resolveScope(path.join(projA, 'src', 'foo'));
     expect(scopeRoot).toBe(projA);
     expect(roots).toContain(projA);
     expect(roots).toContain(projA2);
-    // projB is a SIBLING of projA (not under it) → out of scope
-    expect(roots).not.toContain(projB);
+    expect(roots).not.toContain(projB); // sibling, not under projA
   });
 
   it('from a parent of several projects (not itself a product), scopes to all of them', () => {
-    const { scopeRoot, roots } = resolveGuiScope(ROOT);
+    const { scopeRoot, roots } = resolveScope(ROOT);
     expect(scopeRoot).toBe(ROOT);
     expect(roots).toContain(projA);
     expect(roots).toContain(projB);
@@ -111,8 +110,49 @@ describe('resolveGuiScope', () => {
   });
 
   it('from a dir with no project at or under it, returns an empty root set', () => {
-    const empty = path.join(ROOT, 'fakeHome', '.piflow', 'agents'); // a leaf with nothing product-shaped under it
-    const { roots } = resolveGuiScope(empty);
+    const empty = path.join(ROOT, 'fakeHome', '.piflow', 'agents');
+    const { roots } = resolveScope(empty);
     expect(roots).toEqual([]);
+  });
+});
+
+describe('loadScopedRegistry', () => {
+  const savedScope = process.env.PIFLOW_SCOPE_ROOTS;
+  const savedHome = process.env.PIFLOW_HOME;
+  afterEach(() => {
+    if (savedScope === undefined) delete process.env.PIFLOW_SCOPE_ROOTS;
+    else process.env.PIFLOW_SCOPE_ROOTS = savedScope;
+    if (savedHome === undefined) delete process.env.PIFLOW_HOME;
+    else process.env.PIFLOW_HOME = savedHome;
+  });
+
+  it('PIFLOW_SCOPE_ROOTS wins: an ephemeral registry of exactly those roots (ignoring cwd)', () => {
+    process.env.PIFLOW_SCOPE_ROOTS = [projA, projB].join(path.delimiter);
+    const reg = loadScopedRegistry(projA2); // cwd given, but the env must take precedence
+    expect(reg.products.map((p) => p.root).sort()).toEqual([projA, projB].sort());
+  });
+
+  it('no env, cwd inside a project: scopes to that project (+ nested), never the sibling', () => {
+    delete process.env.PIFLOW_SCOPE_ROOTS;
+    const reg = loadScopedRegistry(path.join(projA, 'src', 'foo'));
+    const roots = reg.products.map((p) => p.root);
+    expect(roots).toContain(projA);
+    expect(roots).toContain(projA2);
+    expect(roots).not.toContain(projB);
+  });
+
+  it('no env + nothing product-shaped in scope: falls back to the GLOBAL ~/.piflow registry', async () => {
+    delete process.env.PIFLOW_SCOPE_ROOTS;
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-home-'));
+    await fs.writeFile(
+      path.join(home, 'products.json'),
+      JSON.stringify({ products: [{ id: 'glob', name: 'glob', root: '/some/global/repo' }] }),
+    );
+    process.env.PIFLOW_HOME = home;
+    const empty = path.join(ROOT, 'fakeHome', '.piflow', 'agents'); // no project at/under it
+    // both a scope-less cwd AND no cwd at all fall through to the global registry
+    expect(loadScopedRegistry(empty).products.map((p) => p.root)).toEqual(['/some/global/repo']);
+    expect(loadScopedRegistry().products.map((p) => p.root)).toEqual(['/some/global/repo']);
+    await fs.rm(home, { recursive: true, force: true });
   });
 });
