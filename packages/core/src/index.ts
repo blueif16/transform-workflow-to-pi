@@ -201,6 +201,16 @@ export { runWorkflow, defaultExecRunner, defaultPiCommand, dispatchCommand, last
 // buildNodeConfig — the curated per-node config-slice builder (the SKIN channel mirror). Surfaced so a test
 // can pin the slice mapping (e.g. the `fullAccess`/`programmatic` carve-outs) directly off the resolved NodeSpec.
 export { buildNodeConfig } from './runner/index.js';
+// P6 — mid-run migration primitives: the single-writer lease (guards journal double-write across a
+// migration), the freeze-at-node-boundary signal (`.pi/freeze` → park the run), and the run-dir bundle
+// (the portable snapshot shipped laptop⇄cloud). Surfaced for @piflow/server (the migrate endpoints) +
+// @piflow/cli (`context migrate`).
+export {
+  acquireLease, readLease, LeaseHeldError, lockFile,
+  requestFreeze, clearFreeze, freezeFile, defaultFreezeSignal,
+  packRunDir, unpackRunDir, BUNDLE_EXCLUDE,
+} from './runner/index.js';
+export type { Lease, LeaseInfo, AcquireOpts, PackOpts } from './runner/index.js';
 // (op⊖ops) derivesFromOp / gatesFromOp / runOpsFromOp — reconstruct the per-family executor inputs from a
 // node's canonical `op[]` (the SOLE derive rep; the legacy `node.ops` was retired in U6). The runner reads
 // derives/gates/run ops through these three adapters (one home), and consumers (inspector) render via them.

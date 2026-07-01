@@ -168,6 +168,13 @@ export interface RunStatus {
   updatedAt: string;
   done: boolean;
   ok: boolean | null;
+  /**
+   * (P6 — mid-run migration) The run was PARKED at a node boundary by a freeze request (a pending
+   * migration), not run to completion. Distinct from `done`: a frozen run has `done:false, ok:null`, its
+   * completed nodes journaled and its remaining nodes still `pending`, so a target runner resumes it from
+   * the same run-dir. Absent/false on a normal run (additive, optional).
+   */
+  frozen?: boolean;
   durationMs: number | null;
   /** While a stage runs: { index, total, nodes }. Null between/after stages. */
   stage: { index: number; total: number; nodeIds: string[] } | null;

@@ -3,6 +3,11 @@
 
 export { runWorkflow, defaultExecRunner, defaultCheckpointWait, lastJsonBlock, selectedBridgedTool, buildNodeConfig } from './runner.js';
 export type { RunOptions, RunResult, ExecRunner, ExecWatchdogOpts, CheckpointWaiter } from './runner.js';
+// P6 — mid-run migration: the single-writer lease + the freeze-at-node-boundary signal + run-dir bundle.
+export { acquireLease, readLease, LeaseHeldError, lockFile } from './lease.js';
+export type { Lease, LeaseInfo, AcquireOpts } from './lease.js';
+export { requestFreeze, clearFreeze, freezeFile, defaultFreezeSignal, packRunDir, unpackRunDir, BUNDLE_EXCLUDE } from './migrate.js';
+export type { PackOpts } from './migrate.js';
 // (op⊖ops) derivesFromOp / gatesFromOp / runOpsFromOp — the SINGLE OpSpec→executor-input adapter home (the
 // SOLE derive rep is `op[]`). Surfaced so consumers (the CLI inspector) render derives from `op[]` instead of
 // the retired `node.ops`; gatesFromOp/runOpsFromOp unify the gate/run reads the runner inlined per lane (C2).

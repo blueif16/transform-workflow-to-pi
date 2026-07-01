@@ -43,6 +43,12 @@ import {
   artifactState,
 } from './status.js';
 import { descendantsMap, loadJournal } from './journal.js';
+// P6 — mid-run migration: the single-writer lease + the freeze-at-node-boundary signal.
+import { acquireLease, LeaseHeldError, type Lease, type AcquireOpts } from './lease.js';
+import { defaultFreezeSignal } from './migrate.js';
+export { acquireLease, readLease, LeaseHeldError, lockFile } from './lease.js';
+export type { Lease, LeaseInfo, AcquireOpts } from './lease.js';
+export { requestFreeze, clearFreeze, freezeFile, defaultFreezeSignal } from './migrate.js';
 
 // ── exec/checkpoint primitives + seam types — moved to ./exec-runner.ts ──────────────────────────────
 // `defaultExecRunner`/`defaultCheckpointWait` + the `ExecRunner`/`ExecWatchdogOpts`/`CheckpointWaiter`
@@ -230,6 +236,28 @@ export interface RunOptions {
    * the first reply that PASSES `accept`, or `null` on deadline.
    */
   checkpointWait?: CheckpointWaiter;
+  /**
+   * (P6 — mid-run migration) The FREEZE predicate, consulted at each stage boundary (all lanes quiesced,
+   * journal + state flushed). When it returns true AND stages remain, the runner PARKS the run
+   * (`RunStatus.frozen`) instead of starting the next stage — the "flush the journal then die" hook a
+   * pending migration uses to hand the run to another host. Omit ⇒ the default file-watch
+   * (`defaultFreezeSignal(outDir)`: park iff `.pi/freeze` exists), so a `POST /freeze` parks a live run
+   * with no wiring. A test injects a deterministic function.
+   */
+  freezeSignal?: () => boolean | Promise<boolean>;
+  /**
+   * (P6 — mid-run migration) Acquire the single-writer `run.lock` lease for the run's lifetime (default
+   * ON) so two runner processes never double-write the journal across a migration. A LIVE lease held by
+   * another process makes the run FAIL loudly (a synthetic `__lease__` node) rather than corrupt the
+   * journal. Set `false` to skip the lease (an embedded/library run that owns the dir exclusively, or a
+   * test isolating other behavior).
+   */
+  lease?: boolean;
+  /**
+   * (P6) Lease knobs (pid/host/clock/ttl/liveness) forwarded to `acquireLease` — for tests + a host that
+   * wants a custom stale threshold. Ignored when `lease === false`.
+   */
+  leaseOpts?: AcquireOpts;
 }
 
 /** The result of a run: the final status record + the host run dir it was written to. */
@@ -418,6 +446,32 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
   const t0 = Date.now();
   await fs.mkdir(outDir, { recursive: true });
 
+  // P6 — single-writer lease. Acquire BEFORE any journal write (and before booting a run scope) so a
+  // migration never has two runners live on the same run-dir. A LIVE holder ⇒ fail loudly (synthetic
+  // `__lease__` node) rather than corrupt the journal. `lease:false` skips it (embedded/exclusive runs).
+  let lease: Lease | null = null;
+  if (opts.lease !== false) {
+    try {
+      lease = await acquireLease(outDir, opts.leaseOpts);
+    } catch (e) {
+      if (e instanceof LeaseHeldError) {
+        ctx.status.done = true;
+        ctx.status.ok = false;
+        ctx.status.durationMs = Date.now() - t0;
+        ctx.status.nodes['__lease__'] = {
+          id: '__lease__', label: 'run lock', status: 'blocked', artifacts: [],
+          issues: [`another runner holds this run: ${e.message}`],
+        };
+        await writeStatus(outDir, ctx.status);
+        return { status: ctx.status, outDir };
+      }
+      throw e;
+    }
+  }
+  const releaseLease = async (): Promise<void> => { try { await lease?.release(); } catch { /* non-fatal */ } };
+  // The freeze predicate consulted at each stage boundary — injected (tests) or the default `.pi/freeze` watch.
+  const freezeReq = opts.freezeSignal ?? defaultFreezeSignal(outDir);
+
   const { fromIdx, untilIdx } = selectWindow(wf, opts.from, opts.until);
   const skipped = wf.stages.slice(0, fromIdx);
   const selected = wf.stages.slice(fromIdx, untilIdx + 1);
@@ -518,6 +572,7 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
         issues: [`cannot --from "${opts.from}": missing upstream artifact(s): ${missing.join(', ')}`],
       };
       await writeStatus(outDir, ctx.status);
+      await releaseLease();
       return { status: ctx.status, outDir };
     }
   }
@@ -571,12 +626,14 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
       issues: [`run scope setup failed: ${(e as Error).message}`],
     };
     await writeStatus(outDir, ctx.status);
+    await releaseLease();
     return { status: ctx.status, outDir };
   }
 
   let halted = false;
+  let frozen = false; // P6: set true when a freeze parks the run at a stage boundary
   try {
-    for (let i = 0; i < selected.length && !halted; i++) {
+    for (let i = 0; i < selected.length && !halted && !frozen; i++) {
       const s = selected[i];
       ctx.status.stage = { index: fromIdx + i + 1, total: wf.stages.length, nodeIds: s.nodeIds };
       await writeStatus(outDir, ctx.status);
@@ -645,21 +702,44 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions = {}): Promise<
 
       // HALT-on-failure (run.mjs 1315–1322): first error/blocked stops the run; downstream never runs.
       if (results.some((r) => r.status === 'error' || r.status === 'blocked')) halted = true;
+
+      // P6 — the NODE-BOUNDARY freeze point. All lanes have quiesced, the journal is flushed per-node,
+      // and the barrier state is persisted — the one safe instant to hand the run to another host. If a
+      // freeze is pending AND real work remains (not the last stage / not already halted), park the run:
+      // completed nodes stay journaled, the untouched tail stays `pending`, and a target runner resumes
+      // from this same run-dir via the journal. Heartbeat the lease here too (a healthy runner is never
+      // mistaken for gone). A freeze on the final stage is moot — the run is finishing anyway.
+      await lease?.renew();
+      if (!halted && i < selected.length - 1 && (await freezeReq())) frozen = true;
     }
 
     ctx.status.stage = null;
-    ctx.status.done = true;
     ctx.status.durationMs = baselineMs + (Date.now() - t0);
-    const vals = Object.values(ctx.status.nodes).filter((n) => n.id !== '__resume__');
-    const failed = vals.filter((n) => n.status === 'error' || n.status === 'blocked').length;
-    const okCount = vals.filter((n) => n.status === 'ok' || n.status === 'reused').length;
-    ctx.status.ok = !halted && failed === 0;
-    ctx.status.totals = { nodes: vals.length, ok: okCount, failed };
-    await writeStatus(outDir, ctx.status);
+    if (frozen) {
+      // PARKED, not done: the workflow is incomplete but cleanly quiesced for migration. `done:false`
+      // + `ok:null` distinguishes it from both a finished run and a crash; `frozen` is the affirmative
+      // signal the migration orchestrator (and the GUI) reads.
+      ctx.status.frozen = true;
+      ctx.status.done = false;
+      ctx.status.ok = null;
+      await writeStatus(outDir, ctx.status);
+    } else {
+      ctx.status.done = true;
+      const vals = Object.values(ctx.status.nodes).filter((n) => n.id !== '__resume__');
+      const failed = vals.filter((n) => n.status === 'error' || n.status === 'blocked').length;
+      const okCount = vals.filter((n) => n.status === 'ok' || n.status === 'reused').length;
+      ctx.status.ok = !halted && failed === 0;
+      ctx.status.totals = { nodes: vals.length, ok: okCount, failed };
+      await writeStatus(outDir, ctx.status);
+    }
   } finally {
     // Run-level teardown — commit+copy-back (worktree) / collect+destroy (cloud). Best-effort: a
     // teardown failure must not mask the run verdict already written above.
     try { await scope.dispose(); } catch { /* non-fatal */ }
+    // P6 — release the single-writer lease LAST, so the run-dir is fully quiesced (journal flushed,
+    // scope disposed) before another runner can acquire it. On a freeze this is what lets the target
+    // runner take over.
+    await releaseLease();
   }
   return { status: ctx.status, outDir };
 }
