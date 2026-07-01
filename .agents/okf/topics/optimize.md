@@ -4,9 +4,9 @@ key: optimize
 title: Optimize (the post-run self-correction loop — score → triage → fix → gate → land → worklist)
 description: The out-of-band optimizer — a finished run's trace folds through scoreRun (Tier-0 telemetry disqualifier × Tier-1 checkable outcome) → triage (four-way LAPSE/SKILL/FUNCTIONALITY/ARCH) → runFixGate (a deterministic driver composing a product-injected fixer + held-out replay) → evaluateGate (accept iff a candidate copy strictly improves) → land (stage/adopt) → renderRouting (the HERMES-ROUTING.md worklist).
 resource: packages/core/src/optimize/driver.ts
-aliases: [optimize, optimizer, scoreRun, scoreNodes, triage, evaluateGate, runFixGate, makeReplayStages, mineTaskFromTrace, renderRouting, readVerifyReport, writeStagingManifest, adoptFile, DefectBucket, NodeScore, Tier0, Tier1, FIX-GATE-LAND, HERMES-ROUTING, self-correction, hermes, accept-gate, replay, strict-improvement, --binding, --fix]
-seeds: [packages/core/src/optimize/score.ts, packages/core/src/optimize/triage.ts, packages/core/src/optimize/gate.ts, packages/core/src/optimize/driver.ts, packages/core/src/optimize/replay.ts, packages/core/src/optimize/mine.ts, packages/core/src/optimize/land.ts, packages/core/src/optimize/tier1.ts, packages/core/src/optimize/render.ts, packages/core/src/optimize/types.ts, packages/cli/src/optimize-fix.ts]
-symbols: [scoreRun, scoreNodes, triage, evaluateGate, runFixGate, makeReplayStages, mineTaskFromTrace, readVerifyReport, renderRouting, writeStagingManifest, adoptFile, NodeScore, Defect, DefectBucket, GateVerdict, CheckableTask]
+aliases: [optimize, optimizer, scoreRun, scoreNodes, triage, evaluateGate, runFixGate, makeReplayStages, mineTaskFromTrace, renderRouting, readVerifyReport, writeStagingManifest, adoptFile, DefectBucket, NodeScore, Tier0, Tier1, FIX-GATE-LAND, HERMES-ROUTING, self-correction, hermes, accept-gate, replay, strict-improvement, --binding, --fix, --watch, OptimizeEvent, OptimizeEventSink, renderOptimizeEvent, streaming, fixer-trace]
+seeds: [packages/core/src/optimize/score.ts, packages/core/src/optimize/triage.ts, packages/core/src/optimize/gate.ts, packages/core/src/optimize/driver.ts, packages/core/src/optimize/replay.ts, packages/core/src/optimize/mine.ts, packages/core/src/optimize/land.ts, packages/core/src/optimize/tier1.ts, packages/core/src/optimize/render.ts, packages/core/src/optimize/events.ts, packages/core/src/optimize/types.ts, packages/cli/src/optimize-fix.ts]
+symbols: [scoreRun, scoreNodes, triage, evaluateGate, runFixGate, makeReplayStages, mineTaskFromTrace, readVerifyReport, renderRouting, writeStagingManifest, adoptFile, NodeScore, Defect, DefectBucket, GateVerdict, CheckableTask, OptimizeEvent, OptimizeEventSink, renderOptimizeEvent]
 tags: [optimize, self-correction, memory-v1.5, hermes-routing, accept-gate, replay, core, cli]
 timestamp: 2026-06-30
 ---
@@ -45,6 +45,11 @@ REPLAY
 - `packages/core/src/optimize/mine.ts:45` — `mineTaskFromTrace` — the MINING half: read the incumbent's recorded report → a CheckableTask
 CLI SEAM
 - `packages/cli/src/optimize-fix.ts:87` — `runOptimizeFixCli` — dynamic-import the product `--binding` → compose the core pieces → stage a manifest
+STREAM (`--fix --watch`)
+- `packages/core/src/optimize/events.ts:12` — `OptimizeEvent` — the typed event union the driver emits (one per lifecycle step); the stream is a PROJECTION, never load-bearing
+- `packages/core/src/optimize/events.ts:23` — `OptimizeEventSink` — the sink signature `(event: OptimizeEvent) => void`; the `--watch` UI subscribes to it
+- `packages/core/src/optimize/events.ts:29` — `renderOptimizeEvent` — one event → a human `--watch` line
+- `packages/core/src/optimize/driver.ts:97` — `safeEmit` — the driver's guarded emit point; wraps `onEvent` and re-emits the fixer's OPAQUE sub-trace as a `fixer-trace` event
 
 # Freshness (anti-drift)
 anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NOTE: the live binding (product oracle + fixer) is NOT in this repo — it is dynamic-imported from a game-omni-side module via `--binding` (validated only by a LIVE run, never CI); `criteria.ts`/`parseCriteria` + `events.ts` exist in the dir but are not load-bearing on the core path (criteria is a future SKILL signal; events is the `--watch` projection).
@@ -65,6 +70,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 | `packages/core/src/optimize/land.ts` | ✓ |
 | `packages/core/src/optimize/tier1.ts` | ✓ |
 | `packages/core/src/optimize/render.ts` | ✓ |
+| `packages/core/src/optimize/events.ts` | ✓ |
 | `packages/core/src/optimize/types.ts` | ✓ |
 | `packages/cli/src/optimize-fix.ts` | ✓ |
 
@@ -83,6 +89,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 ### Lessons — memory cluster
 
 **Alias matches** (review — may include false positives):
+- [[cloud-sandbox-portability]]
 - [[delegate-inspection-to-subagents]]
 - [[expert-representations]]
 - [[game-omni-reference-product]]
@@ -101,7 +108,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `CheckableTask` (packages/core/src/optimize/replay.ts:34) — 10 callers in `packages/core/src/optimize/mine.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`, `packages/core/src/optimize/replay.ts`; tests: `packages/core/test/optimize-replay.test.ts`, `packages/core/test/optimize-root-exports.test.ts`
 - `makeReplayStages` (packages/core/src/optimize/replay.ts:87) — 7 callers in `packages/cli/src/optimize-fix.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`; tests: `packages/core/test/optimize-mine.test.ts`, `packages/core/test/optimize-replay.test.ts`, `packages/core/test/optimize-root-exports.test.ts`
 - `runFixGate` (packages/core/src/optimize/driver.ts:86) — 4 callers in `packages/cli/src/optimize-fix.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`; ⚠ no covering tests found
-- `NodeScore` (packages/core/src/optimize/types.ts:79) — 11 callers in `packages/cli/src/optimize-fix.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/triage.ts`; tests: `packages/core/test/optimize-triage.test.ts`
+- `renderRouting` (packages/core/src/optimize/render.ts:33) — 6 callers in `packages/cli/src/optimize.ts`, `packages/core/src/index.ts`, `packages/core/src/optimize/index.ts`; tests: `packages/core/test/optimize-gs01.test.ts`, `packages/core/test/optimize-render.test.ts`
 
-<sub>derived 2026-07-01 · arc=9 commits · files=11 · lessons=11</sub>
+<sub>derived 2026-07-01 · arc=9 commits · files=12 · lessons=12</sub>
 <!-- okf:auto-end -->

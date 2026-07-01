@@ -4,7 +4,7 @@ key: sandbox
 title: Sandbox (per-node OS filesystem jail — declare → plan → kernel-enforce)
 description: How a node's declared readScope/owns become a kernel-enforced filesystem jail — a shared scope policy rendered as a macOS seatbelt SBPL profile or Linux bwrap bind-mount argv, wrapping the in-place pi exec so reads/writes outside the lane EPERM; danger-full-access is the bypass.
 resource: packages/core/src/sandbox/scope.ts
-aliases: [sandbox, seatbelt, bwrap, bubblewrap, readScope, owns, jail, danger-full-access, sandbox-exec, read-scope.sb, computeScopeRoots, worktree]
+aliases: [sandbox, seatbelt, bwrap, bubblewrap, readScope, owns, jail, danger-full-access, sandbox-exec, read-scope.sb, computeScopeRoots, worktree, fullAccess, enforceReadScope, per-node full access]
 seeds: [packages/core/src/sandbox/scope.ts, packages/core/src/sandbox/jail.ts, packages/core/src/sandbox/seatbelt.ts, packages/core/src/sandbox/bwrap.ts, packages/core/src/sandbox/local.ts, packages/core/src/sandbox/read-scope.sb, packages/core/src/workflow/template/schema/node.schema.ts, packages/cli/src/run.ts]
 symbols: [computeScopeRoots, localJailPlan, seatbeltExecPlan, buildSeatbeltProfile, bwrapExecPlan, buildBwrapArgs, LocalSandbox, LocalSandboxProvider]
 tags: [sandbox, security, runner, cli, core]
@@ -44,7 +44,9 @@ ENFORCE (linux)
 - `packages/core/src/sandbox/bwrap.ts:283` — `bwrapExecPlan()` — null off-linux or no-bwrap (warns once), else bwrap argv
 - `packages/core/src/sandbox/bwrap.ts:216` — `buildBwrapArgs()` — renders roots as `--ro-bind`/`--bind` mount-namespace argv
 BYPASS
-- `packages/cli/src/run.ts:504` — `--sandbox danger-full-access` → `makeLocalProvider({dangerous:true})` (enforceReadScope:false)
+- `packages/cli/src/run.ts:504` — `--sandbox danger-full-access` → `makeLocalProvider({dangerous:true})` (enforceReadScope:false) — RUN-level bypass
+- `packages/core/src/workflow/template/schema/node.schema.ts:155` — `fullAccess` field — PER-NODE jail-off (`node.sandbox.fullAccess`): this ONE node runs outside the fs jail even under `--sandbox local`
+- `packages/core/src/sandbox/local.ts:68` — `enforceReadScope` — LocalSandbox constructor param; `false` (per-node fullAccess or `danger-full-access`) short-circuits the jail plan (bare exec)
 
 # Freshness (anti-drift)
 anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NOTE: `cli/src/run.ts:502` prints "Linux bwrap backend unwired … UNSANDBOXED" but `jail.ts:57` DOES route linux→`bwrapExecPlan` and `local.ts` calls it — the backend IS wired; only kernel EPERM is unverified-in-CI (bwrap absent on the macOS dev host). · `DaytonaSandboxProvider` (packages/daytona/src/daytona.ts) accepts CreateOpts but does NOT enforce readScope/owns in the cloud VM (no jail) — scope enforcement is local/seatbelt/bwrap only.
@@ -140,6 +142,7 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - [[op-consumption-two-layer]]
 - [[per-node-routing-fusion]]
 - [[piflow-ci-cd-pipeline]]
+- [[piflow-init-scaffolder]]
 - [[piflow-memory-system-v1]]
 - [[piflow-optimize-layer-built]]
 - [[piflow-product-positioning]]
@@ -154,5 +157,5 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `seatbeltExecPlan` (packages/core/src/sandbox/seatbelt.ts:203) — 3 callers in `packages/core/src/sandbox/seatbelt.ts`, `packages/core/src/sandbox/jail.ts`; ⚠ no covering tests found
 - `buildBwrapArgs` (packages/core/src/sandbox/bwrap.ts:216) — 5 callers in `deploy/e2b/bwrap-proof-driver.mjs`, `packages/core/src/sandbox/bwrap.ts`, `packages/core/src/index.ts`; tests: `packages/core/test/sandbox-bwrap.test.ts`
 
-<sub>derived 2026-07-01 · arc=53 commits · files=8 · lessons=21</sub>
+<sub>derived 2026-07-01 · arc=53 commits · files=8 · lessons=22</sub>
 <!-- okf:auto-end -->

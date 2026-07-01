@@ -4,7 +4,7 @@ key: gui
 title: GUI run-view viewer (index → flowmap → view-mode overlays → companion bridge)
 description: The static React/Vite viewer — Vite dev middleware serves the global ~/.piflow index + distills each run's real .pi/ into a RunView, toFlowGraph lays it out, nodes render with view-mode overlays, and the companion subscribes to a live SSE bridge over observe.watchRun. A pure projection, never a producer.
 resource: gui/src/data/runView.ts
-aliases: [gui, NodeHud, flowmap, toFlowGraph, companion, run-view, viewer, runStream, NodeModeStrip, watchRun, vite-middleware]
+aliases: [gui, NodeHud, flowmap, toFlowGraph, companion, run-view, viewer, runStream, NodeModeStrip, watchRun, vite-middleware, cost, tokens, RunTokens, usage]
 seeds: [gui/vite.config.ts, gui/src/data/runView.ts, gui/src/data/runStream.ts, gui/src/data/runIndex.ts, gui/src/components/WorkflowCanvas.tsx, gui/src/components/WorkflowNode.tsx, gui/src/components/NodeModeStrip.tsx, gui/src/components/Companion.tsx]
 symbols: [toFlowGraph, loadRunView, loadIndex, useRunStream, liveFlowGraph, NodeModeStrip, NodeHud, watchRun]
 tags: [gui, viewer, observe, run-view, lifecycle, companion]
@@ -124,6 +124,9 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - [[piflow-ci-cd-pipeline]]
 - [[piflow-init-scaffolder]]
 - [[piflow-memory-system-v1]]
+- [[piflow-optimize-layer-built]]
+- [[piflow-overlord-control-plane]]
+- [[piflow-product-positioning]]
 - [[piflow-rollout-enablement]]
 - [[piflowctl-bin-rename]]
 - [[runs-live-in-product-runs-folder]]
@@ -137,5 +140,5 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `loadIndex` (gui/src/data/runIndex.ts:60) — 2 callers in `gui/src/components/WorkflowCanvas.tsx`; ⚠ no covering tests found
 - `watchRun` (packages/cli/src/watch.ts:60) — 14 callers in `gui/vite.config.ts`, `packages/cli/src/telemetry.ts`, `packages/cli/src/watch.ts`, `packages/langgraph/src/stream.ts` +4 more; tests: `packages/cli/test/watch.test.ts`, `packages/core/test/observe.test.ts`
 
-<sub>derived 2026-07-01 · arc=45 commits · files=8 · lessons=21</sub>
+<sub>derived 2026-07-01 · arc=45 commits · files=8 · lessons=24</sub>
 <!-- okf:auto-end -->

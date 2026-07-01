@@ -4,7 +4,7 @@ key: observe
 title: Observe (the one rich run-view — read → distill → RunView → viewers, live via SSE)
 description: How a raw `.pi/` run dir becomes the ONE enriched run-view every viewer renders — folded by readRunModel/buildRunView (replaying events.jsonl through the shared distiller, stamping pi-native context windows), exposed as the RunView/RunModel contract, consumed by CLI/TUI/GUI, and streamed live by watchRun over SSE.
 resource: packages/core/src/observe/runView.ts
-aliases: [observe, run-view, runView, buildRunView, readRunModel, watchRun, RunView, RunModel, createNodeAccumulator, distill, telemetry, projectRunDigest, single data path, one data path, SSE, events.jsonl, io.json]
+aliases: [observe, run-view, runView, buildRunView, readRunModel, watchRun, RunView, RunModel, createNodeAccumulator, distill, telemetry, projectRunDigest, single data path, one data path, SSE, events.jsonl, io.json, cost, costScalar, tokens, usage, billable, RunTokens]
 seeds: [packages/core/src/observe/read.ts, packages/core/src/observe/runView.ts, packages/core/src/observe/distill.ts, packages/core/src/observe/watch.ts, packages/core/src/observe/types.ts, packages/core/src/observe/telemetry.ts, packages/core/src/observe/models.ts, gui/vite.config.ts, packages/cli/src/status.ts, tui/adapt.mjs]
 symbols: [readRunModel, buildRunView, createNodeAccumulator, watchRun, deriveStatus, contextWindowFor, projectRunDigest, telemetryStream, RunView, RunModel]
 tags: [observe, run-view, lifecycle, core, gui, tui, cli, telemetry, sse]
@@ -31,7 +31,8 @@ RAW `.pi` → READ (lean snapshot)
 - `packages/core/src/observe/read.ts:104` — `readRunModel()` — folds run.json + io.json into RunModel
 - `packages/core/src/observe/read.ts:60` — `deriveStatus()` — verified-not-trusted status downgrade
 DISTILL (rich per-node reducer)
-- `packages/core/src/observe/distill.ts:120` — `createNodeAccumulator()` — the shared events.jsonl reducer
+- `packages/core/src/observe/distill.ts:120` — `createNodeAccumulator()` — the shared events.jsonl reducer (per-node tokens + cost + contextPeak)
+- `packages/core/src/observe/distill.ts:149` — `costScalar` — coerces pi's `usage.cost` into the per-node cost tally (the COST number the GUI shows is COMPUTED here, not in gui)
 - `packages/core/src/observe/models.ts:66` — `contextWindowFor()` — pi-native context-window stamp
 RUNVIEW (the contract + builder)
 - `packages/core/src/observe/runView.ts:212` — `buildRunView()` — superset run-view (replays events, prefers workflow.json DAG)
@@ -122,9 +123,11 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - [[observe-single-data-path]]
 - [[optimize-loop-native-not-adhoc]]
 - [[piflow-ci-cd-pipeline]]
+- [[piflow-init-scaffolder]]
 - [[piflow-memory-system-v1]]
 - [[piflow-optimize-layer-built]]
 - [[piflow-overlord-control-plane]]
+- [[piflow-product-positioning]]
 - [[piflow-rollout-enablement]]
 - [[runs-live-in-product-runs-folder]]
 - [[sandbox-readscope-default-on]]
@@ -139,5 +142,5 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `watchRun` (packages/cli/src/watch.ts:60) — 14 callers in `gui/vite.config.ts`, `packages/cli/src/telemetry.ts`, `packages/cli/src/watch.ts`, `packages/langgraph/src/stream.ts` +4 more; tests: `packages/cli/test/watch.test.ts`, `packages/core/test/observe.test.ts`
 - `readRunModel` (packages/core/src/observe/read.ts:104) — 16 callers in `packages/cli/src/status.ts`, `packages/core/src/observe/discover.ts`, `packages/core/src/observe/watch.ts`, `packages/langgraph/src/stream.ts` +3 more; tests: `packages/cli/test/status.test.ts`, `packages/core/test/checkpoint.test.ts`, `tui/test/rich-dag.test.mjs`, `packages/core/test/observe.test.ts`
 
-<sub>derived 2026-07-01 · arc=35 commits · files=10 · lessons=26</sub>
+<sub>derived 2026-07-01 · arc=35 commits · files=10 · lessons=28</sub>
 <!-- okf:auto-end -->
