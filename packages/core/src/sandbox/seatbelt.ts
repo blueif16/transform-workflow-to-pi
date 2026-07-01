@@ -155,17 +155,31 @@ export function buildSeatbeltProfile(opts: {
   workdir: string;
   readScope: string[];
   writeScope?: string[];
+  execCwd?: string;
+  execReads?: string[];
 }): string {
   const workdir = path.resolve(opts.workdir);
-  // The SHARED policy: compute the read-roots (workdir + node_modules + node toolchain + readScope) and
-  // write-roots (workdir + writeScope/owns), realpath-expanded + de-duped. This is the SAME helper the
-  // bwrap backend consumes, so the macOS and Linux jails grant an identical set. The system read roots
-  // (/usr,/System,…) and the write-scratch roots (/tmp,$TMPDIR,~/.npm,…) live in the template below.
-  const { readRoots, writeRoots } = computeScopeRoots(opts);
+  // E10 — a node whose build runs from a PROJECT ROOT outside the run dir (`execCwd`) and imports SIBLING
+  // kits (`execReads`) needs both readable. Fold them into the declared read scope so the shared policy
+  // renders them as recursive read subpaths (execCwd ALSO gets a getcwd `(literal)` below).
+  const execReadRoots = [...(opts.execReads ?? []), ...(opts.execCwd ? [opts.execCwd] : [])];
+  // The SHARED policy: compute the read-roots (workdir + node_modules + node toolchain + readScope +
+  // execReads/execCwd) and write-roots (workdir + writeScope/owns), realpath-expanded + de-duped. This is
+  // the SAME helper the bwrap backend consumes, so the macOS and Linux jails grant an identical set. The
+  // system read roots (/usr,/System,…) and the write-scratch roots (/tmp,$TMPDIR,~/.npm,…) live in the
+  // template below.
+  const { readRoots, writeRoots } = computeScopeRoots({
+    ...opts,
+    readScope: [...opts.readScope, ...execReadRoots],
+  });
   const subpaths = readRoots.map((p) => `  (subpath ${sbplString(p)})`).join('\n');
-  // getcwd needs file-read DATA on the cwd dir ENTRY, not just metadata; grant the workdir as a
-  // (literal) too (expanded to {itself, realpath}) so a symlinked workdir matches.
-  const cwdLits = [...new Set(expandRealpath(workdir))]
+  // getcwd needs file-read DATA on the cwd dir ENTRY, not just metadata; grant the workdir as a (literal)
+  // too (expanded to {itself, realpath}) so a symlinked workdir matches. `execCwd` (the build's project-
+  // root cwd, OUTSIDE the run dir) gets the SAME literal — THIS is the `EPERM: uv_cwd` fix (E10): the
+  // build child's getcwd reads the execCwd dir entry, which a bare (subpath) grant alone does not cover.
+  const cwdLits = [
+    ...new Set([workdir, ...(opts.execCwd ? [opts.execCwd] : [])].flatMap(expandRealpath)),
+  ]
     .map((p) => `  (literal ${sbplString(p)})`)
     .join('\n');
   const allows = `${subpaths}\n${cwdLits}`;
@@ -202,7 +216,14 @@ export interface SeatbeltExecPlan {
  */
 export function seatbeltExecPlan(
   cmd: string,
-  opts: { workdir: string; readScope: string[]; writeScope?: string[]; profileDir: string },
+  opts: {
+    workdir: string;
+    readScope: string[];
+    writeScope?: string[];
+    execCwd?: string;
+    execReads?: string[];
+    profileDir: string;
+  },
 ): SeatbeltExecPlan | null {
   if (!IS_DARWIN) {
     warnNonDarwinOnce();
@@ -212,6 +233,8 @@ export function seatbeltExecPlan(
     workdir: opts.workdir,
     readScope: opts.readScope,
     writeScope: opts.writeScope,
+    execCwd: opts.execCwd, // E10 — the getcwd literal + a read root for the out-of-tree build's cwd
+    execReads: opts.execReads, // E10 — extra read roots the build imports
   });
   const profilePath = path.join(opts.profileDir, `piflow-sb-${process.pid}-${Date.now()}-${execSeq++}.sb`);
   fsSync.writeFileSync(profilePath, profile);
@@ -229,6 +252,11 @@ export class SeatbeltSandbox implements Sandbox {
     private readonly env: Record<string, string>,
     private readonly readScope: string[],
     private readonly writeScope: string[],
+    /** E10 — the dir the build runs from (project root outside the workdir); exec cwd + read root + getcwd
+     * literal. Undefined ⇒ cwd = the workdir. Parity with LocalSandbox. */
+    private readonly execCwd: string | undefined,
+    /** E10 — extra external read roots the build imports (a sibling kit), resolved absolute + granted read. */
+    private readonly execReads: string[],
   ) {}
 
   static async create(opts: CreateOpts): Promise<SeatbeltSandbox> {
@@ -241,12 +269,16 @@ export class SeatbeltSandbox implements Sandbox {
     // contract, but a relative entry resolves vs the workdir to stay self-consistent).
     const resolveScope = (s: string[] | undefined): string[] =>
       (s ?? []).map((p) => (path.isAbsolute(p) ? p : path.resolve(workdir, p)));
+    const resolveOne = (p: string | undefined): string | undefined =>
+      p === undefined ? undefined : path.isAbsolute(p) ? p : path.resolve(workdir, p);
     return new SeatbeltSandbox(
       root,
       workdir,
       opts.env ?? {},
       resolveScope(opts.readScope),
       resolveScope(opts.writeScope),
+      resolveOne(opts.execCwd), // E10 — exec cwd (a project root outside the workdir); undefined ⇒ workdir
+      resolveScope(opts.execReads), // E10 — extra read roots the build imports
     );
   }
 
@@ -272,7 +304,9 @@ export class SeatbeltSandbox implements Sandbox {
    */
   exec(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
     return new Promise((resolve) => {
-      const cwd = opts.cwd ? this.abs(opts.cwd) : this.workdir;
+      // E10 — a node declaring `execCwd` runs FROM that project root (outside the temp workdir); else the
+      // workdir. An explicit ExecOpts.cwd still wins. Parity with LocalSandbox.
+      const cwd = opts.cwd ? this.abs(opts.cwd) : (this.execCwd ?? this.workdir);
       // The shared seam: wrap in `sandbox-exec -f <profile> sh -c <cmd>` on darwin (granting the cwd too,
       // so a node may exec in a workdir subdir), or `null` off-darwin ⇒ bare `cmd` via shell, byte-
       // identical to InMemorySandbox. The per-exec profile is written under this.root (a temp dir).
@@ -280,6 +314,8 @@ export class SeatbeltSandbox implements Sandbox {
         workdir: this.workdir,
         readScope: [...this.readScope, cwd],
         writeScope: this.writeScope,
+        execCwd: this.execCwd, // E10 — read root + getcwd literal for the out-of-tree build's cwd
+        execReads: this.execReads, // E10 — extra read roots the build imports
         profileDir: this.root,
       });
       const child = spawn(plan ? plan.file : cmd, plan ? plan.argv : [], {

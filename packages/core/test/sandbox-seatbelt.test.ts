@@ -133,6 +133,35 @@ describe('SeatbeltSandbox — read-scope EPERM enforcement (darwin)', () => {
     expect(profile).not.toContain('@TMPDIR@');
   });
 
+  it('normalizes a glob `owns` entry to a recursive (subpath dir) write grant, not a literal "*" (E11a)', () => {
+    // A `owns` entry like `…/shape-primitives/*` must become a RECURSIVE write grant on the DIR so the
+    // node can CREATE new files under it. SBPL has no glob expansion, so the emitted rule must be
+    // `(subpath "…/shape-primitives")`, never `(subpath "…/shape-primitives/*")` (a bogus dir named "*").
+    const profile = buildSeatbeltProfile({
+      workdir: '/tmp/piflow-x',
+      readScope: [],
+      writeScope: ['/x/owns/*'],
+    });
+    expect(profile).toContain('(subpath "/x/owns")');
+    expect(profile).not.toContain('/x/owns/*');
+  });
+
+  it('grants execCwd as a read subpath + a getcwd literal, and execReads as read subpaths (E10)', () => {
+    // A node whose build runs from a PROJECT ROOT outside the run dir (execCwd) and imports a SIBLING kit
+    // (execReads) needs: (1) execCwd readable AND granted as a (literal) so the build child's getcwd/uv_cwd
+    // can read the cwd dir ENTRY (the w3a `EPERM: uv_cwd` failure), (2) each execReads root readable as a
+    // recursive (subpath). Both flow through the SAME read-allow block computeScopeRoots feeds.
+    const profile = buildSeatbeltProfile({
+      workdir: '/tmp/piflow-run',
+      readScope: [],
+      execCwd: '/proj/root',
+      execReads: ['/sibling/kit'],
+    });
+    expect(profile).toContain('(literal "/proj/root")'); // getcwd/uv_cwd fix — the cwd dir ENTRY is readable
+    expect(profile).toContain('(subpath "/proj/root")'); // …and the project tree is readable
+    expect(profile).toContain('(subpath "/sibling/kit")'); // the sibling kit the build imports is readable
+  });
+
   darwinIt(
     'writes an in-scope file but EPERMs an out-of-scope sibling write under the sandbox',
     async () => {
@@ -164,6 +193,46 @@ describe('SeatbeltSandbox — read-scope EPERM enforcement (darwin)', () => {
         expect(denied.stderr).not.toMatch(/^sandbox-exec:/m); // the profile loaded (not a parse error)
         expect(denied.stderr).toMatch(/Operation not permitted|Permission denied/i);
         await expect(fs.access(target)).rejects.toThrow();
+      } finally {
+        await sb.dispose();
+        await fs.rm(scratch, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
+});
+
+// ── 1b. execCwd/execReads parity with LocalSandbox (E10) ───────────────────────────────────────────
+
+describe('SeatbeltSandbox — honors execCwd/execReads like LocalSandbox (E10 parity, darwin)', () => {
+  darwinIt(
+    'runs the exec FROM execCwd and grants an execReads sibling (the throwaway peer must not drop them)',
+    async () => {
+      // The audit found SeatbeltSandbox (the throwaway-temp seatbelt provider) silently dropped
+      // execCwd/execReads while LocalSandbox carried them — an inconsistency. Assert parity: the exec runs
+      // from execCwd (a RELATIVE read of a project-root marker succeeds — it would MISS in the temp workdir)
+      // and a sibling in execReads is readable.
+      const scratch = await homeScratch('sb-execscope');
+      const proj = path.join(scratch, 'proj'); // execCwd — a project root outside the temp workdir
+      const kit = path.join(scratch, 'kit'); // execReads — a sibling the build imports
+      await fs.mkdir(proj, { recursive: true });
+      await fs.mkdir(kit, { recursive: true });
+      await fs.writeFile(path.join(proj, 'marker.txt'), 'AT_PROJECT_ROOT');
+      await fs.writeFile(path.join(kit, 'dep.txt'), 'KIT_DEP');
+      const sb = await SeatbeltSandbox.create({
+        workdir: '.',
+        readScope: [],
+        outputDir: 'out',
+        execCwd: proj,
+        execReads: [kit],
+      });
+      try {
+        const rel = await sb.exec('cat marker.txt'); // relative → resolves in execCwd (not the temp workdir)
+        expect(rel.code).toBe(0);
+        expect(rel.stdout).toContain('AT_PROJECT_ROOT');
+        const kr = await sb.exec(`cat ${JSON.stringify(path.join(kit, 'dep.txt'))}`);
+        expect(kr.code).toBe(0);
+        expect(kr.stdout).toContain('KIT_DEP');
       } finally {
         await sb.dispose();
         await fs.rm(scratch, { recursive: true, force: true });

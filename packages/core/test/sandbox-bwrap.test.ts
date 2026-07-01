@@ -121,6 +121,36 @@ describe('buildBwrapArgs — pure bind-arg construction (cross-platform)', () =>
     }
   });
 
+  it('chdirs into execCwd and ro-binds execCwd + execReads (E10 out-of-tree build)', async () => {
+    // A node whose build runs from a PROJECT ROOT outside the run dir (execCwd) importing a SIBLING kit
+    // (execReads): the namespace must --chdir into execCwd (so the build child's cwd is a bound, grantable
+    // dir — not the run dir) and bind execCwd + the sibling kit READ-ONLY so the build can read them.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'piflow-bwrap-exec-'));
+    const workdir = path.join(root, 'run'); // the node's run dir (where relative artifacts stage)
+    const projRoot = path.join(root, 'proj'); // execCwd — the build's project root, OUTSIDE the run dir
+    const siblingKit = path.join(root, 'kit'); // execReads — a sibling kit the build imports
+    await fs.mkdir(workdir, { recursive: true });
+    await fs.mkdir(projRoot, { recursive: true });
+    await fs.mkdir(siblingKit, { recursive: true });
+    try {
+      const argv = buildBwrapArgs('npm run build', {
+        workdir,
+        readScope: [],
+        writeScope: [],
+        execCwd: projRoot,
+        execReads: [siblingKit],
+      });
+      // --chdir targets the PROJECT ROOT (execCwd), not the run dir — the build child's getcwd is grantable.
+      const chdirIdx = argv.indexOf('--chdir');
+      expect(argv[chdirIdx + 1]).toBe(projRoot);
+      // execCwd + the sibling kit are bound READ-ONLY (the build reads them).
+      expect(bindFlagFor(argv, projRoot)).toBe('--ro-bind');
+      expect(bindFlagFor(argv, siblingKit)).toBe('--ro-bind');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('lays --tmpfs /tmp BEFORE any bind nested under /tmp (survival ordering) and never binds the bare /tmp mountpoint', async () => {
     // BUG B regression. Two failure modes the old builder had:
     //   (i) it bound the bare host /tmp (tmpDir()) rw — pointless (the tmpfs overmounts it) and a re-exposure

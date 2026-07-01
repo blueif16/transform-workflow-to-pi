@@ -92,7 +92,14 @@ export function computeScopeRoots(opts: {
   ];
   const readRoots = [...new Set([...autoRead, ...opts.readScope].flatMap(expandRealpath))];
   // WRITE: the workdir (recursive — the node's deliverable tree) + the declared writeScope (== owns).
-  const writeRoots = [...new Set([workdir, ...(opts.writeScope ?? [])].flatMap(expandRealpath))];
+  // A writeScope entry ending in `/`, `/*`, or `/**` is a RECURSIVE create-grant for that dir — strip the
+  // trailing glob so it becomes a `(subpath DIR)` / `--bind DIR` (which inherently authorizes creating
+  // children). SBPL/bwrap have NO glob expansion, so a raw `…/dir/*` would otherwise grant a non-existent
+  // dir literally named `*` and CREATING a new child under the real dir EPERMs (the w3b failure, E11a).
+  const normalizeWriteRoot = (p: string): string => p.replace(/\/(\*\*?|)$/, '') || p;
+  const writeRoots = [
+    ...new Set([workdir, ...(opts.writeScope ?? []).map(normalizeWriteRoot)].flatMap(expandRealpath)),
+  ];
   return { readRoots, writeRoots };
 }
 

@@ -180,6 +180,10 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
         ...srcNode.sandbox,
         read: resolveAll(srcNode.sandbox.read, resolveCtx),
         write: resolveAll(srcNode.sandbox.write, resolveCtx),
+        // (E10) resolve exec-scope tokens too ({{WORKSPACE}}/{{arg.*}}/{{state.*}}) so scope.create gets
+        // PHYSICAL paths — the out-of-tree build's project-root cwd + the sibling read roots it imports.
+        ...(srcNode.sandbox.execCwd ? { execCwd: resolveTokens(srcNode.sandbox.execCwd, resolveCtx) } : {}),
+        ...(srcNode.sandbox.execReads ? { execReads: resolveAll(srcNode.sandbox.execReads, resolveCtx) } : {}),
       },
     };
   } catch (e) {
@@ -221,6 +225,10 @@ export async function runNode(ctx: RunContext, node: NodeSpec, scope: RunScope, 
       // danger-full-access). Only a `fullAccess` node overrides — `undefined` ⇒ inherit the run-level provider
       // policy (the LocalSandboxProvider's `?? this.enforceReadScope`). A no-op for cloud/inmemory providers.
       enforceReadScope: node.sandbox.fullAccess ? false : undefined,
+      // (E10) out-of-tree build exec-scope — run FROM execCwd (a project root outside the run dir) + grant
+      // the extra read roots the build imports. Resolved above; undefined ⇒ cwd = workdir (unchanged).
+      execCwd: node.sandbox.execCwd,
+      execReads: node.sandbox.execReads,
       outputDir: sbLoc.outputDir,
       workdir: sbLoc.workdir,
       image: node.sandbox.image,

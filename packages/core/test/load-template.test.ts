@@ -199,6 +199,25 @@ describe('loadTemplate — HAPPY PATH (the unmodified fixture LOADS)', () => {
     expect(wf.nodes['w2a-levels'].executor).toBeUndefined();
   });
 
+  // E10 — the loader must CARRY the authored `contract.execCwd`/`contract.execReads` through to the intent
+  // sandbox so the runtime jail can chdir + grant the out-of-tree build's roots. Raw tokens survive (the
+  // {{WORKSPACE}} resolve happens at launch in node-lifecycle, not the loader). Mirrors the fusion carry.
+  it('carries the authored contract.execCwd/execReads onto the loaded intent sandbox (E10)', async () => {
+    dir = await cloneFixture();
+    const n = await readJson(nodeJson(dir, 'w0-classify'));
+    n.contract.execCwd = '{{WORKSPACE}}/build-root';
+    n.contract.execReads = ['/opt/sibling-kit'];
+    await writeJson(nodeJson(dir, 'w0-classify'), n);
+    const spec = await loadTemplate(dir);
+    const w0 = spec.nodes.find((nd) => nd.label === 'w0-classify')!;
+    expect(w0.sandbox.execCwd).toBe('{{WORKSPACE}}/build-root'); // raw token — resolved at launch, not load
+    expect(w0.sandbox.execReads).toEqual(['/opt/sibling-kit']);
+    // additive: a node that declares neither stays exec-scope-free on the intent (byte-identical to today).
+    const other = spec.nodes.find((nd) => nd.label === 'w2a-levels')!;
+    expect(other.sandbox.execCwd).toBeUndefined();
+    expect(other.sandbox.execReads).toBeUndefined();
+  });
+
   it('a NodeIntent with NO derives compiles to a NodeSpec with op[] undefined (additive — absence stays absent)', () => {
     // The additivity guarantee: an authored node that declares no derives is byte-for-byte op-free
     // downstream (`op[]` is the SOLE derive rep since U6 — no `op` ⇒ derivesFromOp yields five empty lists).
