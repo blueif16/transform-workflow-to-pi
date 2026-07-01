@@ -18,7 +18,9 @@ plane; Claude/pi are executors / console / out-of-band overlord, never the recon
   `worktree-control-plane-serve-context` (pushed to origin, `b230a8c`), ~13 commits off `main`. Continue here.
 - Approved design + phase plan: `/Users/tk/.claude/plans/sunny-inventing-pudding.md` (the spec — still valid).
 - Verify state: `git log --oneline main..HEAD` · `pnpm -r --filter './packages/*' build` · `pnpm test`
-  (expect **1428 passing / 0 fail**) · `(cd gui && pnpm build)`. All green as of this handoff.
+  (expect **1464 passing / 0 fail** — A3 +22, D1 +14 over the 1428 baseline) · `(cd gui && pnpm build)` ·
+  `(cd gui && npx tsc --noEmit)`. All green as of this handoff. A3 (`d9cfd63`) + D1 (`1933da4`, `94e87e0`) DONE —
+  only GO-LIVE remains (the paid `fly deploy` + the live migrate e2e, both the user's to run).
 
 ## STATE NOW — DONE + verified this session (P5 server+image, P6 core+endpoints+CLI, P7 redirect)
 The **whole local⇄cloud migrate mechanism works end-to-end at the code level** (only the live cloud deploy +
@@ -53,28 +55,36 @@ Every new test was verified to FAIL under a deliberate mutation (lease staleness
 exclude, allow-list gate, SSE parser, freeze-wait). +62 tests over the 1366 baseline.
 
 ## NEXT STEPS — to COMPLETE the vision (in order)
-1. **A3 — `piflowctl cloud up|down` (Fly.io) + `cli.ts` dispatch.** New `packages/cli/src/cloud.ts`. `cloud up`
-   = build the deploy plan (mint a bearer token + a scoped/TTL provider cred + the Claude OAuth token as Fly
-   secrets via `SecretResolver{isCloud:true}` + `cloudCredEnvAdditions`, MINT-not-forward), run the deploy,
-   then write + `context use` a `cloud` context at the `https://<app>.fly.dev` URL. Wire `case 'cloud'` in
-   `packages/cli/src/cli.ts` (dispatch mirror of `context`/`serve`). Keep the deploy PURE-testable
-   (`buildFlyDeployPlan`/`mintCloudSecrets` unit-tested) and **PAUSE before the real `fly deploy`** — it is
-   outward-facing + spends money; hand that step to the user. `cloud down` tears the app down.
-2. **D1 — GUI one-click migrate button.** `gui/` only (no other track touches it). A MenuBar button →
-   MigrateRunPanel (context dropdown from a small `/api/contexts` reflect, or the CLI's contexts) → POST the
-   server migrate endpoints; after 202, re-point `apiBase` to the target context's baseUrl (make
-   `gui/src/data/apiBase.ts`'s `API_BASE` runtime-repointable — a mutable ref/Context, currently a build-time
-   const) and re-`selectRun` so RunStream/Companion reconnect. Reuse StartRunPanel's pattern. See the
-   understanding-map notes in this session's transcript (gui-apibase reader) for exact seams.
-3. **GO LIVE (hand the paid/outward steps to the user; you author + gate):**
-   - Run `deploy/control-vm/README.md`'s runbook: `fly secrets set` the 3 secrets, `cp deploy/control-vm/
-     .dockerignore .dockerignore`, `fly deploy`, wait for health.
+1. **A3 — `piflowctl cloud up|down` — DONE (`d9cfd63`).** `packages/cli/src/cloud.ts`: pure
+   `mintCloudSecrets`/`buildFlyDeployPlan`/`renderPlan` + injected-boundary `runCloudUp`/`runCloudDown`; wired
+   `case 'cloud'` + HELP. `cloud up` is PLAN-only by default (mint the bearer, register the `cloud` context row,
+   print the fly runbook — touches fly NEVER); `--execute` runs it + `context use`s on a green smoke. Credentials
+   are PROJECTED like a node sandbox: a custom `--provider`'s `~/.pi/agent/models.json` entry (secret-free) is
+   staged as the non-secret `PIFLOW_PI_MODELS_JSON` (the image writes it to `~/.pi/agent/models.json` at boot —
+   Dockerfile CMD updated) and its cred vars + the Claude OAuth token are Fly secrets (reuses `parsePiProvider` +
+   `cloudCredEnvAdditions` + `resolveClaudeOAuthToken`, all now core-barrel-exported). ANTHROPIC_* is never staged.
+   22 tests; redaction/billing-guard/halt mutation-verified. `cloud down` = `fly apps destroy` + drop the context.
+2. **D1 — GUI one-click migrate — DONE (`1933da4` server, `94e87e0` gui).** Found + fixed a prerequisite: the GUI
+   had NO token handling but the cloud serve bearer-gates everything → `gui/src/data/apiBase.ts` is now a runtime
+   `{baseUrl,token}` store (seed token from `?token=`, `apiFetch` sets Bearer, `sse`/`apiUrl` append `?token=`;
+   repointable via `setEndpoint` + a `useSyncExternalStore` hook; index/run-view/stream hooks list the endpoint in
+   their deps → reconnect on switch). Server-orchestrated (browser-orchestrated is blocked by no-CORS): added
+   `GET /api/contexts` (names+baseUrls, NEVER tokens) + `POST /api/migrate {run,target}` (spawns `piflowctl context
+   migrate`, 202 with the target endpoint incl. token). MenuBar migrate button → `MigrateRunPanel` → on 202 the
+   canvas `setEndpoint(target)` + `selectRun`. 14 tests; bearer-propagation/token-omission/argv mutation-verified.
+   NOTE: UPLOAD (local→cloud) is the one-click path; a cloud→laptop DOWNLOAD stays a CLI op (`piflowctl context
+   migrate local <run>` from the laptop) — a cloud VM can't reach your localhost.
+3. **GO LIVE — the ONLY remaining work (hand the paid/outward steps to the user; you author + gate):**
+   - The one-click: `piflowctl cloud up --provider <gw>` (PLAN — free) to review, then **the user** runs
+     `piflowctl cloud up --provider <gw> --execute` (spends money: `fly secrets set` → `fly deploy` → smoke) OR
+     the manual `deploy/control-vm/README.md` runbook. Prereq: `fly auth login` + a Fly account.
    - `deploy/control-vm/smoke-live.mjs` (env `PIFLOW_CLOUD_URL`+`PIFLOW_TOKEN`) must PASS — the P5 gate.
    - Verify in-VM: bwrap userns probe passes (`--sandbox local` jails, not fail-closed) + a `claude-code` node
      used the OAuth subscription (not API billing).
-   - **Live migrate e2e**: start a run local → `piflowctl context migrate cloud <run>` mid-run → confirm it
-     froze at a node boundary, bundled up, resumed on the VM via `--from`/journal, lease never double-written;
-     then `piflowctl context migrate local <run>` back down.
+   - **Live migrate e2e**: start a run local → open the GUI → click **Migrate → cloud** (or CLI `piflowctl context
+     migrate cloud <run>`) mid-run → confirm it froze at a node boundary, bundled up, resumed on the VM via the
+     journal, lease never double-written; the GUI re-points to the cloud automatically. Then `piflowctl context
+     migrate local <run>` back down from the laptop.
 
 ## OPEN THREADS / RISKS
 - **bwrap in Fly** must allow userns or `--sandbox local` fails closed — the smoke's E-probe covers it; run it.
