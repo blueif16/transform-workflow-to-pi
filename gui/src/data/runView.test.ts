@@ -4,7 +4,10 @@
 // `checkpoint` reads "human" — IN op[] ORDER (the pipeline is ordered). A test here FAILS if the badge
 // would mislabel or drop a gate, or scramble the order — not coverage theater.
 import { describe, it, expect } from "vitest";
-import { gatePipelineLabels, sandboxSkin, effectiveSandbox, type AuthoredNodeConfig, type RunView, type RunViewNode } from "./runView";
+import { gatePipelineLabels, sandboxSkin, effectiveSandbox, deriveNodeLocal, type AuthoredNodeConfig, type RunView, type RunViewNode } from "./runView";
+// The GUI can't bundle @piflow/core, so `deriveNodeLocal` is a hand-kept mirror of core's authoritative
+// `deriveNode`. This test PINS them equal — the browser fork can never silently drift from the surface.
+import { deriveNode } from "../../../packages/core/src/observe/derive.js";
 
 describe("gatePipelineLabels — op[] → badge chip labels", () => {
   it("an unconfigured node (no op[], no checkpoint) has an empty pipeline", () => {
@@ -74,4 +77,35 @@ describe("sandboxSkin — node config → flat | cloud | unlocked", () => {
     const n = node({ programmatic: true });
     expect(sandboxSkin(effectiveSandbox(v, n), n)).toBe("flat");
   });
+});
+
+// The GUI's `deriveNodeLocal` (the browser-side stand-in that fills `derived` on a live-folded node) MUST
+// stay byte-identical to core's authoritative `deriveNode` — else a running run's zones would disagree with
+// the same run once loaded. Comparing full outputs over varied fixtures FAILS the moment either drifts.
+describe("deriveNodeLocal — pinned equal to core deriveNode", () => {
+  const dn = (p: Partial<RunViewNode>): RunViewNode => ({
+    id: "n", label: "n", phase: null, status: "ok",
+    toolCalls: 0, toolBreakdown: {}, timeline: [], reads: [], scopes: [], writes: [], artifacts: [],
+    bash: [], retries: 0, stopReason: null, truncated: false, thinkingChars: 0, ...p,
+  });
+  const span = (ok: boolean) => ({ name: "t", tStartMs: 0, durMs: 1, ok });
+  const fixtures: Record<string, RunViewNode> = {
+    empty: dn({}),
+    rich: dn({
+      tokens: { input: 100, output: 20, cacheRead: 900, cacheWrite: 0, cost: 0, contextPeak: 1000, billable: 120 },
+      contextWindow: 100_000, durationMs: 1600, expectedMs: 1000,
+      toolCalls: 10, toolBreakdown: { bash: 9, read: 1 },
+      timeline: [...Array(8).fill(0).map(() => span(true)), span(false), span(false)],
+      retries: 5,
+      artifacts: [{ path: "/x/a", displayPath: "a", exists: true, bytes: 1 }],
+      writes: [{ path: "/x/a", displayPath: "a", verified: true }, { path: "/x/b", displayPath: "b", verified: false, bytes: 2 }],
+    }),
+    cacheBoundary: dn({ tokens: { input: 70, output: 0, cacheRead: 30, cacheWrite: 0, cost: 0, contextPeak: 0, billable: 0 } }),
+    running: dn({ durationMs: null, contextWindow: null, tokens: { input: 5, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextPeak: 140_000, billable: 5 } }),
+  };
+  for (const [name, n] of Object.entries(fixtures)) {
+    it(`matches core for the ${name} fixture`, () => {
+      expect(deriveNodeLocal(n)).toEqual(deriveNode(n));
+    });
+  }
 });

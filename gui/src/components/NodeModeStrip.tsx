@@ -10,7 +10,7 @@
  */
 import { AgentPresetIcon, type FlowNodeData } from "./WorkflowNode";
 import type { ViewMode } from "./ViewModeContext";
-import { contextTone, DEFAULT_CONTEXT_WINDOW, formatBytes, formatMs, formatTokens, type ContextTone } from "../data/runView";
+import { contextTone, timeTone, DEFAULT_CONTEXT_WINDOW, formatBytes, formatMs, formatTokens, type ContextTone } from "../data/runView";
 import "../styles/modes.css";
 
 const fileName = (p: string) => p.split("/").pop() || p;
@@ -38,24 +38,28 @@ export function NodeModeStrip({ mode, data }: { mode: ViewMode; data: FlowNodeDa
     // A RUNNING node has no final durationMs yet — show elapsed-so-far (now − startedAt) so the time bar
     // fills (and flags warn/high once it overshoots the average) instead of reading "—" / "no run data".
     const running = data.status === "running";
+    const d = rv?.derived;
     const dur = rv?.durationMs ?? (running && rv?.startedAt ? Math.max(0, Date.now() - Date.parse(rv.startedAt)) : null);
     const avg = rv?.expectedMs ?? null;
     const peak = rv?.tokens?.contextPeak ?? 0;
     if (dur == null && !peak) return <div className="ds-nodemode ds-nodemode--muted">no run data</div>;
 
+    // time: a SETTLED node carries derived.time from the observe surface; a RUNNING node has no final
+    // duration, so it ticks live (the clock exception) and tones via the pinned mirror on live elapsed.
     const ratio = dur != null && avg && avg > 0 ? dur / avg : null;
     const timeFrac = ratio != null ? ratio : dur != null ? 1 : 0;
-    const timeTone: ContextTone = ratio == null ? "ok" : ratio > 1.5 ? "high" : ratio > 1 ? "warn" : "ok";
+    const timeToneV: ContextTone = d?.time?.tone ?? (ratio != null ? timeTone(ratio) : "ok");
     const timeVal = dur != null ? (avg ? `${formatMs(dur)} / ${formatMs(avg)}` : formatMs(dur)) : "—";
 
+    // context pressure: derived once in the observe surface (present on live nodes too via ensureDerived).
     const win = rv?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-    const ctxFrac = peak ? peak / win : 0;
-    const ctxToneV = contextTone(ctxFrac);
+    const ctxFrac = d?.context.frac ?? (peak ? peak / win : 0);
+    const ctxToneV = d?.context.tone ?? contextTone(ctxFrac);
     const ctxVal = peak ? `${formatTokens(peak)} / ${formatTokens(win)}` : "—";
 
     return (
       <div className="ds-nodemode ds-nodemode--status">
-        <MiniBar tag="time" tone={timeTone} frac={timeFrac} value={timeVal} />
+        <MiniBar tag="time" tone={timeToneV} frac={timeFrac} value={timeVal} />
         <MiniBar tag="ctx" tone={ctxToneV} frac={ctxFrac} value={ctxVal} />
         {(rv?.truncated || (rv?.retries ?? 0) > 0) && (
           <div className="ds-nodemode__badges">
@@ -102,13 +106,8 @@ export function NodeModeStrip({ mode, data }: { mode: ViewMode; data: FlowNodeDa
     );
   }
 
-  // artifacts — everything this node produced (artifacts ∪ writes), name + size
-  const arts = rv?.artifacts ?? [];
-  const extraWrites = (rv?.writes ?? []).filter((w) => !arts.some((a) => a.displayPath === w.displayPath));
-  const files = [
-    ...arts.map((a) => ({ path: a.displayPath, bytes: a.bytes, ok: a.exists })),
-    ...extraWrites.map((w) => ({ path: w.displayPath, bytes: w.bytes, ok: w.verified })),
-  ];
+  // artifacts — everything this node produced (artifacts ∪ writes), unified ONCE in the observe surface.
+  const files = rv?.derived?.outputs ?? [];
   if (files.length === 0) return <div className="ds-nodemode ds-nodemode--muted">no outputs</div>;
   const shown = files.slice(0, 3);
   return (

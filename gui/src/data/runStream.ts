@@ -6,7 +6,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { Edge } from "@xyflow/react";
 import type { FlowNode, FlowNodeData } from "../components/WorkflowNode";
-import { toNodeStatus, formatMs } from "./runView";
+import { toNodeStatus, formatMs, ensureDerived } from "./runView";
 import type { RunViewNode } from "./runView";
 import { LiveTelemetry } from "./liveTelemetry";
 import { sse, useEndpoint } from "./apiBase";
@@ -182,7 +182,8 @@ export function liveFlowGraph(
   const COL = 300;
   const ROW = 132;
   const nodes: FlowNode[] = model.nodes.map((n) => {
-    const rv = richByNode[n.id];
+    const raw = richByNode[n.id];
+    const rv = raw ? ensureDerived(raw) : undefined; // a live-folded node carries no backend derived — fill it
     const data: FlowNodeData = rv
       ? {
           title: n.label,
