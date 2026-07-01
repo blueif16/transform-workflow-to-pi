@@ -400,62 +400,15 @@ export const DEFAULT_CONTEXT_WINDOW = 200_000;
 /** @deprecated alias of {@link Tone} — kept so existing imports (NodeModeStrip) don't churn. */
 export type ContextTone = Tone;
 
-// ── the pinned zone-cutoff MIRROR of core observe/derive.ts ────────────────────────────────────────────
-// The browser can't import `@piflow/core`, so these five cutoffs + `deriveNodeLocal` are a LOCAL copy of the
-// authoritative core derivation, kept byte-for-byte identical and PINNED by a parity test (runView.test.ts).
-// They exist ONLY to fill `derived` on a LIVE-folded node (the SSE stream carries no backend stamp yet); a
-// loaded run-view already carries `derived` from core. Delete this block once the server folds `derived`
-// over SSE (the tracked follow-up) — then the GUI computes nothing at all.
-export const cacheTone = (ratio: number): Tone => (ratio < 0.3 ? "high" : ratio < 0.6 ? "warn" : "ok");
-export const toolErrorTone = (rate: number): Tone => (rate > 0.15 ? "high" : rate > 0.05 ? "warn" : "ok");
+// ── two zone cutoffs kept view-side for the RUNNING-node live-elapsed clock ─────────────────────────────
+// Every SETTLED node renders `derived.*` stamped by the observe surface (core buildRunView → deriveNode); the
+// GUI computes NOTHING for it. The ONE exception is a RUNNING node's elapsed-so-far clock (NodeModeStrip): it
+// ticks off Date.now() between polls, so its time/context tone can't come from the interval-stale backend
+// `derived` — these two pure cutoffs tone that live-elapsed value. They mirror core observe/derive.ts.
 /** Context-pressure zones: <40% ok · 40–70% warn · ≥70% high — quality degrades as the window fills. */
 export const contextTone = (frac: number): Tone => (frac >= 0.7 ? "high" : frac >= 0.4 ? "warn" : "ok");
 /** Time-vs-mean zones: over the mean is warn, 50%+ over is high. */
 export const timeTone = (ratio: number): Tone => (ratio > 1.5 ? "high" : ratio > 1 ? "warn" : "ok");
-export const retriesTone = (count: number): Tone => (count >= 5 ? "high" : count >= 1 ? "warn" : "ok");
-
-/** LOCAL mirror of core `deriveNode` — same logic, for a live-folded node that has no backend `derived`. */
-export function deriveNodeLocal(n: RunViewNode): NodeDerived {
-  const input = n.tokens?.input ?? 0;
-  const cacheRead = n.tokens?.cacheRead ?? 0;
-  const cacheDenom = input + cacheRead;
-  const cacheHit = cacheDenom === 0 ? null : { ratio: cacheRead / cacheDenom, tone: cacheTone(cacheRead / cacheDenom) };
-
-  const entries = Object.entries(n.toolBreakdown);
-  const total = entries.reduce((s, [, c]) => s + c, 0) || n.toolCalls || 1;
-  const ranked = [...entries].sort((a, b) => b[1] - a[1]);
-  const topTools: RankedTool[] = ranked.map(([name, count]) => ({ name, count, pct: count / total }));
-  const top = ranked[0];
-  const domRatio = top ? top[1] / total : 0;
-  const dominance = { tool: top ? top[0] : null, ratio: domRatio, dominant: !!top && domRatio > 0.8 && n.toolCalls > 5 };
-
-  const errors = n.timeline.filter((s) => !s.ok).length;
-  const errRate = n.toolCalls ? errors / n.toolCalls : 0;
-  const toolError = { errors, rate: errRate, tone: toolErrorTone(errRate) };
-
-  const peak = n.tokens?.contextPeak ?? 0;
-  const win = n.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  const ctxFrac = peak ? peak / win : 0;
-  const context = { frac: ctxFrac, tone: contextTone(ctxFrac) };
-
-  const dur = n.durationMs ?? null;
-  const avg = n.expectedMs ?? null;
-  const time = dur != null && avg != null && avg > 0 ? { ratio: dur / avg, tone: timeTone(dur / avg) } : null;
-
-  const retries = { count: n.retries, tone: retriesTone(n.retries) };
-
-  const arts = n.artifacts ?? [];
-  const extraWrites = (n.writes ?? []).filter((w) => !arts.some((a) => a.displayPath === w.displayPath));
-  const outputs: DerivedOutput[] = [
-    ...arts.map((a) => ({ path: a.displayPath, bytes: a.bytes, ok: a.exists })),
-    ...extraWrites.map((w) => ({ path: w.displayPath, bytes: w.bytes, ok: w.verified })),
-  ];
-
-  return { cacheHit, toolError, dominance, context, time, retries, topTools, outputs };
-}
-
-/** A node guaranteed to carry `derived`: the backend stamp if present, else the pinned local mirror. */
-export const ensureDerived = (n: RunViewNode): RunViewNode => (n.derived ? n : { ...n, derived: deriveNodeLocal(n) });
 
 const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -477,8 +430,9 @@ export function nodePosition(stageIndex: number | undefined, lane: number | unde
  *  agent-preset `catalog` resolves a node's `agentType` → its branded icon/color/label (G6); absent ⇒ the
  *  node renders the default chip. */
 export function toFlowGraph(view: RunView, catalog: AgentCatalog = {}): { nodes: FlowNode[]; edges: Edge[] } {
-  const nodes: FlowNode[] = view.nodes.map((rvRaw) => {
-    const rv = ensureDerived(rvRaw); // a view renders rv.derived.* — guarantee it's present (live path too)
+  const nodes: FlowNode[] = view.nodes.map((rv) => {
+    // The run-view already carries `derived` (the observe surface stamps deriveNode on every node); the GUI
+    // renders rv.derived.* verbatim and computes nothing.
     const stageIndex = rv.stageIndex ?? 1;
     const lane = rv.lane ?? 0;
     const preset = rv.agentType ? catalog[rv.agentType] : undefined;
