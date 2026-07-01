@@ -39,8 +39,10 @@ const SNAPSHOT = {
 };
 
 // Stub ONLY the fleet surface this module imports; `summarizeRun` etc. stay irrelevant to discoverFleet.
+// discoverFleet reads `loadScopedRegistry(cwd)` (the project-scoped registry) — the mapping under test ignores
+// the registry contents (buildSnapshot returns the fixture), so we stub it to a fixed 2-product registry.
 vi.mock('@piflow/core', () => ({
-  loadRegistry: () => ({ products: [{ id: 'repoA', name: 'repoA', root: '/repos/A' }, { id: 'repoB', name: 'repoB', root: '/repos/B' }] }),
+  loadScopedRegistry: () => ({ products: [{ id: 'repoA', name: 'repoA', root: '/repos/A' }, { id: 'repoB', name: 'repoB', root: '/repos/B' }] }),
   buildSnapshot: async () => SNAPSHOT,
   // unused-by-discoverFleet exports the module also imports at load time:
   summarizeRun: async () => null,

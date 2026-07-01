@@ -14,7 +14,7 @@
 // `readRunModel` snapshot, whose missing telemetry the view null-guards. The live running-node tail
 // (text · tools · thinking) is still folded from the streamed `node-event` PiEvents, never by re-reading
 // `.pi/` files.
-import { readRunModel, watchRun, loadRegistry, buildSnapshot } from '@piflow/core';
+import { readRunModel, watchRun, loadScopedRegistry, buildSnapshot } from '@piflow/core';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import nodePath from 'node:path';
 
@@ -161,8 +161,11 @@ export async function discoverNamespaces({ runDir } = {}) {
 }
 
 // ── fleet discovery: the SAME registered repos the GUI shows, mapped to the App's namespace list ──────
-// With NO `<rundir>`, the TUI monitors the whole FLEET. `buildSnapshot(loadRegistry())` (the ONE fleet
-// builder the GUI also consumes) returns products → namespaces(workflows) → threads(ThreadRow). We FLATTEN
+// With NO `<rundir>`, the TUI monitors the FLEET — SCOPED to the launched project. `loadScopedRegistry(cwd)`
+// (the SAME core helper the GUI middleware uses) honors `PIFLOW_SCOPE_ROOTS` (set by `piflowctl tui`) else
+// self-resolves the project from the TUI's own cwd, else falls back to the global registry — so the dashboard
+// shows the project you launched it in, not the whole `~/.piflow` fleet. `buildSnapshot` then returns
+// products → namespaces(workflows) → threads(ThreadRow). We FLATTEN
 // every product's namespaces into one flat list in the EXACT shape `components.mjs`'s App iterates —
 // `{ name, dir, runDir, threads:[ThreadRow] }` — keeping every namespace and every thread. Each thread is a
 // shared ThreadRow that already carries its OWN absolute `runDir`, so drilling in opens THAT run via the
@@ -170,7 +173,7 @@ export async function discoverNamespaces({ runDir } = {}) {
 // `dir`/`runDir` (used by the App only for the export path + the file-overlay base) is the product `root`.
 export async function discoverFleet() {
   let snapshot;
-  try { snapshot = await buildSnapshot(loadRegistry()); }
+  try { snapshot = await buildSnapshot(loadScopedRegistry(process.cwd())); }
   catch { return []; }
   const out = [];
   for (const product of snapshot.products || []) {

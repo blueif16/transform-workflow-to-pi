@@ -29,6 +29,7 @@ import { runTelemetryCli } from './telemetry.js';
 import { runOptimizeCli } from './optimize.js';
 import { runOptimizeFixCli } from './optimize-fix.js';
 import { runGuiCli } from './gui.js';
+import { runTuiCli } from './tui.js';
 import { runSkillsCli } from './skills.js';
 import { createRequire } from 'node:module';
 
@@ -64,7 +65,8 @@ USAGE
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
   piflowctl model   [list | set <tier> <modelId> [--claude] | activate | deactivate]  the model-tier config
   piflowctl claude-code [connect [--token <t>] | status]  OPTIONAL credential for the claude-code executor
-  piflowctl gui     [--port <n>] [--no-open]  launch the run viewer; indexes the product at cwd (or global)
+  piflowctl gui     [--port <n>] [--no-open]  launch the browser run viewer, scoped to the project at cwd
+  piflowctl tui     [<rundir>] [--every <s>]  launch the terminal run viewer, scoped to the project at cwd
   piflowctl skills  install [targetDir] [--force] [--with <id>|--all|--wizard]  install the authoring skills (+ add-ons) into a repo
   piflowctl --version                       print the piflowctl version
 
@@ -264,6 +266,9 @@ async function main(): Promise<void> {
       break;
     case 'gui':
       await runGuiCli(rest);
+      break;
+    case 'tui':
+      await runTuiCli(rest);
       break;
     case 'skills':
       await runSkillsCli(rest);
