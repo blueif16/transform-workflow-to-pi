@@ -59,6 +59,14 @@ export interface TemplateNode {
     owns: string[];
     readScope: string[];
     /**
+     * E10 EXEC-SCOPE (additive; local jail). `execCwd` — the dir the node's BUILD runs from when it is a
+     * project-root build OUTSIDE the run dir (e.g. `{{WORKSPACE}}/foo`): exec cwd + a read root + a getcwd
+     * grant. `execReads` — extra external read roots the build imports (a sibling kit). Both → runtime
+     * `sandbox.execCwd`/`sandbox.execReads`. Omitted ⇒ cwd = the run dir, no extra reads (as today).
+     */
+    execCwd?: string;
+    execReads?: string[];
+    /**
      * Per-node JAIL-OFF posture → runtime `node.sandbox.fullAccess`. When true, this node's `pi` runs OUTSIDE
      * the local fs jail (full host read+write), nullifying `readScope`/`owns` for THIS node only. Loosen-only;
      * LOCAL-only (a no-op in a cloud VM). Sits with `readScope`/`owns` (the fs-scope axis). Omitted ⇒ jailed.

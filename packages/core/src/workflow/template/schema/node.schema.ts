@@ -153,6 +153,20 @@ export const nodeSchema = {
           description: 'KIND 2 exposed dirs the model explores via `read` + the OS allow-list (§6a).',
           items: { type: 'string', minLength: 1 },
         },
+        execCwd: {
+          // E10 → runtime `node.sandbox.execCwd`. The dir the node's BUILD runs from when it is a project-
+          // root build OUTSIDE the run dir: exec cwd + a read root + a getcwd `(literal)`/`--chdir` grant.
+          type: 'string',
+          minLength: 1,
+          description:
+            'E10 — dir the node BUILD runs from when it is a project-root build OUTSIDE the run dir (e.g. {{WORKSPACE}}/foo): exec cwd + read root + getcwd grant. Omitted ⇒ the run dir.',
+        },
+        execReads: {
+          // E10 → runtime `node.sandbox.execReads`. Extra external read roots the build imports, unioned into readScope.
+          type: 'array',
+          description: 'E10 — extra external read roots the build imports (e.g. a sibling kit), unioned into readScope.',
+          items: { type: 'string', minLength: 1 },
+        },
         fullAccess: {
           // Per-node JAIL-OFF posture → `node.sandbox.fullAccess`. When true, this node's `pi` runs OUTSIDE
           // the local fs jail (full host read+write — the per-node `--sandbox danger-full-access`), nullifying

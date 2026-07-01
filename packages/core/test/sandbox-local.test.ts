@@ -283,6 +283,58 @@ describe('LocalSandbox — read-scope jail is SECURE BY DEFAULT (darwin)', () =>
   );
 
   darwinIt(
+    'execCwd runs the exec from a project root OUTSIDE the run dir + execReads grants a sibling kit, but a non-execReads sibling still EPERMs (E10)',
+    async () => {
+      // The E10 out-of-tree build: workdir is the run dir, but the node's build runs from a PROJECT ROOT
+      // (execCwd) elsewhere and imports a SIBLING kit (execReads). Assert (1) the exec's cwd IS execCwd (a
+      // RELATIVE read of a project-root marker succeeds — it would MISS in the run dir), (2) the sibling
+      // kit is readable (execReads granted), (3) a sibling NOT in execReads is STILL denied (execReads is
+      // the exact boundary, not "all siblings").
+      const scratch = await homeScratch('execscope');
+      const runDir = path.join(scratch, 'run'); // the in-place workdir (run dir)
+      const projRoot = path.join(scratch, 'proj'); // execCwd — the build's project root, OUTSIDE the run dir
+      const kit = path.join(scratch, 'kit'); // execReads — a sibling kit the build imports
+      const denied = path.join(scratch, 'denied'); // neither — the control
+      for (const d of [runDir, projRoot, kit, denied]) await fs.mkdir(d, { recursive: true });
+      await fs.writeFile(path.join(projRoot, 'marker.txt'), 'AT_PROJECT_ROOT');
+      await fs.writeFile(path.join(kit, 'dep.mjs'), 'DEP_CONTENT');
+      await fs.writeFile(path.join(denied, 'secret.txt'), 'OUT_OF_SCOPE_SECRET');
+      try {
+        const sb = await LocalSandbox.create({
+          readScope: [],
+          writeScope: [],
+          outputDir: 'out',
+          workdir: runDir,
+          execCwd: projRoot,
+          execReads: [kit],
+        });
+
+        // (1) cwd IS execCwd: a RELATIVE read of the project-root marker succeeds (the exec ran from there,
+        // and getcwd/uv_cwd resolved — the literal grant). In the run dir this file does not exist → MISS.
+        const rel = await sb.exec('cat marker.txt');
+        expect(rel.code).toBe(0);
+        expect(rel.stdout).toContain('AT_PROJECT_ROOT');
+
+        // (2) execReads granted: reading the sibling kit the build imports succeeds.
+        const kitRead = await sb.exec(`cat ${JSON.stringify(path.join(kit, 'dep.mjs'))}`);
+        expect(kitRead.code).toBe(0);
+        expect(kitRead.stdout).toContain('DEP_CONTENT');
+
+        // (3) CONTROL: a sibling NOT in execReads is STILL denied at the kernel — execReads is the exact
+        // boundary, not a blanket "everything near the project" grant.
+        const blocked = await sb.exec(`cat ${JSON.stringify(path.join(denied, 'secret.txt'))}`);
+        expect(blocked.code).not.toBe(0);
+        expect(blocked.stdout).not.toContain('OUT_OF_SCOPE_SECRET');
+        expect(blocked.stderr).not.toMatch(/^sandbox-exec:/m);
+        expect(blocked.stderr).toMatch(/Operation not permitted|Permission denied/i);
+      } finally {
+        await fs.rm(scratch, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
+
+  darwinIt(
     'danger bypass (enforceReadScope:false): the SAME out-of-scope read SUCCEEDS (the hatch really disables the jail)',
     async () => {
       // The negative control that makes the test above meaningful: flip the flag off (the

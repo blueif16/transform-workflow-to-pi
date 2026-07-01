@@ -146,6 +146,22 @@ describe('SeatbeltSandbox — read-scope EPERM enforcement (darwin)', () => {
     expect(profile).not.toContain('/x/owns/*');
   });
 
+  it('grants execCwd as a read subpath + a getcwd literal, and execReads as read subpaths (E10)', () => {
+    // A node whose build runs from a PROJECT ROOT outside the run dir (execCwd) and imports a SIBLING kit
+    // (execReads) needs: (1) execCwd readable AND granted as a (literal) so the build child's getcwd/uv_cwd
+    // can read the cwd dir ENTRY (the w3a `EPERM: uv_cwd` failure), (2) each execReads root readable as a
+    // recursive (subpath). Both flow through the SAME read-allow block computeScopeRoots feeds.
+    const profile = buildSeatbeltProfile({
+      workdir: '/tmp/piflow-run',
+      readScope: [],
+      execCwd: '/proj/root',
+      execReads: ['/sibling/kit'],
+    });
+    expect(profile).toContain('(literal "/proj/root")'); // getcwd/uv_cwd fix — the cwd dir ENTRY is readable
+    expect(profile).toContain('(subpath "/proj/root")'); // …and the project tree is readable
+    expect(profile).toContain('(subpath "/sibling/kit")'); // the sibling kit the build imports is readable
+  });
+
   darwinIt(
     'writes an in-scope file but EPERMs an out-of-scope sibling write under the sandbox',
     async () => {

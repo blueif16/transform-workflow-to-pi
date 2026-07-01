@@ -23,9 +23,13 @@
 // — UNLIKE Codex, which sandboxes shell sub-commands that need no network).
 // Off darwin the wrap is a no-op (warns once) until the Linux bwrap backend lands. The jail
 // is the DEFAULT; `enforceReadScope:false` is the loud `danger-full-access` escape hatch.
-// There is NO `execCwd` argument: U1 staged each node under `_pi/<id>/`, so one shared
-// workdir is collision-safe (the run.mjs reference carried execCwd to dodge a fixed-prompt-
-// path clash; that cause is gone — dropped).
+// E10 EXEC-SCOPE (additive, opt-in): `execCwd`/`execReads` let a node whose BUILD runs from a
+// PROJECT ROOT outside the run dir (e.g. `npm run …` in {{WORKSPACE}}/foo, importing a sibling
+// kit) run FROM that root — the exec cwd becomes execCwd, both execCwd + execReads are granted
+// read, and execCwd gets a getcwd `(literal)` so the build child's `uv_cwd` succeeds. Omitted ⇒
+// cwd = the run-dir workdir (byte-identical to before). NOTE this is NOT the old collision-
+// avoidance execCwd (dropped once U1 staged nodes under `_pi/<id>/`); it is a DIFFERENT, declared
+// scope grant for out-of-tree builds — the Codex `writable_roots`/`--add-dir` idea on the read axis.
 //
 // Run-level isolation: `openRun` returns a TRIVIAL RunScope rooted at `repoRoot`
 // whose `create` forwards to `provider.create` and whose `dispose` is a no-op — there
@@ -66,6 +70,11 @@ export class LocalSandbox implements Sandbox {
     private readonly writeScope: string[],
     /** Wrap exec in the read+write jail (darwin). Default true; false ⇒ the danger-full-access bypass. */
     private readonly enforceReadScope: boolean,
+    /** E10 — the dir the build runs from (a project root outside the run dir); becomes the exec cwd +
+     * a read root + a getcwd literal. Undefined ⇒ cwd = the workdir (byte-identical to before). */
+    private readonly execCwd: string | undefined,
+    /** E10 — extra external read roots the build imports (a sibling kit), resolved absolute + granted read. */
+    private readonly execReads: string[],
   ) {}
 
   /**
@@ -85,6 +94,8 @@ export class LocalSandbox implements Sandbox {
     // vs the in-place root to stay self-consistent), mirroring SeatbeltSandbox.create.
     const resolveScope = (s: string[] | undefined): string[] =>
       (s ?? []).map((p) => (path.isAbsolute(p) ? p : path.resolve(root, p)));
+    const resolveOne = (p: string | undefined): string | undefined =>
+      p === undefined ? undefined : path.isAbsolute(p) ? p : path.resolve(root, p);
     return new LocalSandbox(
       root,
       root,
@@ -92,6 +103,8 @@ export class LocalSandbox implements Sandbox {
       resolveScope(opts.readScope),
       resolveScope(opts.writeScope),
       runtime.enforceReadScope ?? true,
+      resolveOne(opts.execCwd), // E10 exec cwd (a project root outside the run dir) — undefined ⇒ workdir
+      resolveScope(opts.execReads), // E10 extra read roots the build imports
     );
   }
 
@@ -117,7 +130,9 @@ export class LocalSandbox implements Sandbox {
    */
   exec(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
     return new Promise((resolve) => {
-      const cwd = opts.cwd ? this.abs(opts.cwd) : this.workdir;
+      // E10 — a node that declares `execCwd` (its build runs from a project root outside the run dir) runs
+      // FROM that root; else the run-dir workdir (unchanged). An explicit ExecOpts.cwd still wins.
+      const cwd = opts.cwd ? this.abs(opts.cwd) : (this.execCwd ?? this.workdir);
       // Secure by default: wrap in the OS-dispatched kernel jail (darwin→seatbelt, linux→bwrap) so reads
       // AND writes outside the declared scope EPERM. The seatbelt backend's per-exec profile is written to
       // the OS tmpdir — NEVER littered into the user's in-place tree (bwrap writes no profile). `null` ⇒
@@ -128,6 +143,8 @@ export class LocalSandbox implements Sandbox {
               workdir: this.workdir,
               readScope: [...this.readScope, cwd], // grant the workdir + declared scope + the exec cwd
               writeScope: this.writeScope, // grant the workdir + declared write scope (owns) + scratch
+              execCwd: this.execCwd, // E10 — read root + getcwd literal (darwin) / --chdir (bwrap)
+              execReads: this.execReads, // E10 — extra read roots the build imports (a sibling kit)
               profileDir: os.tmpdir(),
             })
           : null;

@@ -215,9 +215,17 @@ function existing(paths: string[]): string[] {
  */
 export function buildBwrapArgs(
   cmd: string,
-  opts: { workdir: string; readScope: string[]; writeScope?: string[] },
+  opts: { workdir: string; readScope: string[]; writeScope?: string[]; execCwd?: string; execReads?: string[] },
 ): string[] {
-  const { readRoots, writeRoots } = computeScopeRoots(opts);
+  // E10 — a node whose build runs from a PROJECT ROOT outside the run dir (`execCwd`) and imports SIBLING
+  // kits (`execReads`) needs both readable. Fold them into the declared read scope so the shared policy
+  // renders them as read roots (bound `--ro-bind` below); `--chdir` targets execCwd so the build child's
+  // cwd is a bound, grantable dir (the `uv_cwd` fix on the Linux lane).
+  const execReadRoots = [...(opts.execReads ?? []), ...(opts.execCwd ? [opts.execCwd] : [])];
+  const { readRoots, writeRoots } = computeScopeRoots({
+    ...opts,
+    readScope: [...opts.readScope, ...execReadRoots],
+  });
 
   // READ-ONLY binds: the system baseline + the toolchain/readScope roots. Filter to existing paths and
   // EXCLUDE any path that is also a write root (a path bound rw must not be re-bound ro afterward, which
@@ -249,8 +257,10 @@ export function buildBwrapArgs(
   // A fresh procfs + minimal devfs the toolchain needs (independent mountpoints; position is fine here).
   argv.push('--proc', '/proc');
   argv.push('--dev', '/dev');
-  // cd into the working dir inside the namespace, and tie the sandbox lifetime to the runner.
-  argv.push('--chdir', opts.workdir);
+  // cd into the working dir inside the namespace, and tie the sandbox lifetime to the runner. A node that
+  // declares `execCwd` (its build runs from a project root outside the run dir) chdirs THERE instead — the
+  // dir is bound read-only above, so the build child's getcwd resolves inside the namespace (E10).
+  argv.push('--chdir', opts.execCwd ?? opts.workdir);
   argv.push('--die-with-parent');
   // DELIBERATELY ABSENT: --unshare-net (network stays on for the agent's gateway) and any process-exec /
   // seccomp restriction (the agent runs its toolchain). ONLY the filesystem view above is the boundary.
@@ -282,7 +292,14 @@ export interface BwrapExecPlan {
  */
 export function bwrapExecPlan(
   cmd: string,
-  opts: { workdir: string; readScope: string[]; writeScope?: string[]; profileDir?: string },
+  opts: {
+    workdir: string;
+    readScope: string[];
+    writeScope?: string[];
+    execCwd?: string;
+    execReads?: string[];
+    profileDir?: string;
+  },
 ): BwrapExecPlan | null {
   if (!isLinux()) return null; // off-linux: the dispatcher routes elsewhere; nothing to warn here.
   if (!_probe.isAvailable()) {
@@ -293,6 +310,8 @@ export function bwrapExecPlan(
     workdir: opts.workdir,
     readScope: opts.readScope,
     writeScope: opts.writeScope,
+    execCwd: opts.execCwd, // E10 — --chdir target + a read root for the out-of-tree build's cwd
+    execReads: opts.execReads, // E10 — extra read roots the build imports
   });
   return { file: 'bwrap', argv };
 }

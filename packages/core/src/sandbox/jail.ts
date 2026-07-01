@@ -53,7 +53,14 @@ function warnNoBackendOnce(): void {
  */
 export function localJailPlan(
   cmd: string,
-  opts: { workdir: string; readScope: string[]; writeScope?: string[]; profileDir: string },
+  opts: {
+    workdir: string;
+    readScope: string[];
+    writeScope?: string[];
+    execCwd?: string;
+    execReads?: string[];
+    profileDir: string;
+  },
 ): JailPlan | null {
   switch (process.platform) {
     case 'darwin':

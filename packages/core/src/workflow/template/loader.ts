@@ -146,6 +146,12 @@ function toNodeIntent(n: LoadedNode): NodeIntent {
     sandbox: {
       read: c.readScope.slice(),
       write: c.owns.slice(),
+      // (E10) exec-scope → `sandbox.execCwd`/`sandbox.execReads`: a build that runs from a project root
+      // OUTSIDE the run dir (execCwd) importing a sibling kit (execReads). Raw tokens survive here — the
+      // {{WORKSPACE}} resolve happens at launch (node-lifecycle). OMITTED when absent so a normal node's
+      // sandbox is byte-identical to today. Threaded like read/write (the fs-scope axis).
+      ...(c.execCwd ? { execCwd: c.execCwd } : {}),
+      ...(c.execReads ? { execReads: c.execReads.slice() } : {}),
       // per-node hard wall-clock cap (ms) → runner reads node.sandbox.timeoutMs (else the run-level default).
       ...(n.def.timeoutMs ? { timeoutMs: n.def.timeoutMs } : {}),
       // per-node JAIL-OFF (`contract.fullAccess`) → `sandbox.fullAccess`: a `true` runs this node outside the

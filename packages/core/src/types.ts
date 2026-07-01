@@ -233,6 +233,16 @@ export interface SandboxSpec {
   /** Owned write paths (a contract assertion on cloud; isolated via worktree locally). */
   write: string[];
   /**
+   * E10 EXEC-SCOPE (additive; local jail only). `execCwd` — the dir the node's BUILD runs from when it is
+   * a project-root build OUTSIDE the run dir (e.g. `{{WORKSPACE}}/foo`): passed as the exec cwd, unioned
+   * into the read roots, AND granted as a getcwd `(literal)` (darwin) / `--chdir` (bwrap) so the build
+   * child's `uv_cwd`/`getcwd` succeeds. `execReads` — extra external read roots the build imports (e.g. a
+   * sibling kit), unioned into the read scope. Both omitted ⇒ byte-identical to today (cwd = workdir, no
+   * extra reads). The declared-roots analogue of Codex `writable_roots`/`--add-dir` on the READ axis.
+   */
+  execCwd?: string;
+  execReads?: string[];
+  /**
    * Per-node FULL-ACCESS posture: when `true`, this node's `pi` runs OUTSIDE the local fs jail (full host
    * read+write — the per-node equivalent of the run-level `--sandbox danger-full-access`), nullifying
    * `read`/`write` scoping for this node ONLY. Loosen-only; LOCAL-only (a no-op in a cloud VM, where the VM
@@ -524,6 +534,15 @@ export interface CreateOpts {
    * toolchain scratch only. `enforceReadScope:false` (danger-full-access) disables BOTH read and write jails.
    */
   writeScope?: string[];
+  /**
+   * E10 EXEC-SCOPE (additive; local jail only, ignored by cloud/in-memory). `execCwd`: run the node's
+   * command from THIS dir (a project-root build outside the run dir) instead of the workdir — unioned into
+   * the read roots + granted as a getcwd `(literal)` (darwin) / `--chdir` (bwrap) so the build child's
+   * `getcwd`/`uv_cwd` resolves. `execReads`: extra external read roots the build imports (a sibling kit),
+   * unioned into the read scope. Omitted ⇒ cwd = workdir, no extra reads (byte-identical to today).
+   */
+  execCwd?: string;
+  execReads?: string[];
   outputDir: string;
   workdir: string;
   /**
