@@ -463,8 +463,9 @@ function liveNodeToRunViewNode(n: LiveNode): RunViewNode {
 
 /** Adapt a LIVE SSE model → the RunView `toFlowGraph` consumes (docs/design/observe-live-sse-single-source.md P3).
  *  A pure passthrough: enriched LiveNodes → RunViewNodes (defaulting anything the live node lacks), edges →
- *  RunViewEdges, and the folded `tokenTotal` carried through. The live model has no `stages` array (the graph
- *  lays out from each node's stageIndex/lane), so `stages` is empty — `toFlowGraph` reads only the nodes+edges.
+ *  RunViewEdges, and the folded `tokenTotal` carried through. The SSE snapshot's resolved `stages` spine is
+ *  carried verbatim (P0b) so the shadow-diff parity matches /run-view; the graph still lays out from each
+ *  node's stageIndex/lane, so `toFlowGraph` reads only the nodes+edges and the array does not change the render.
  *  Because P1 aligned the shapes, a value the server streamed (billable tokens, a derived tone, a summary) lands
  *  on the rendered FlowNode UNCHANGED; the GUI re-derives nothing. */
 export function liveModelToRunView(model: LiveModel): RunView {
@@ -477,7 +478,10 @@ export function liveModelToRunView(model: LiveModel): RunView {
     durationMs: model.durationMs,
     totals: model.totals ?? undefined,
     tokenTotal: model.tokenTotal,
-    stages: [],
+    // Carried from the SSE snapshot (readRunModel's resolveStructure, P0b) so this is a FAITHFUL RunView and
+    // the shadow-diff parity check matches the /run-view build. toFlowGraph lays out from per-node
+    // stageIndex/lane (not this array), so populating it does not change the render.
+    stages: model.stages ?? [],
     edges: (model.edges ?? []).map((e) => ({ from: e.from, to: e.to, path: e.path })),
     // provider is run-level on the live model; carry it onto each node so the HUD's Provider meta renders.
     nodes: model.nodes.map((n) => ({ ...liveNodeToRunViewNode(n), provider: model.provider ?? null })),

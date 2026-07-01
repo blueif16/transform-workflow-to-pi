@@ -6,7 +6,7 @@
 // `/__piflow/run-view/<run>` poll returns (the observe surface stamps every zone). Real data only.
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { sse, useEndpoint } from "./apiBase";
-import type { RunTokens, NodeDerived, TimelineSpan, ReadRef, WriteRef, ArtifactRef } from "./runView";
+import type { RunTokens, NodeDerived, TimelineSpan, ReadRef, WriteRef, ArtifactRef, RunViewStage } from "./runView";
 
 export type LiveNodeStatus =
   | "pending" | "running" | "ok" | "reused" | "gap" | "blocked" | "error" | "dry";
@@ -72,6 +72,11 @@ export interface LiveModel {
   nodes: LiveNode[];
   /** file-flow edges (a writer's path read back by a consumer) — fills in as nodes complete. */
   edges?: { from: string; to: string; path: string }[];
+  /** the resolved stage spine (index/phase/parallel/nodeIds), carried verbatim from the SSE snapshot
+   *  (readRunModel's resolveStructure, P0b) so `liveModelToRunView` yields a FAITHFUL RunView and the
+   *  shadow-diff parity check matches the /run-view build. `toFlowGraph` lays out from per-node
+   *  stageIndex/lane, NOT this array, so carrying it does not change what the graph renders. */
+  stages?: RunViewStage[];
 }
 
 /** A wire frame: the observe RunUpdate kinds + the bridge's `meta`/`stream-error` wrappers. */
