@@ -2,49 +2,69 @@
 type: subsystem
 key: observe
 title: Observe (the one rich run-view — read → distill → RunView → viewers, live via SSE)
-description: How a raw `.pi/` run dir becomes the ONE enriched run-view every viewer renders — folded by readRunModel/buildRunView (replaying events.jsonl through the shared distiller, stamping pi-native context windows), exposed as the RunView/RunModel contract, consumed by CLI/TUI/GUI, and streamed live by watchRun over SSE.
+description: How a raw `.pi/` run dir becomes the ONE enriched run-view every viewer renders — folded by readRunModel/buildRunView (replaying events.jsonl through the shared distiller, stamping pi-native context windows + the deriveNode display zones), exposed as the RunView/RunModel contract, consumed by CLI/TUI/GUI, and — since P2 — streamed live by watchRun as the SINGLE ENRICHED source: an incremental server-side fold (assembleNode/nodeTokenSpine/deriveNode over a non-destructive acc.snapshot) that pushes node-enriched deltas over SSE, so the live graph ≡ /run-view and the GUI computes nothing.
 resource: packages/core/src/observe/runView.ts
-aliases: [observe, run-view, runView, buildRunView, readRunModel, watchRun, RunView, RunModel, createNodeAccumulator, distill, telemetry, projectRunDigest, single data path, one data path, SSE, events.jsonl, io.json, cost, costScalar, tokens, usage, billable, RunTokens]
-seeds: [packages/core/src/observe/read.ts, packages/core/src/observe/runView.ts, packages/core/src/observe/distill.ts, packages/core/src/observe/watch.ts, packages/core/src/observe/types.ts, packages/core/src/observe/telemetry.ts, packages/core/src/observe/models.ts, gui/vite.config.ts, packages/cli/src/status.ts, tui/adapt.mjs]
-symbols: [readRunModel, buildRunView, createNodeAccumulator, watchRun, deriveStatus, contextWindowFor, projectRunDigest, telemetryStream, RunView, RunModel]
+aliases: [observe, run-view, runView, buildRunView, readRunModel, watchRun, RunView, RunModel, createNodeAccumulator, distill, deriveNode, NodeDerived, nodeTokenSpine, assembleNode, resolveStructure, snapshot, node-enriched, telemetry, projectRunDigest, single data path, one data path, single source, SSE, events.jsonl, io.json, cost, costScalar, tokens, usage, billable, RunTokens]
+seeds: [packages/core/src/observe/read.ts, packages/core/src/observe/runView.ts, packages/core/src/observe/distill.ts, packages/core/src/observe/derive.ts, packages/core/src/observe/structure.ts, packages/core/src/observe/watch.ts, packages/core/src/observe/types.ts, packages/core/src/observe/telemetry.ts, packages/core/src/observe/models.ts, packages/server/src/handlers.ts, gui/vite.config.ts, packages/cli/src/status.ts, tui/adapt.mjs]
+symbols: [readRunModel, buildRunView, createNodeAccumulator, deriveNode, nodeTokenSpine, assembleNode, resolveStructure, watchRun, deriveStatus, contextWindowFor, projectRunDigest, telemetryStream, RunView, RunModel]
 tags: [observe, run-view, lifecycle, core, gui, tui, cli, telemetry, sse]
-timestamp: 2026-06-30
+timestamp: 2026-07-01
 ---
 
 # Why / how it works (the lifecycle, end to end)
 A run writes the engine-owned `.pi/` tree: `run.json` (statuses), per-node `io.json` (the declared
 reads/writes ledger), and per-node `events.jsonl` (the pi event firehose). `observe` folds this into ONE
-view two ways. The LEAN snapshot `readRunModel` (read.ts) reconstructs stages from the last parallel
-barrier and re-derives each node's status VERIFIED-not-trusted via `deriveStatus` (a claimed-complete node
-with a missing artifact downgrades to `blocked`), wiring io-derived edges (A wrote a path B read back). The
-RICH `buildRunView` (runView.ts) is a superset: it REPLAYS each `events.jsonl` through the shared reducer
+view two ways. The LEAN snapshot `readRunModel` (read.ts) re-derives each node's status VERIFIED-not-trusted
+via `deriveStatus` (a claimed-complete node with a missing artifact downgrades to `blocked`) and resolves
+stages/edges via the SHARED `resolveStructure` (structure.ts: `.pi/workflow.json` → template → phase grouping).
+The RICH `buildRunView` (runView.ts) is a superset: it REPLAYS each `events.jsonl` through the shared reducer
 `createNodeAccumulator` (distill.ts) for model/provider, tokens/contextPeak, toolBreakdown, timeline, and
-scope-bucketed reads, stamps `contextWindow` from pi's native registry (`contextWindowFor`, models.ts),
-and prefers the run-local resolved `workflow.json` for stages+edges. Both emit the `RunView`/`RunModel`
-contract (types.ts). Consumers render it WITHOUT re-deriving: CLI `renderStatus` (status.ts), TUI `adapt.mjs`,
-GUI middleware (vite.config.ts). Live, `watchRun` (watch.ts) tails the same files and yields snapshot →
-node-status/node-event/done deltas, which the GUI middleware relays as SSE. `telemetry.ts` projects the
-view into an agent-facing RunDigest.
+scope-bucketed reads, stamps `contextWindow` from pi's native registry (`contextWindowFor`, models.ts), and
+stamps the per-node DISPLAY projection `deriveNode` (derive.ts — cache/tool-error/dominance/context/time/retries
+zones + topTools + unified outputs, computed ONCE so every view renders identical numbers). Its per-node build
+is factored into two pure functions the live path shares: `nodeTokenSpine` (the `rec.usage`-first-vs-event-
+replay token precedence — the AgentDriver seam) and `assembleNode` (the whole per-node build, then
+`node.derived = deriveNode(node)`). Both emit the `RunView`/`RunModel` contract (types.ts). Consumers render it
+WITHOUT re-deriving: CLI `renderStatus` (status.ts), TUI `adapt.mjs`, GUI. Live, `watchRun` (watch.ts) is the
+SINGLE ENRICHED source (P0a–P5): it tails events incrementally (one long-lived accumulator/node) and FOLDS the
+SAME assembly server-side over the NON-DESTRUCTIVE `acc.snapshot()` (never `finalize()`, which corrupts a live
+accumulator), emitting a `node-enriched` delta carrying the WHOLE re-assembled node on a stable fold-signature
+change (clock excluded). The GUI renders the enriched `live.model` and computes nothing; the old 3s `/run-view`
++ `/run-digest` replay polls are demoted to one-shot loads + a reconcile net (gui `runStream`/`runView`/
+`liveSource`; DR6 heals drift on tab-return). `telemetry.ts` projects the view into an agent-facing RunDigest.
 
 # Anchors
 RAW `.pi` → READ (lean snapshot)
-- `packages/core/src/observe/read.ts:104` — `readRunModel()` — folds run.json + io.json into RunModel
-- `packages/core/src/observe/read.ts:60` — `deriveStatus()` — verified-not-trusted status downgrade
+- `packages/core/src/observe/read.ts:82` — `readRunModel()` — folds run.json + io.json into RunModel (resolveStructure for stages/edges)
+- `packages/core/src/observe/read.ts:62` — `deriveStatus()` — verified-not-trusted status downgrade
 DISTILL (rich per-node reducer)
-- `packages/core/src/observe/distill.ts:120` — `createNodeAccumulator()` — the shared events.jsonl reducer (per-node tokens + cost + contextPeak)
-- `packages/core/src/observe/distill.ts:149` — `costScalar` — coerces pi's `usage.cost` into the per-node cost tally (the COST number the GUI shows is COMPUTED here, not in gui)
+- `packages/core/src/observe/distill.ts:140` — `createNodeAccumulator()` — the shared events.jsonl reducer (per-node tokens + cost + contextPeak)
+- `packages/core/src/observe/distill.ts:271` — `snapshot()` — the NON-DESTRUCTIVE live twin of `finalize()` (frozen copy, open spans read-only) — what the live fold consumes
+- `packages/core/src/observe/distill.ts:281` — `finalize()` — the DESTRUCTIVE terminal read (synth-closes open spans); buildRunView only
+- `packages/core/src/observe/distill.ts:169` — `costScalar` — coerces pi's `usage.cost` into the per-node cost tally (the COST number the GUI shows is COMPUTED here, not in gui)
 - `packages/core/src/observe/models.ts:66` — `contextWindowFor()` — pi-native context-window stamp
-RUNVIEW (the contract + builder)
-- `packages/core/src/observe/runView.ts:212` — `buildRunView()` — superset run-view (replays events, prefers workflow.json DAG)
-- `packages/core/src/observe/types.ts:91` — `RunModel` — the shared snapshot contract (stages+edges+nodes)
-LIVE (stream + SSE)
-- `packages/core/src/observe/watch.ts:62` — `watchRun()` — yields snapshot then status/event/done deltas
-- `gui/vite.config.ts:138` — GUI middleware relays `watchRun` as a `text/event-stream` SSE feed
-CONSUMED
-- `packages/cli/src/status.ts:69` — CLI renders a `readRunModel` snapshot (thin renderer)
+RUNVIEW (the contract + builder + the SHARED assembly)
+- `packages/core/src/observe/runView.ts:354` — `buildRunView()` — superset run-view (replays events, prefers workflow.json DAG, stamps deriveNode)
+- `packages/core/src/observe/runView.ts:240` — `nodeTokenSpine()` — the `rec.usage`-first-vs-event-replay token precedence (the AgentDriver seam — Thrust 3)
+- `packages/core/src/observe/runView.ts:297` — `assembleNode()` — the whole per-node build (reads/writes/tokens/spine), then `node.derived = deriveNode(node)` — SHARED by buildRunView + watchRun
+- `packages/core/src/observe/types.ts:135` — `RunModel` — the shared snapshot contract (stages+edges+nodes)
+- `packages/core/src/observe/types.ts:177` — the `node-enriched` `RunUpdate` kind (the FULL node delta — must also be in cli/remote.ts RUN_UPDATE_KINDS)
+DERIVE (the display projection) + STRUCTURE (parity)
+- `packages/core/src/observe/derive.ts:74` — `deriveNode()` — cache/tool-error/dominance/context/time/retries zones + topTools + unified outputs (the ONE threshold oracle)
+- `packages/core/src/observe/structure.ts:70` — `resolveStructure()` — the ONE stage/edge resolver both readers share (workflow.json → template → phase)
+LIVE (the single enriched SSE source)
+- `packages/core/src/observe/watch.ts:196` — `watchRun()` — incremental server-side fold; yields snapshot + node-status/node-event/**node-enriched**/done
+- `packages/core/src/observe/watch.ts:218` — `acc.snapshot(rec)` fold — NON-DESTRUCTIVE live read → assembleNode
+- `packages/core/src/observe/watch.ts:319` — `yield {kind:'node-enriched'}` — the full re-assembled node on a fold-signature change
+- `packages/server/src/handlers.ts:35` — `piflowRunStream` — `GET /__piflow/stream/<run>` pipes the exact `watchRun` stream as SSE (feeds it the SAME historyDirs/workspaceRoot as /run-view)
+- `packages/server/src/handlers.ts:103` — `piflowRunView` — `GET /__piflow/run-view/<run>` = one-shot `buildRunView` (loads + the DR6 reconcile net)
+PROJECT + CONSUMED
+- `packages/core/src/observe/telemetry.ts:294` — `projectRunDigest()` — the agent-facing RunDigest lens over the view (NOT a second collector)
+- `packages/cli/src/status.ts:35` — `renderStatus()` — CLI renders a `readRunModel` snapshot (thin renderer; `:87` reads it)
+- `gui/vite.config.ts:21` — the Vite dev middleware wires `@piflow/server` `createApiMiddleware` (the SSE + run-view handlers)
 
 # Freshness (anti-drift)
-anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NOTE: the prompt's "telemetry.ts" is a PROJECTION (a lens over the run-view: `projectRunDigest`:294 / `telemetryStream`:363), NOT a second collector; the GUI's on-demand run-view is the OTHER live path (`buildRunView` at gui/vite.config.ts:196), distinct from the SSE `watchRun` feed; the TUI consumes via `adapt.mjs` (overlays the rich RunView onto a readRunModel snapshot), not a direct core import.
+anchors ✓ (re-verified 2026-07-01 after the SSE single-source landing) · scope = the seeds above · re-derive when they change · DRIFT NOTES: (1) the SSE relay + on-demand run-view moved OUT of `gui/vite.config.ts` INTO `@piflow/server` `handlers.ts` (`piflowRunStream`/`piflowRunView`); the Vite config now only wires that middleware. (2) `telemetry.ts` is a PROJECTION (`projectRunDigest`/`telemetryStream`), NOT a second collector. (3) the LIVE graph now comes from the enriched `watchRun` fold (node-enriched), NOT a re-poll — the GUI transport is a client flag (`gui/src/data/liveSource.ts`), the reconcile net + `runViewToLiveModel` live in gui. (4) TUI consumes via `adapt.mjs` (overlays the rich RunView onto a readRunModel snapshot), not a direct core import. Full record: `docs/telemetry.md` + `docs/design/observe-live-sse-single-source.md`.
 
 <!-- okf:auto-start -->
 > _Auto-generated by `_generate.mjs` — do not hand-edit between the markers; re-run `--write`._
@@ -56,10 +76,13 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 | `packages/core/src/observe/read.ts` | ✓ |
 | `packages/core/src/observe/runView.ts` | ✓ |
 | `packages/core/src/observe/distill.ts` | ✓ |
+| `packages/core/src/observe/derive.ts` | ✓ |
+| `packages/core/src/observe/structure.ts` | ✓ |
 | `packages/core/src/observe/watch.ts` | ✓ |
 | `packages/core/src/observe/types.ts` | ✓ |
 | `packages/core/src/observe/telemetry.ts` | ✓ |
 | `packages/core/src/observe/models.ts` | ✓ |
+| `packages/server/src/handlers.ts` | ✓ |
 | `gui/vite.config.ts` | ✓ |
 | `packages/cli/src/status.ts` | ✓ |
 | `tui/adapt.mjs` | ✓ |
@@ -103,25 +126,48 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - `48b32d6` 2026-06-29 — refactor(tui): extract pure view adapters into adapt.mjs + adaptRunView
 - `c7f15f7` 2026-06-30 — fix(gui): scope `piflowctl gui` to the launched project, not the global registry
 - `cc65e95` 2026-06-30 — refactor(core): lift project-scope resolution into @piflow/core (shared)
+- `10ea496` 2026-07-01 — feat(server): @piflow/server + piflowctl serve — host the control plane (control API + GUI) on any host
+- `bbc1126` 2026-07-01 — feat(server): POST /api/runs/start — launch a run (start agents) from the console
+- `b75235d` 2026-07-01 — feat(server): P5 template allow-listing on POST /api/runs/start
+- `091a49a` 2026-07-01 — feat(server): P6 migration endpoints — freeze / bundle / adopt
+- `e7a62b2` 2026-07-01 — feat(cli): P7 — the active context redirects observe/start to a remote serve
+- `d529c10` 2026-07-01 — feat(cli): piflowctl context migrate — one-click upload/download (P6)
+- `1933da4` 2026-07-01 — feat(server): GET /api/contexts + POST /api/migrate — server-orchestrated run migration (D1)
+- `b0e6ff5` 2026-07-01 — feat(server): /__piflow/run-digest/<run> — the run-level observation projection
+- `3b46ea1` 2026-07-01 — feat(observe): buildRunView sources the token/cost/context spine from rec.usage
+- `3736d90` 2026-07-01 — fix(server): surface migrate spawn/exit failures via GET /api/migrate/status
+- `7e4fb00` 2026-07-01 — feat(observe): NodeDerived — compute the per-node display zones once in the surface
+- `5bd120e` 2026-07-01 — refactor(observe): extract nodeTokenSpine + assembleNode + non-destructive accumulator snapshot()
+- `3881e46` 2026-07-01 — feat(observe): resolveStructure — readRunModel prefers .pi/workflow.json for edge/stage parity with buildRunView
+- `bd9803e` 2026-07-01 — feat(observe): widen the wire — optional per-node tokens/derived + node-enriched delta + CLI allowlist
+- `9f75bb8` 2026-07-01 — feat(observe): watchRun folds telemetry incrementally + node-enriched deltas — the server-side single source
+- `f8e9865` 2026-07-01 — fix(observe): the live SSE fold byte-matches /run-view (P4-live parity)
+- `9f535ec` 2026-07-01 — Merge branch 'main' into feat/observe-live-sse-source
 
 ### Lessons — memory cluster
 
 **Alias matches** (review — may include false positives):
+- [[blueprints-layer]]
 - [[capability-catalog-feed]]
 - [[claude-code-executor]]
+- [[cloud-control-plane-local-cloud-switch]]
 - [[cloud-sandbox-portability]]
 - [[codebase-memory-mcp-analysis]]
 - [[codegraph-best-practices]]
 - [[competitive-gaps-pdw]]
 - [[config-is-truth-gui-is-projection]]
 - [[daytona-cloud-path]]
+- [[design-at-init-architecture]]
+- [[eval-bulk-agents-use-cheaper-model]]
 - [[expert-representations]]
 - [[g11-g13-node-action-protocol]]
 - [[g6-agenttype-presets]]
 - [[game-omni-reference-product]]
 - [[gui-live-viewer-scope]]
 - [[gui-nodehud-redesign]]
+- [[local-docker-sandbox-mode]]
 - [[mastra-competitive-analysis]]
+- [[memory-legs-coordination]]
 - [[no-demo-html-wire-into-screen]]
 - [[node-illustration-pipeline]]
 - [[observe-single-data-path]]
@@ -136,15 +182,9 @@ anchors ✓ · scope = the seeds above · re-derive when they change · DRIFT NO
 - [[runs-live-in-product-runs-folder]]
 - [[sandbox-readscope-default-on]]
 - [[sdk-data-boundaries]]
+- [[telemetry-legibility-tracks]]
 - [[tui-dag-structure-source]]
+- [[use-understanding-system-first]]
 
-### Code anchors / blast radius (codegraph)
-
-- `RunView` (packages/core/src/observe/runView.ts:97) — 9 callers in `packages/core/src/index.ts`, `packages/core/src/observe/index.ts`, `packages/core/src/observe/telemetry.ts`, `packages/core/src/observe/runView.ts`; tests: `packages/core/test/telemetry.test.ts`
-- `RunView` (gui/src/data/runView.ts:85) — 9 callers in `gui/src/data/zones.ts`, `gui/src/data/runView.ts`; tests: `gui/src/data/runView.test.ts`
-- `buildRunView` (packages/core/src/observe/runView.ts:212) — 12 callers in `gui/scripts/build-demo-data.mjs`, `gui/vite.config.ts`, `packages/cli/src/telemetry.ts`, `packages/core/src/observe/discover.ts` +3 more; tests: `packages/core/test/checkpoint.test.ts`, `packages/core/test/observe.test.ts`
-- `watchRun` (packages/cli/src/watch.ts:60) — 14 callers in `gui/vite.config.ts`, `packages/cli/src/telemetry.ts`, `packages/cli/src/watch.ts`, `packages/langgraph/src/stream.ts` +4 more; tests: `packages/cli/test/watch.test.ts`, `packages/core/test/observe.test.ts`
-- `readRunModel` (packages/core/src/observe/read.ts:104) — 16 callers in `packages/cli/src/status.ts`, `packages/core/src/observe/discover.ts`, `packages/core/src/observe/watch.ts`, `packages/langgraph/src/stream.ts` +3 more; tests: `packages/cli/test/status.test.ts`, `packages/core/test/checkpoint.test.ts`, `packages/core/test/observe.test.ts`, `tui/test/rich-dag.test.mjs`
-
-<sub>derived 2026-07-01 · arc=37 commits · files=10 · lessons=30</sub>
+<sub>derived 2026-07-02 · arc=54 commits · files=13 · lessons=38</sub>
 <!-- okf:auto-end -->
