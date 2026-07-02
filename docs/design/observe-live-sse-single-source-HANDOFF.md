@@ -35,24 +35,29 @@ must equal /run-view"):
 Default flipped `poll` → `sse` (`liveSource.ts`). Escape hatch intact: `?live=poll` (runtime),
 `VITE_PIFLOW_LIVE_SOURCE=poll` (build), + the automatic degrade-to-poll on SSE failure/done in `WorkflowCanvas`.
 
-## Remaining
+## P5 — DONE (`36ba65e`): the 3 s replay loops are demoted
+- `WorkflowCanvas.tsx`: the 3 s `/run-view` re-poll is SKIPPED under `sseLive` (already wired); with `sse`
+  default the live graph no longer re-polls.
+- `RunDigestPanel.tsx`: the unconditional 3 s `/run-digest` self-poll is now a POLL-mode-only fallback. A pure
+  `digestLiveSig(sseLive, liveModel)` (per-node statuses + a coarse billable bucket; `null` in poll-mode) is
+  the trigger — under SSE the panel refetches only when that signature changes (a node status flip / billable
+  bucket crossing) or the stream flips to `done`. An IDLE run makes zero digest fetches. Unit-tested (pure fn,
+  test-the-test proven). Trigger-timing only — the digest stays the server's `projectRunDigest`.
 
-### P5 — demote the 3 s replay loops (now that `sse` is default)
-- `WorkflowCanvas.tsx`: the 3 s `/run-view` re-poll is already SKIPPED under `sseLive`; with `sse` default the
-  live path no longer re-polls. VERIFY in the network tab (no 3 s `/run-view` during a live sse run).
-- `RunDigestPanel.tsx`: still self-polls `/run-digest` every 3 s off `live.status`. Drive its refetch off
-  `node-status`/`done` deltas (event-driven, like DR5's file-tree refresh) or an explicit slower cadence. Keep
-  `/run-view` + `/run-digest` for one-shot loads.
-- Optional (DR6 reconcile net): a `visibilitychange` + slow (≥30 s) `/run-view` reconcile, applied as MODEL
-  REPLACE (not field-merge).
+## Remaining (optional / separate)
 
-### Thrust 3 (separate, design §9)
+### DR6 reconcile net (OPTIONAL robustness — not built)
+- A `visibilitychange` + slow (≥30 s) `/run-view` reconcile, applied as MODEL REPLACE (not field-merge) — a
+  safety net that heals any drift after a backgrounded tab / dropped stream. Optional; the degrade-to-poll path
+  already covers the common failure.
+
+### Thrust 3 (separate track, design §9)
 - The AgentDriver registry: `nodeTokenSpine`/`assembleNode` (P0a) is its seam (formalize the rec.usage-vs-replay
   branch into named per-agent-type drivers). Cross-run derivable metrics (extend `buildHistory`/`derive`).
 
 ## Verification bar (every step)
 `npx tsc -b` · `npx tsc --noEmit` in `gui/` · `npm --prefix gui run build` · `npm test` — all green.
-Current: **1624 pass / 8 skip** (the 8th skip = the env-gated real-run parity case).
+Current (merged with main): **1709 pass / 8 skip** (the 8th skip = the env-gated real-run parity case).
 
 ## Gotchas (do NOT regress)
 - The SSE stream MUST be fed the SAME `historyDirs` + `workspaceRoot` the /run-view handler passes to
@@ -65,8 +70,11 @@ Current: **1624 pass / 8 skip** (the 8th skip = the env-gated real-run parity ca
 - The GUI mirrors core shapes LOCALLY (no `@piflow/core` import in the browser BUNDLE). The parity TEST imports
   core src by relative path — that's a test, not the bundle.
 
-## Before merge
-- `@piflow/core` changeset updated (`.changeset/observe-sse-single-source.md` now covers the P4 additive surface:
+## Merge status
+- `main` has been reconciled INTO this branch (merge `9f535ec`, clean auto-merge — main's cloud/hosting work
+  vs this track's observe/gui changes had no real overlap). Branch is now AHEAD of main only.
+- `@piflow/core` changeset updated (`.changeset/observe-sse-single-source.md` covers the P4 additive surface:
   `NodeView.provider`, `WatchOpts.historyDirs/workspaceRoot`, `readRunModel({workspaceRoot})`, exported
-  `makeDisplayPath`/`buildHistory`). P4-live is clean → ready to merge `feat/observe-live-sse-source` → `main`
-  with `--no-ff`. P5 can land before or after the merge.
+  `makeDisplayPath`/`buildHistory`).
+- P0a–P5 are DONE + green (1709/8). The track is ready to merge `feat/observe-live-sse-source` → `main` with
+  `--no-ff`. DR6 + Thrust 3 are optional/separate and need not gate the merge.
