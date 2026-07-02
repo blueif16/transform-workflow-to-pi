@@ -5,6 +5,7 @@
 import type { FlowNode, FlowNodeData, NodeStatus } from "../components/WorkflowNode";
 import type { DirEntry } from "../components/DirectoryPanel";
 import type { Edge } from "@xyflow/react";
+import type { LiveModel, LiveNode } from "./runStream";
 import { apiFetch, apiUrl } from "./apiBase";
 
 export type ScopeKind = "run" | "skill" | "template" | "package" | "repo";
@@ -59,6 +60,25 @@ export interface ArtifactRef { path: string; displayPath: string; exists: boolea
 export interface BashCall { command: string; tStartMs: number | null; durMs?: number; }
 export interface RunTokens { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextPeak: number; billable: number; }
 
+/** An attention level, worst-first: ok < warn < high — mirrors core `Tone` (observe/derive.ts). */
+export type Tone = "ok" | "warn" | "high";
+/** One tool in the ranked breakdown; `pct` is the tool's share of all calls (0–1). Mirrors core. */
+export interface RankedTool { name: string; count: number; pct: number; }
+/** One produced file in the unified output list; `path` is the display path, `ok` = on-disk verified. Mirrors core. */
+export interface DerivedOutput { path: string; bytes?: number; ok: boolean; }
+/** The per-node DISPLAY projection core's `deriveNode` stamps on each run-view node (observe/derive.ts) — the
+ *  ONE place the zones/rankings/unified outputs are computed. The GUI RENDERS these; it re-derives nothing. */
+export interface NodeDerived {
+  cacheHit: { ratio: number; tone: Tone } | null;
+  toolError: { errors: number; rate: number; tone: Tone };
+  dominance: { tool: string | null; ratio: number; dominant: boolean };
+  context: { frac: number; tone: Tone };
+  time: { ratio: number; tone: Tone } | null;
+  retries: { count: number; tone: Tone };
+  topTools: RankedTool[];
+  outputs: DerivedOutput[];
+}
+
 export interface RunViewNode {
   id: string;
   label: string;
@@ -96,6 +116,9 @@ export interface RunViewNode {
   truncated: boolean;
   /** total `thinking_delta` characters for this node. */
   thinkingChars: number;
+  /** the per-node DISPLAY projection (zones/rankings/unified outputs) — stamped by core's `buildRunView`;
+   *  for a LIVE-folded node (no backend stamp yet) `ensureDerived` fills it from the pinned local mirror. */
+  derived?: NodeDerived;
   summary?: string;
   issues?: string[];
   stageIndex?: number;
@@ -375,14 +398,18 @@ export function formatTokens(n?: number | null): string {
  *  real value now comes per-node from `@piflow/core/observe` (pi's ~/.pi/agent/models.json) — no table here. */
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
 
-export type ContextTone = "ok" | "warn" | "high";
-/** Context-pressure zones (per telemetry research 2026): <40% ok · 40–70% warn · ≥70% high — quality
- *  degrades as the window fills, so we flag the 70%+ band before it becomes critical. */
-export function contextTone(frac: number): ContextTone {
-  if (frac >= 0.7) return "high";
-  if (frac >= 0.4) return "warn";
-  return "ok";
-}
+/** @deprecated alias of {@link Tone} — kept so existing imports (NodeModeStrip) don't churn. */
+export type ContextTone = Tone;
+
+// ── two zone cutoffs kept view-side for the RUNNING-node live-elapsed clock ─────────────────────────────
+// Every SETTLED node renders `derived.*` stamped by the observe surface (core buildRunView → deriveNode); the
+// GUI computes NOTHING for it. The ONE exception is a RUNNING node's elapsed-so-far clock (NodeModeStrip): it
+// ticks off Date.now() between polls, so its time/context tone can't come from the interval-stale backend
+// `derived` — these two pure cutoffs tone that live-elapsed value. They mirror core observe/derive.ts.
+/** Context-pressure zones: <40% ok · 40–70% warn · ≥70% high — quality degrades as the window fills. */
+export const contextTone = (frac: number): Tone => (frac >= 0.7 ? "high" : frac >= 0.4 ? "warn" : "ok");
+/** Time-vs-mean zones: over the mean is warn, 50%+ over is high. */
+export const timeTone = (ratio: number): Tone => (ratio > 1.5 ? "high" : ratio > 1 ? "warn" : "ok");
 
 const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -400,11 +427,148 @@ export function nodePosition(stageIndex: number | undefined, lane: number | unde
   return { x: 40 + ((stageIndex ?? 1) - 1) * COL, y: 60 + (lane ?? 0) * ROW };
 }
 
+/** Map one enriched LiveNode (SSE fold) → the RunViewNode `toFlowGraph` renders. Since P1 aligned the shapes
+ *  this is largely a passthrough of the enriched fields; the ONE job here is to DEFAULT every field the batch
+ *  RunViewNode requires but a lean/early live node may lack (toolCalls/collections/flags), so `toFlowGraph`
+ *  never dereferences `undefined`. A streamed value (e.g. `tokens.billable`, a `derived` tone) reaches the
+ *  rendered FlowNode verbatim — the GUI computes nothing. PURE. */
+function liveNodeToRunViewNode(n: LiveNode): RunViewNode {
+  return {
+    id: n.id,
+    label: n.label,
+    phase: n.phase,
+    status: n.status,
+    model: n.model ?? null,
+    // provider is PER-NODE (detected from the node's own events; null when undeterminable) — carried on the
+    // enriched wire node (watch.ts mergeEnriched), so it matches buildRunView's per-node provider EXACTLY. A
+    // stale run-level blanket here diverged for nodes whose own provider differs (e.g. a rec.usage node → null).
+    provider: n.provider ?? null,
+    // the node's settled duration (null while running) — buildRunView renders it, so the live node must carry it.
+    durationMs: n.durationMs ?? null,
+    contextWindow: n.contextWindow ?? null,
+    toolCalls: n.toolCalls ?? 0,
+    toolBreakdown: n.toolBreakdown ?? {},
+    timeline: n.timeline ?? [],
+    reads: n.reads ?? [],
+    scopes: [], // scope buckets are a settled-node fold; live nodes render reads directly (empty ⇒ no bucket rail)
+    writes: n.writes ?? [],
+    artifacts: n.artifacts ?? [],
+    bash: [], // bash calls are folded from the timeline server-side; absent on the live delta ⇒ empty
+    tokens: n.tokens,
+    retries: n.retries ?? 0,
+    stopReason: n.stopReason ?? null,
+    truncated: n.truncated ?? false,
+    thinkingChars: 0, // not carried on the live delta (not rendered on the graph) ⇒ default
+    derived: n.derived,
+    summary: n.summary,
+    stageIndex: n.stageIndex,
+    lane: n.lane,
+  };
+}
+
+/** Adapt a LIVE SSE model → the RunView `toFlowGraph` consumes (docs/design/observe-live-sse-single-source.md P3).
+ *  A pure passthrough: enriched LiveNodes → RunViewNodes (defaulting anything the live node lacks), edges →
+ *  RunViewEdges, and the folded `tokenTotal` carried through. The SSE snapshot's resolved `stages` spine is
+ *  carried verbatim (P0b) so the shadow-diff parity matches /run-view; the graph still lays out from each
+ *  node's stageIndex/lane, so `toFlowGraph` reads only the nodes+edges and the array does not change the render.
+ *  Because P1 aligned the shapes, a value the server streamed (billable tokens, a derived tone, a summary) lands
+ *  on the rendered FlowNode UNCHANGED; the GUI re-derives nothing. */
+export function liveModelToRunView(model: LiveModel): RunView {
+  return {
+    run: model.run,
+    provider: model.provider,
+    model: model.model,
+    done: model.done,
+    ok: model.ok,
+    durationMs: model.durationMs,
+    totals: model.totals ?? undefined,
+    tokenTotal: model.tokenTotal,
+    // Carried from the SSE snapshot (readRunModel's resolveStructure, P0b) so this is a FAITHFUL RunView and
+    // the shadow-diff parity check matches the /run-view build. toFlowGraph lays out from per-node
+    // stageIndex/lane (not this array), so populating it does not change the render.
+    stages: model.stages ?? [],
+    edges: (model.edges ?? []).map((e) => ({ from: e.from, to: e.to, path: e.path })),
+    // each node carries its OWN provider (per-node, from the enriched wire node) — see liveNodeToRunViewNode.
+    nodes: model.nodes.map((n) => liveNodeToRunViewNode(n)),
+  };
+}
+
+/** Map one authoritative RunViewNode → the LiveNode the SSE model carries (the inverse of `liveNodeToRunViewNode`).
+ *  Copies exactly the fields the live model holds — which are precisely the shadow-diff RENDER key — so the
+ *  re-based node renders identically to /run-view. Fields the LiveNode shape omits (scopes/bash/thinkingChars/
+ *  agentType/config) are NOT rendered on the SSE path anyway, so dropping them here matches the live path's own
+ *  coverage (no NEW divergence). `stageIndex`/`lane` default the SAME way `toFlowGraph` does, so an unplaced node
+ *  still lays out identically. PURE. */
+function runViewNodeToLiveNode(n: RunViewNode): LiveNode {
+  return {
+    id: n.id,
+    label: n.label,
+    phase: n.phase,
+    status: n.status as LiveNode["status"],
+    stageIndex: n.stageIndex ?? 1,
+    lane: n.lane ?? 0,
+    tokens: n.tokens,
+    derived: n.derived,
+    model: n.model ?? null,
+    provider: n.provider ?? null,
+    durationMs: n.durationMs ?? null,
+    contextWindow: n.contextWindow ?? null,
+    toolCalls: n.toolCalls,
+    toolBreakdown: n.toolBreakdown,
+    timeline: n.timeline,
+    reads: n.reads,
+    writes: n.writes,
+    artifacts: n.artifacts,
+    retries: n.retries,
+    stopReason: n.stopReason,
+    truncated: n.truncated,
+    summary: n.summary,
+  };
+}
+
+/** (DR6) Adapt an AUTHORITATIVE RunView → the LiveModel the SSE stream carries — the inverse of
+ *  `liveModelToRunView`, used by the reconcile net. When a backgrounded/throttled tab returns, the client fetches
+ *  `/run-view` once and MODEL-REPLACEs the live model with `runViewToLiveModel(view)` (via the same snapshot-
+ *  replace merge path), re-basing the graph to ground truth. Because it carries the entire shadow-diff render key
+ *  verbatim, a reconcile introduces ZERO divergence vs /run-view (proven by the round-trip parity test). The
+ *  run-level `tokenTotal`, resolved `stages` spine, and edges are ADOPTED from the authoritative view (not
+ *  recomputed client-side) — MODEL REPLACE, not field-merge. PURE. */
+export function runViewToLiveModel(view: RunView): LiveModel {
+  return {
+    run: view.run,
+    done: view.done ?? false,
+    ok: view.ok ?? null,
+    durationMs: view.durationMs ?? null,
+    provider: view.provider,
+    model: view.model,
+    totals: view.totals ?? null,
+    tokenTotal: view.tokenTotal,
+    stages: view.stages,
+    edges: view.edges.map((e) => ({ from: e.from, to: e.to, path: e.path })),
+    nodes: view.nodes.map((n) => runViewNodeToLiveNode(n)),
+  };
+}
+
+/** (P5) The trigger signature RunDigestPanel refetches `/run-digest` on UNDER SSE — the panel/canvas decide
+ *  WHEN to refetch; they never compute the digest (that stays server-side). Returns `null` in POLL-mode
+ *  (`!sseLive || !model`), which tells the panel to keep its 3 s fallback timer; otherwise a STABLE string over
+ *  what the digest renders: the per-node statuses PLUS a COARSE billable bucket. It CHANGES when a node's status
+ *  flips (verdict/anomalies move) or billable crosses a ~5000-token bucket (cost-spine freshness during active
+ *  accrual), and is STABLE while the run is idle ⇒ no wasted refetch when nothing happens. PURE. */
+export function digestLiveSig(sseLive: boolean, model: LiveModel | null): string | null {
+  if (!sseLive || !model) return null;
+  const statuses = model.nodes.map((n) => `${n.id}:${n.status}`).join("|");
+  const bucket = Math.round((model.tokenTotal?.billable ?? 0) / 5000);
+  return `${statuses}#${bucket}`;
+}
+
 /** Build the React Flow graph (positions by stage column / parallel-lane row) from a run-view. The optional
  *  agent-preset `catalog` resolves a node's `agentType` → its branded icon/color/label (G6); absent ⇒ the
  *  node renders the default chip. */
 export function toFlowGraph(view: RunView, catalog: AgentCatalog = {}): { nodes: FlowNode[]; edges: Edge[] } {
   const nodes: FlowNode[] = view.nodes.map((rv) => {
+    // The run-view already carries `derived` (the observe surface stamps deriveNode on every node); the GUI
+    // renders rv.derived.* verbatim and computes nothing.
     const stageIndex = rv.stageIndex ?? 1;
     const lane = rv.lane ?? 0;
     const preset = rv.agentType ? catalog[rv.agentType] : undefined;

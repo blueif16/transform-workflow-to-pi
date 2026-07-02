@@ -21,6 +21,16 @@ const WRITE_TOOLS = new Set(['edit', 'write']); // file writes → "outputs"
 
 const baseName = (p: unknown): unknown => (typeof p === 'string' ? p.split('/').pop() : p);
 
+// Recursively freeze an object graph — the snapshot() contract is a FROZEN copy so a live consumer can
+// hold it across polls without another poll (or a view) mutating it out from under them.
+function deepFreeze<T>(o: T): T {
+  if (o && typeof o === 'object' && !Object.isFrozen(o)) {
+    Object.freeze(o);
+    for (const v of Object.values(o as Record<string, unknown>)) deepFreeze(v);
+  }
+  return o;
+}
+
 export interface RichTokens {
   input: number;
   output: number;
@@ -114,6 +124,16 @@ export interface NodeAccumulator {
   push(e: PiEvent): void;
   /** Current counters WITHOUT closing open tool spans — safe to call any number of times mid-run. */
   metrics(): LiveMetrics;
+  /**
+   * The live, NON-DESTRUCTIVE twin of `finalize()`: a FROZEN copy of the full rich node (timeline WITH
+   * still-open tool spans projected read-only — same `durMs:0/ok:true` shape finalize would synth-close
+   * them to — plus toolBreakdown/reads/writes/tokens/retries/stopReason/modelCalls/everything), WITHOUT
+   * mutating `open` or any accumulator state. Safe to call any number of times mid-run; a subsequent
+   * `finalize()` still closes real open spans correctly. On a SETTLED node (no open spans) it deep-equals
+   * `finalize().rich`. This is what the live telemetry stream folds per poll instead of the destructive
+   * `finalize()` (which double-pushes timeline spans + drops the real tool_execution_end).
+   */
+  snapshot(statusRec?: NodeStatusRecordLike): RichNode;
   finalize(statusRec?: NodeStatusRecordLike): { rich: RichNode; io: LeanIo };
 }
 
@@ -248,44 +268,60 @@ export function createNodeAccumulator(): NodeAccumulator {
       };
     },
 
+    snapshot(statusRec: NodeStatusRecordLike = {}): RichNode {
+      // NON-DESTRUCTIVE: project each still-open span read-only (same durMs:0/ok:true shape finalize
+      // synth-closes them to) onto a THROWAWAY timeline copy — never touch the real `timeline`/`open`,
+      // so this is safe to call any number of times mid-run and a later real tool_execution_end still
+      // produces the correct closed span.
+      const projected = [...timeline];
+      for (const span of open.values()) projected.push({ name: span.name, tStartMs: span.tStartMs, durMs: 0, ok: true });
+      return deepFreeze(assembleRich(statusRec, projected).rich);
+    },
+
     finalize(statusRec: NodeStatusRecordLike = {}) {
       // close any tool spans that never saw an _end (killed mid-call) so timeline stays 1:1 with calls
       for (const span of open.values()) timeline.push({ name: span.name, tStartMs: span.tStartMs, durMs: 0, ok: true });
       open.clear();
-
-      // verified-not-trusted: a write is "verified" only if a real on-disk artifact matches it.
-      const artByBase = new Map((statusRec.artifacts || []).map((a) => [baseName(a.path), a]));
-      const writeArr: RichWrite[] = [...writes.values()].map((w) => {
-        const a = artByBase.get(baseName(w.path));
-        return { path: w.path, via: w.via, tStartMs: w.tStartMs, verified: !!(a && a.exists), bytes: a ? a.bytes : undefined };
-      });
-
-      const startedAt = statusRec.startedAt || firstRt || undefined;
-      const endedAt = statusRec.endedAt || lastRt || undefined;
-      const durationMs = statusRec.durationMs ?? ((firstT != null && lastT != null) ? lastT - firstT : undefined);
-
-      const rich: RichNode = {
-        model, provider, api,
-        toolCalls, toolBreakdown, timeline,
-        reads: [...reads.values()],
-        lists: [...lists.values()],
-        writes: writeArr,
-        bash,
-        tokens: { ...tok, billable: tok.input + tok.output },
-        retries, stopReason,
-        truncated: stopReason === 'max_tokens' || stopReason === 'length',
-        thinkingChars,
-        modelCalls, maxToolRepeat, repeatedTool,
-        coverage: { eventsSeen, usageEvents, byType },
-        startedAt, endedAt, durationMs,
-      };
-      const io: LeanIo = {
-        reads: [...reads.values()].map((r) => ({ path: r.path, via: r.via })),
-        writes: writeArr.map((w) => ({ path: w.path, verified: w.verified, bytes: w.bytes })),
-        promotes: [],
-        startedAt, endedAt, durationMs,
-      };
-      return { rich, io };
+      return assembleRich(statusRec, timeline);
     },
   };
+
+  // Assemble the { rich, io } pair from current accumulator state + the timeline to project (finalize
+  // passes the mutated-in-place real timeline; snapshot passes a throwaway copy with open spans appended).
+  // The result is DEEP-FROZEN so no consumer can mutate the shared reduced node.
+  function assembleRich(statusRec: NodeStatusRecordLike, timelineOut: TimelineSpan[]): { rich: RichNode; io: LeanIo } {
+    // verified-not-trusted: a write is "verified" only if a real on-disk artifact matches it.
+    const artByBase = new Map((statusRec.artifacts || []).map((a) => [baseName(a.path), a]));
+    const writeArr: RichWrite[] = [...writes.values()].map((w) => {
+      const a = artByBase.get(baseName(w.path));
+      return { path: w.path, via: w.via, tStartMs: w.tStartMs, verified: !!(a && a.exists), bytes: a ? a.bytes : undefined };
+    });
+
+    const startedAt = statusRec.startedAt || firstRt || undefined;
+    const endedAt = statusRec.endedAt || lastRt || undefined;
+    const durationMs = statusRec.durationMs ?? ((firstT != null && lastT != null) ? lastT - firstT : undefined);
+
+    const rich: RichNode = {
+      model, provider, api,
+      toolCalls, toolBreakdown: { ...toolBreakdown }, timeline: [...timelineOut],
+      reads: [...reads.values()].map((r) => ({ ...r })),
+      lists: [...lists.values()].map((l) => ({ ...l })),
+      writes: writeArr,
+      bash: bash.map((b) => ({ ...b })),
+      tokens: { ...tok, billable: tok.input + tok.output },
+      retries, stopReason,
+      truncated: stopReason === 'max_tokens' || stopReason === 'length',
+      thinkingChars,
+      modelCalls, maxToolRepeat, repeatedTool,
+      coverage: { eventsSeen, usageEvents, byType: { ...byType } },
+      startedAt, endedAt, durationMs,
+    };
+    const io: LeanIo = {
+      reads: [...reads.values()].map((r) => ({ path: r.path, via: r.via })),
+      writes: writeArr.map((w) => ({ path: w.path, verified: w.verified, bytes: w.bytes })),
+      promotes: [],
+      startedAt, endedAt, durationMs,
+    };
+    return { rich, io };
+  }
 }

@@ -59,10 +59,12 @@ import { FusionContext, type FusionMode } from "./FusionContext";
 import { FusionSaveBar } from "./FusionSaveBar";
 import { ComposeContext } from "./ComposeContext";
 import { ChipPalette } from "./ChipPalette";
-import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, loadAgentCatalog, loadNodeConfig, dropChipOnNode, type GateChip, type AuthoredNodeConfig } from "../data/runView";
+import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, liveModelToRunView, runViewToLiveModel, digestLiveSig, loadAgentCatalog, loadNodeConfig, dropChipOnNode, type GateChip, type AuthoredNodeConfig, type AgentCatalog } from "../data/runView";
 import { deriveZones, toZoneFlowNode, type ZoneFlowNode } from "../data/zones";
 import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
 import { useRunStream, RunStreamContext } from "../data/runStream";
+import { liveSource, shadowDiffEnabled } from "../data/liveSource";
+import { shadowDiff } from "../data/shadowDiff";
 import { setEndpoint, useEndpoint } from "../data/apiBase";
 
 /* defined OUTSIDE the component — prevents node re-mounts on every render */
@@ -99,11 +101,25 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   const [ix, setIx] = useState<GlobalIndex | null>(null);
   const [activeRun, setActiveRun] = useState<string>("");
   const [dir, setDir] = useState<{ tree: DirEntry[]; fileToNode: Record<string, string> }>({ tree: [], fileToNode: {} });
+  // (P3) the G6 agent-preset catalog for the SSE render path — fetched once per run (it is ~static), so the
+  // enriched-live re-render doesn't re-hit /agents.json on every token delta. The poll path fetches it inline.
+  const [agentCatalog, setAgentCatalog] = useState<AgentCatalog>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const { fitView } = useReactFlow();
   // ONE run-telemetry subscription for the active run — provided to the Companion via RunStreamContext so
-  // it doesn't open a second EventSource. The CANVAS itself renders from the distilled run-view (below).
+  // it doesn't open a second EventSource. The CANVAS renders EITHER from the distilled run-view poll (default)
+  // OR from this enriched live model, gated by the client transport flag (docs/design P3).
   const live = useRunStream(activeRun);
+
+  // (P3) The CLIENT transport flag — read once per session (URL `?live=` / build default). 'poll' (default)
+  // keeps today's 3 s /run-view re-poll VERBATIM; 'sse' renders the graph from the enriched live.model.
+  const useSse = liveSource() === "sse";
+  // (Fusion mode) any override ⇒ render the SDK-expanded PREVIEW of the run's template; else the run-view/live.
+  const preview = Object.keys(fusionOverrides).length > 0;
+  // SSE drives the graph only for a LIVE run that is actually streaming a model: not preview, flag on, the
+  // stream `live` (not done/foreign/errored), and a snapshot has arrived. On SSE failure (`error`, no model)
+  // or once the run is `done`, this is false → the poll path (below) takes over — the safety-valve degrade.
+  const sseLive = useSse && !preview && live.status === "live" && !!live.model;
 
   // LIVE-poll the global index (every 4s) so runs that start / progress after launch appear without a
   // manual re-index. CanvasInner is the single owner; MenuBar reads `ix` as a prop.
@@ -136,13 +152,15 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
   // ONE graph path for EVERY run: distill the run's real `.pi/` via the run-view endpoint (live,
   // historical, or foreign alike). While the run is still going, re-poll so status + telemetry stay
   // fresh; a finished run loads once. Re-runs when the switcher picks a different run.
+  //
+  // (P3) When `sseLive` — the client flag is 'sse' AND this run is streaming a live model — the enriched-live
+  // effect below drives the graph instead, so this poll SKIPS (no 3 s re-poll). The flag defaults to 'poll',
+  // and on any SSE failure/finish `sseLive` flips false → this poll takes over VERBATIM (the degrade path).
   useEffect(() => {
     if (!activeRun) { setNodes([]); setEdges([]); setDir({ tree: [], fileToNode: {} }); return; }
+    if (sseLive) return; // (P3) the enriched-live effect owns the graph — don't poll or re-arm
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // (Fusion mode) any override ⇒ render the SDK-expanded PREVIEW of the run's template; else the run-view.
-    // The preview is STATIC (no live run), so it never polls.
-    const preview = Object.keys(fusionOverrides).length > 0;
     const load = async () => {
       try {
         const [view, agents] = await Promise.all([
@@ -174,7 +192,106 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
     };
     load();
     return () => { alive = false; if (timer) clearTimeout(timer); };
-  }, [activeRun, fusionOverrides, setNodes, setEdges, endpointBase]);
+  }, [activeRun, fusionOverrides, sseLive, setNodes, setEdges, endpointBase]);
+
+  // ── (P3) Enriched-live render path — active only when `sseLive` (flag 'sse' + a live streaming run) ────────
+  // The graph is built from the SSE-enriched `live.model` (adapter → toFlowGraph); the GUI computes nothing.
+  // The 3 s /run-view re-poll above is SKIPPED. Zones/positions come from the same RunView shape, so the canvas
+  // is identical to the poll path — only the transport differs.
+  const liveModel = live.model;
+  // (P5) The digest-refetch trigger for RunDigestPanel: non-null under SSE (a status/billable-bucket delta drives
+  // an event-driven refetch), null in poll-mode (the panel keeps its 3 s fallback). The panel never computes the
+  // digest — this only decides WHEN it refetches the server projection.
+  const digestSig = digestLiveSig(sseLive, liveModel);
+  // Fetch the ~static agent-preset catalog once when the sse path first drives this run (not per token delta).
+  useEffect(() => {
+    if (!sseLive) return;
+    let alive = true;
+    loadAgentCatalog().then((c) => { if (alive) setAgentCatalog(c); }).catch(() => { /* {} → default chips */ });
+    return () => { alive = false; };
+  }, [sseLive, activeRun, endpointBase]);
+
+  // Re-render the graph from the enriched live model on every fold change (snapshot / node-status / node-enriched
+  // all mutate `live.model`'s reference). PURE: adapter → toFlowGraph, no network, no re-derive.
+  useEffect(() => {
+    if (!sseLive || !liveModel) return;
+    setLoadError(null);
+    const view = liveModelToRunView(liveModel);
+    const { nodes: n, edges: e } = toFlowGraph(view, agentCatalog);
+    setNodes([...deriveZones(view).map(toZoneFlowNode), ...n]);
+    setEdges(e);
+  }, [sseLive, liveModel, agentCatalog, setNodes, setEdges]);
+
+  // ── (P4) DEV-ONLY shadow-diff parity gate — a PURE side-observer, NEVER a render input ──────────────────────
+  // Armed only in a dev build with `?shadow=1` (shadowDiffEnabled) AND while the SSE path drives the graph
+  // (`sseLive` + a live model). It ALSO fetches the authoritative /run-view and deep-compares the SSE-rendered
+  // graph against it over the full field key (docs/design/observe-live-sse-single-source.md DR7/§11), console-
+  // warning each divergence and console.info'ing once when they agree. It touches NO render state (no
+  // setNodes/setEdges/setDir, no flag) — it is the human's proof that SSE≡/run-view before the cutover.
+  useEffect(() => {
+    if (!shadowDiffEnabled() || !sseLive || !liveModel) return;
+    let alive = true;
+    (async () => {
+      try {
+        const pollView = await loadRunView(activeRun);
+        if (!alive) return;
+        const divs = shadowDiff(liveModelToRunView(liveModel), pollView);
+        if (divs.length === 0) {
+          console.info("[shadow] SSE≡/run-view ✓");
+        } else {
+          for (const d of divs) {
+            console.warn(`[shadow] divergence — ${d.scope}${d.id ? `#${d.id}` : ""}.${d.field}`, { sse: d.sse, poll: d.poll });
+          }
+        }
+      } catch {
+        /* the parity fetch is best-effort; a failed /run-view load must not disturb the render */
+      }
+    })();
+    return () => { alive = false; };
+  }, [sseLive, liveModel, activeRun, endpointBase]);
+
+  // Keep the file tree/dir fresh WITHOUT the telemetry replay (DR5): refetch only when a node's STATUS changes
+  // (a node finishing is when files land) — not on every token delta. The status signature gates the refetch.
+  const statusSig = (liveModel?.nodes ?? []).map((x) => `${x.id}:${x.status}`).join("|");
+  useEffect(() => {
+    if (!sseLive || !liveModel) return;
+    let alive = true;
+    // `fileToNode` comes from the live model's produced-files (writes/artifacts); the tree prefers the real fs
+    // walk, falling back to that produced set — same as the poll path's directory build.
+    const { tree: producedTree, fileToNode } = buildDirectory(liveModelToRunView(liveModel));
+    (async () => {
+      let tree = producedTree;
+      try { const fsTree = await loadRunTree(activeRun); if (alive && fsTree.length) tree = fsTree; } catch { /* keep producedTree */ }
+      if (!alive) return;
+      setDir({ tree, fileToNode });
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch keyed on status change, not every fold
+  }, [sseLive, activeRun, statusSig, endpointBase]);
+
+  // ── (DR6) Reconcile net — heal drift after a backgrounded / throttled tab ────────────────────────────────────
+  // A backgrounded tab throttles (or silently stalls) SSE delivery, so on return to the foreground the live model
+  // may be BEHIND the run. On `visibilitychange` → visible, fetch the authoritative /run-view ONCE and MODEL-REPLACE
+  // the live model with it (`live.reconcile` → the same snapshot-replace merge path) so the graph re-bases to
+  // ground truth. Active only under the SSE path; best-effort — a failed fetch never disturbs the live stream, and
+  // on SSE failure/done `sseLive` is false so the poll path (which already re-polls) owns the graph. A dropped
+  // stream self-heals separately (EventSource auto-reconnects → the server re-sends a fresh snapshot). A slow ≥30 s
+  // safety poll is the next lever if a FOREGROUND tab is ever seen to silently stall; omitted to preserve P5's
+  // zero-fetch-when-idle property.
+  const reconcile = live.reconcile;
+  useEffect(() => {
+    if (!sseLive || !activeRun) return;
+    let alive = true;
+    const resync = async () => {
+      if (document.visibilityState !== "visible") return; // fire only on becoming visible, never on hide
+      try {
+        const view = await loadRunView(activeRun);
+        if (alive) reconcile(runViewToLiveModel(view));
+      } catch { /* best-effort — the SSE stream stays the source of truth */ }
+    };
+    document.addEventListener("visibilitychange", resync);
+    return () => { alive = false; document.removeEventListener("visibilitychange", resync); };
+  }, [sseLive, activeRun, reconcile, endpointBase]);
 
   // switch the viewed run (from the menu-bar switcher): load it + close any open node / file
   const selectRun = useCallback((run: string) => {
@@ -363,7 +480,7 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
           <Companion activeRun={activeRun} open={companionOpen} onOpenChange={setCompanionOpen} />
           {/* Left-edge run-LEVEL digest (anomaly worklist + failure-onset), sourced from /__piflow/run-digest.
               Clicking an anomaly/onset node focuses that node on the canvas. */}
-          <RunDigestPanel activeRun={activeRun} open={digestOpen} liveStatus={live.status} onFocusNode={setExpandedId} onClose={() => setDigestOpen(false)} />
+          <RunDigestPanel activeRun={activeRun} open={digestOpen} liveStatus={live.status} liveSig={digestSig} onFocusNode={setExpandedId} onClose={() => setDigestOpen(false)} />
           {/* Launch a run → on the 202, select it via `selectRun` so the live views observe the new run. */}
           <StartRunPanel open={startOpen} onClose={() => setStartOpen(false)} onStarted={selectRun} />
           {/* Migrate the active run → on the 202, re-point the console to the target serve + follow the run. */}

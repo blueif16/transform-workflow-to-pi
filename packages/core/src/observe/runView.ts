@@ -14,7 +14,9 @@
 
 import fssync from 'node:fs';
 import path from 'node:path';
-import { createNodeAccumulator } from './distill.js';
+import { createNodeAccumulator, type RichNode } from './distill.js';
+import { resolveStructure } from './structure.js';
+import { deriveNode, type NodeDerived } from './derive.js';
 import { loadModelCatalog, contextWindowFor, type ModelCatalog } from './models.js';
 import { checkpointViewFrom, type CheckpointMarker, type CheckpointJournalSlot } from '../runner/checkpoint.js';
 import type { NodeConfig, NodeUsage } from '../runner/status.js';
@@ -71,6 +73,9 @@ export interface RunViewNode {
   maxToolRepeat: number;
   /** the tool behind `maxToolRepeat` (null when none). */
   repeatedTool: string | null;
+  /** the per-node DISPLAY projection (zones/rankings/unified outputs), computed ONCE here so the GUI +
+   *  TUI render `derived.*` verbatim and never re-derive a threshold. See ./derive.ts. */
+  derived?: NodeDerived;
   summary?: string;
   issues?: string[];
   stageIndex?: number;
@@ -130,7 +135,7 @@ export interface BuildRunViewOpts {
 // ({{RUN}}) shows relative to it (`spec/blueprint.json`); a file in the shared tree ({{WORKSPACE}}) shows
 // relative to it (`packages/skills/...`); anything else falls back to a bare basename. runDir is checked
 // FIRST because it nests under workspaceRoot, so a run file never displays as the long `.piflow/.../runs/…`.
-function makeDisplayPath(runDir: string | null, workspaceRoot: string | null) {
+export function makeDisplayPath(runDir: string | null, workspaceRoot: string | null) {
   const run = runDir ? path.resolve(runDir) : null;
   const ws = workspaceRoot ? path.resolve(workspaceRoot) : null;
   return (abs: unknown): string => {
@@ -171,8 +176,10 @@ function replayEvents(runDir: string, id: string) {
   return { acc, lines, parseErrors, exists, bytes };
 }
 
-// Cross-run history: expectedMs[id] = mean durationMs across history runs that ran node `id`.
-function buildHistory(historyDirs: string[]) {
+// Cross-run history: expectedMs[id] = mean durationMs across history runs that ran node `id`. Exported so the
+// live watchRun ctx computes expectedMs from the SAME history the /run-view handler passes (else derived.time
+// diverges between the live stream and the loaded view — the shadow-diff parity break P4-live caught).
+export function buildHistory(historyDirs: string[]) {
   const dur: Record<string, number[]> = {};
   for (const r of historyDirs) {
     const rjFile = path.join(r, '.pi', 'run.json');
@@ -208,6 +215,137 @@ interface RunJson {
   startedAt?: string; updatedAt?: string; durationMs?: number | null;
   done?: boolean; ok?: boolean | null; totals?: { nodes: number; ok: number; failed: number };
   nodes: Record<string, RunJsonNode>;
+}
+
+/** The token/cost/context SPINE for one node — the agent-neutral rollup `assembleNode` stamps. */
+export interface NodeTokenSpine {
+  tokens: RunTokens;
+  /** the model label to display (rec.usage path prefers the effective model; else the event-replay model). */
+  model: string | null;
+  /** the context-window denominator (rec.usage's own cap, else the model's registry window). */
+  contextWindow: number | null;
+  modelCalls: number;
+  stopReason: string | null;
+  truncated: boolean;
+}
+
+/**
+ * (agent-neutral spine) Pick the token/cost/context/turns rollup for one node. When the executor persisted
+ * an authoritative usage rollup (`rec.usage` — Claude, whose stream-json the pi reducer cannot decode so
+ * `rich` is blank), PREFER it; otherwise source from the event replay (`rich`). Gated on `usage`: pi never
+ * sets it, so pi nodes stay byte-identical (event replay wins). Extracted verbatim from `buildRunView`'s
+ * per-node loop so the live SSE fold and the batch builder compute the SAME spine from the SAME code —
+ * and so the AgentDriver registry (Thrust 3) slots in here (pick the driver for `rec`) with no rework.
+ */
+export function nodeTokenSpine(
+  usage: NodeUsage | undefined,
+  rich: RichNode,
+  catalog: ModelCatalog,
+  effModel: string | null,
+): NodeTokenSpine {
+  const u = usage;
+  const tokens: RunTokens = u
+    ? {
+        input: u.inputTokens ?? 0,
+        output: u.outputTokens ?? 0,
+        cacheRead: u.cacheRead ?? 0,
+        cacheWrite: u.cacheCreation ?? 0, // Claude cache_creation ≙ pi cacheWrite (newly-cached input)
+        cost: u.cost ?? 0,
+        contextPeak: (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheCreation ?? 0), // context in the window
+        billable: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
+      }
+    : { ...rich.tokens };
+  const model = u ? effModel : rich.model;
+  const contextWindow = u
+    ? (u.contextWindow ?? (effModel ? contextWindowFor(effModel, catalog) : null))
+    : (rich.model ? contextWindowFor(rich.model, catalog) : null);
+  const modelCalls = u ? (u.numTurns ?? rich.modelCalls) : rich.modelCalls;
+  const stopReason = u ? (u.stopReason ?? rich.stopReason) : rich.stopReason;
+  const truncated = u ? (stopReason === 'max_tokens' || stopReason === 'length') : rich.truncated;
+  return { tokens, model, contextWindow, modelCalls, stopReason, truncated };
+}
+
+/** The per-node build context `assembleNode` needs — the run-scoped closures `buildRunView` sets up once. */
+export interface AssembleNodeCtx {
+  /** absolutize a possibly-relative path against the run sandbox. */
+  toAbs: (p: string) => string;
+  /** whether an absolute path lives inside the run sandbox ({{RUN}}) — the `run` scope test. */
+  underRun: (abs: string) => boolean;
+  /** strip an absolute path to a clean display path using the run's two roots. */
+  displayPath: (abs: unknown) => string;
+  /** pi-native model registry for the context-window denominator. */
+  catalog: ModelCatalog;
+  /** cross-run mean durationMs per node id (empty when no history dirs). */
+  expected: Record<string, number>;
+  /** cross-run sample count per node id. */
+  samples: Record<string, number>;
+  /** the `__checkpoints__` resolution journal read once off state.json. */
+  ckJournal: Record<string, CheckpointJournalSlot>;
+  /** read a node's checkpoint marker (`.pi/checkpoints/<id>.json`), null if absent/unparseable. */
+  readMarkerSync: (id: string) => CheckpointMarker | null;
+}
+
+/** The parsed io.json ledger for one node (phase override + declared read/write paths). */
+export interface NodeIoLedger { phase?: string | null; reads: string[]; writes: string[] }
+
+/**
+ * Assemble ONE `RunViewNode` from its status record + the reduced `rich` node + its io.json ledger + the
+ * run-scoped context — the whole per-node build (reads/scopes/writes/artifacts/tokens/spine/checkpoint),
+ * then stamps `derived = deriveNode(node)`. Extracted VERBATIM from `buildRunView`'s per-node loop so the
+ * live SSE fold and the batch builder produce byte-identical nodes from the SAME code.
+ */
+export function assembleNode(
+  rec: RunJsonNode,
+  rich: RichNode,
+  ioLedger: NodeIoLedger | null,
+  ctx: AssembleNodeCtx,
+): RunViewNode {
+  const id = rec.id;
+  let phase: string | null = rec.phase ?? null;
+  if (ioLedger) phase = ioLedger.phase ?? phase;
+
+  const reads: ReadRef[] = rich.reads.map((r) => {
+    const abs = ctx.toAbs(r.path);
+    const dp = ctx.displayPath(abs);
+    return { path: abs, displayPath: dp, via: r.via, scope: ctx.underRun(abs) ? 'run' : scopeKind(dp), preview: r.preview };
+  });
+  const buckets: Partial<Record<ScopeKind, string[]>> = {};
+  for (const r of reads) (buckets[r.scope] = buckets[r.scope] || []).push(r.displayPath);
+  const scopes: ScopeBucket[] = SCOPE_ORDER.filter((k) => buckets[k]).map((kind) => ({
+    kind, label: SCOPE_LABEL[kind], count: buckets[kind]!.length, paths: buckets[kind]!,
+  }));
+
+  const writes: WriteRef[] = rich.writes.map((w) => { const abs = ctx.toAbs(w.path); return { path: abs, displayPath: ctx.displayPath(abs), verified: w.verified, bytes: w.bytes }; });
+  const artifacts: ArtifactRef[] = (rec.artifacts || []).map((a) => { const abs = ctx.toAbs(a.path); return { path: abs, displayPath: ctx.displayPath(abs), exists: !!a.exists, bytes: a.bytes ?? 0 }; });
+
+  // (agent-neutral spine) tokens/cost/context/turns — rec.usage-first-vs-event-replay (nodeTokenSpine).
+  const effModel = rich.model ?? rec.model ?? null;
+  const spine = nodeTokenSpine(rec.usage, rich, ctx.catalog, effModel);
+
+  // (G5) Build the checkpoint view from the marker + the `__checkpoints__` journal. A pending marker
+  // makes the node's shown `status` read `awaiting-input` (verified-not-trusted: the marker is on disk).
+  const checkpoint = checkpointViewFrom(ctx.readMarkerSync(id), ctx.ckJournal[id]) ?? undefined;
+  const status = checkpoint && checkpoint.status === 'pending' ? 'awaiting-input' : rec.status;
+
+  const node: RunViewNode = {
+    id, label: rec.label || id, phase, status,
+    ...(rec.agentType ? { agentType: rec.agentType } : {}), // (G6) verbatim passthrough → GUI icon
+    ...(rec.config ? { config: rec.config } : {}), // (SKIN) curated config slice → GUI cloud skin
+    startedAt: rec.startedAt, endedAt: rec.endedAt, durationMs: rec.durationMs,
+    expectedMs: ctx.expected[id] ?? rec.durationMs ?? null, priorSamples: ctx.samples[id] ?? 0,
+    model: spine.model, provider: rich.provider, api: rich.api,
+    contextWindow: spine.contextWindow,
+    toolCalls: rich.toolCalls, toolBreakdown: rich.toolBreakdown, timeline: rich.timeline,
+    reads, scopes, writes, artifacts, bash: rich.bash, tokens: spine.tokens,
+    retries: rich.retries, stopReason: spine.stopReason, truncated: spine.truncated, thinkingChars: rich.thinkingChars,
+    modelCalls: spine.modelCalls, maxToolRepeat: rich.maxToolRepeat, repeatedTool: rich.repeatedTool,
+    summary: rec.summary, issues: rec.issues || [],
+    ...(checkpoint ? { checkpoint } : {}),
+  };
+  // Compute the DISPLAY zones ONCE, from the assembled node's own fields (tokens/tools/timeline/context/
+  // duration) — every view renders `node.derived.*` and re-derives nothing.
+  node.derived = deriveNode(node);
+  return node;
 }
 
 /**
@@ -250,6 +388,7 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
   // events stream, io.json PERSISTS across reuse and predates per-node event capture, so the DAG wires
   // every node, not just the ones that happened to record events.
   const ioByNode = new Map<string, { reads: string[]; writes: string[] }>();
+  const ctx: AssembleNodeCtx = { toAbs, underRun, displayPath, catalog, expected, samples, ckJournal, readMarkerSync };
   for (const [id, rec] of Object.entries(rj.nodes || {})) {
     const replay = replayEvents(runDir, id);
     const { rich } = replay.acc.finalize(rec);
@@ -260,180 +399,42 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
       usageEvents: cov.usageEvents, billable: rich.tokens.billable,
     });
 
-    let phase: string | null = rec.phase ?? null;
+    // Parse the io.json ledger once (phase override + declared read/write paths for the edge source).
+    let ioLedger: NodeIoLedger | null = null;
     const ioFile = path.join(runDir, '.pi', 'nodes', id, 'io.json');
     if (fssync.existsSync(ioFile)) {
       try {
         const io = JSON.parse(fssync.readFileSync(ioFile, 'utf8')) as { phase?: string | null; reads?: { path?: unknown }[]; writes?: { path?: unknown }[] };
-        phase = (io.phase ?? phase) as string | null;
         const paths = (arr: { path?: unknown }[] | undefined) => (arr ?? []).map((x) => x?.path).filter((p): p is string => typeof p === 'string');
-        ioByNode.set(id, { reads: paths(io.reads), writes: paths(io.writes) });
+        ioLedger = { phase: io.phase, reads: paths(io.reads), writes: paths(io.writes) };
+        ioByNode.set(id, { reads: ioLedger.reads, writes: ioLedger.writes });
       } catch { /* keep fallback */ }
     }
 
-    const reads: ReadRef[] = rich.reads.map((r) => {
-      const abs = toAbs(r.path);
-      const dp = displayPath(abs);
-      return { path: abs, displayPath: dp, via: r.via, scope: underRun(abs) ? 'run' : scopeKind(dp), preview: r.preview };
-    });
-    const buckets: Partial<Record<ScopeKind, string[]>> = {};
-    for (const r of reads) (buckets[r.scope] = buckets[r.scope] || []).push(r.displayPath);
-    const scopes: ScopeBucket[] = SCOPE_ORDER.filter((k) => buckets[k]).map((kind) => ({
-      kind, label: SCOPE_LABEL[kind], count: buckets[kind]!.length, paths: buckets[kind]!,
-    }));
-
-    const writes: WriteRef[] = rich.writes.map((w) => { const abs = toAbs(w.path); return { path: abs, displayPath: displayPath(abs), verified: w.verified, bytes: w.bytes }; });
-    const artifacts: ArtifactRef[] = (rec.artifacts || []).map((a) => { const abs = toAbs(a.path); return { path: abs, displayPath: displayPath(abs), exists: !!a.exists, bytes: a.bytes ?? 0 }; });
-
-    // (agent-neutral spine) When the executor persisted an authoritative usage rollup (Claude — whose
-    // stream-json the pi reducer cannot decode, so `rich` is blank), PREFER it for the token/cost/context
-    // spine. Gated on `rec.usage`: pi never sets it, so pi nodes stay byte-identical (event replay wins).
-    const u = rec.usage;
-    const effModel = rich.model ?? rec.model ?? null;
-    const tokens: RunTokens = u
-      ? {
-          input: u.inputTokens ?? 0,
-          output: u.outputTokens ?? 0,
-          cacheRead: u.cacheRead ?? 0,
-          cacheWrite: u.cacheCreation ?? 0, // Claude cache_creation ≙ pi cacheWrite (newly-cached input)
-          cost: u.cost ?? 0,
-          contextPeak: (u.inputTokens ?? 0) + (u.cacheRead ?? 0) + (u.cacheCreation ?? 0), // context in the window
-          billable: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
-        }
-      : { ...rich.tokens };
-    const spineModel = u ? effModel : rich.model;
-    const spineContextWindow = u
-      ? (u.contextWindow ?? (effModel ? contextWindowFor(effModel, catalog) : null))
-      : (rich.model ? contextWindowFor(rich.model, catalog) : null);
-    const spineModelCalls = u ? (u.numTurns ?? rich.modelCalls) : rich.modelCalls;
-    const spineStopReason = u ? (u.stopReason ?? rich.stopReason) : rich.stopReason;
-    const spineTruncated = u ? (spineStopReason === 'max_tokens' || spineStopReason === 'length') : rich.truncated;
-
-    // (G5) Build the checkpoint view from the marker + the `__checkpoints__` journal. A pending marker
-    // makes the node's shown `status` read `awaiting-input` (verified-not-trusted: the marker is on disk).
-    const checkpoint = checkpointViewFrom(readMarkerSync(id), ckJournal[id]) ?? undefined;
-    const status = checkpoint && checkpoint.status === 'pending' ? 'awaiting-input' : rec.status;
-
-    nodes.push({
-      id, label: rec.label || id, phase, status,
-      ...(rec.agentType ? { agentType: rec.agentType } : {}), // (G6) verbatim passthrough → GUI icon
-      ...(rec.config ? { config: rec.config } : {}), // (SKIN) curated config slice → GUI cloud skin
-      startedAt: rec.startedAt, endedAt: rec.endedAt, durationMs: rec.durationMs,
-      expectedMs: expected[id] ?? rec.durationMs ?? null, priorSamples: samples[id] ?? 0,
-      model: spineModel, provider: rich.provider, api: rich.api,
-      contextWindow: spineContextWindow,
-      toolCalls: rich.toolCalls, toolBreakdown: rich.toolBreakdown, timeline: rich.timeline,
-      reads, scopes, writes, artifacts, bash: rich.bash, tokens,
-      retries: rich.retries, stopReason: spineStopReason, truncated: spineTruncated, thinkingChars: rich.thinkingChars,
-      modelCalls: spineModelCalls, maxToolRepeat: rich.maxToolRepeat, repeatedTool: rich.repeatedTool,
-      summary: rec.summary, issues: rec.issues || [],
-      ...(checkpoint ? { checkpoint } : {}),
-    });
+    nodes.push(assembleNode(rec, rich, ioLedger, ctx));
   }
 
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
 
-  // The run-local RESOLVED DAG (`.pi/workflow.json`, written by the runner with the active profile already
-  // applied — elided nodes dropped, deps rewired) is the AUTHORITATIVE structure: the deck of nodes, their
-  // topological stages, and their DECLARED data-flow edges. It makes the run self-describing, so the graph
-  // is the workflow the run actually executed — never reconstructed from runtime io/events traces.
-  let resolvedDag: { stages?: { index: number; phase?: string | null; parallel?: boolean; nodeIds: string[] }[]; edges?: { from: string; to: string; files?: string[] }[] } | null = null;
-  try {
-    const f = path.join(runDir, '.pi', 'workflow.json');
-    if (fssync.existsSync(f)) resolvedDag = JSON.parse(fssync.readFileSync(f, 'utf8'));
-  } catch { resolvedDag = null; }
-
-  // STAGES — columns = stages, rows = parallel lanes. Priority: the run-local resolved DAG → the declared
-  // template (opts.workflow) when it covers every run node → phase grouping in execution order. One
-  // {stageIndex, lane} assignment whichever wins.
-  const tStages = (opts.workflow?.stages ?? [])
-    .map((ids) => ids.filter((id) => nodeById.has(id)))
-    .filter((ids) => ids.length > 0);
-  let stages: RunViewStage[];
-  if (resolvedDag?.stages?.length) {
-    stages = resolvedDag.stages
-      .map((st) => ({ phase: st.phase ?? '—', parallel: !!st.parallel, nodeIds: (st.nodeIds || []).filter((id) => nodeById.has(id)) }))
-      .filter((st) => st.nodeIds.length > 0)
-      .map((st, i) => ({ index: i + 1, phase: st.phase, parallel: st.parallel, nodeIds: st.nodeIds }));
-  } else if (tStages.length && new Set(tStages.flat()).size === nodeById.size) {
-    stages = tStages.map((ids, i) => ({ index: i + 1, phase: nodeById.get(ids[0])?.phase ?? '—', parallel: ids.length > 1, nodeIds: ids }));
-  } else {
-    const ordered = [...nodes].sort((a, b) => String(a.startedAt || '').localeCompare(String(b.startedAt || '')));
-    const phaseOrder: string[] = [];
-    for (const n of ordered) { const ph = n.phase || '—'; if (!phaseOrder.includes(ph)) phaseOrder.push(ph); }
-    stages = phaseOrder.map((ph, i) => {
-      const ids = ordered.filter((n) => (n.phase || '—') === ph).map((n) => n.id);
-      return { index: i + 1, phase: ph, parallel: ids.length > 1, nodeIds: ids };
-    });
-  }
-  for (const st of stages) st.nodeIds.forEach((id, lane) => { const n = nodeById.get(id); if (n) { n.stageIndex = st.index; n.lane = lane; } });
-
-  // EDGES — same priority as stages. The run-local resolved DAG's DECLARED data-flow edges are authoritative
-  // (one RunViewEdge per contract file; a declared edge with no files still draws the connection). Runtime
-  // io/events are then NOT consulted for topology — only for per-node telemetry. Without a resolved DAG we
-  // fall back to the declared template (opts.workflow) UNION the runtime file-flow edges.
-  let edges: RunViewEdge[];
-  if (resolvedDag?.edges) {
-    edges = [];
-    const seen = new Set<string>();
-    for (const e of resolvedDag.edges) {
-      if (!nodeById.has(e.from) || !nodeById.has(e.to) || e.from === e.to) continue;
-      const files = e.files && e.files.length ? e.files : [''];
-      for (const f of files) {
-        const p = f ? displayPath(f) : '';
-        const key = `${e.from}|${e.to}|${p}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        edges.push({ from: e.from, to: e.to, path: p });
-      }
-    }
-  } else {
-    // FALLBACK (no run-local DAG): the DECLARED io.json ledger UNION the events-observed I/O, keyed on the
-    // ABSOLUTE path so a shared edge dedupes to one and basenames never collide. First writer of a path wins
-    // (declared io.json before events-observed); a well-formed workflow has one producer per path.
-    const writerOf = new Map<string, string>();
-    const claim = (nodeId: string, abs: string) => { if (abs && !writerOf.has(abs)) writerOf.set(abs, nodeId); };
-    for (const n of nodes) for (const p of ioByNode.get(n.id)?.writes ?? []) claim(n.id, p);   // declared first…
-    for (const n of nodes) for (const w of n.writes) claim(n.id, w.path);                       // …then observed
-    const readsOf = (n: RunViewNode): string[] => [
-      ...(ioByNode.get(n.id)?.reads ?? []),
-      ...n.reads.map((r) => r.path),
-    ];
-    const seen = new Set<string>();
-    edges = [];
-    for (const n of nodes) {
-      for (const abs of readsOf(n)) {
-        const from = writerOf.get(abs);
-        if (!from || from === n.id) continue;
-        const key = `${from}|${n.id}|${abs}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        edges.push({ from, to: n.id, path: displayPath(abs) });
-      }
-    }
-    // Fill any connection the runtime traces missed from the declared template deps, bridging THROUGH
-    // profile-elided nodes to their nearest present ancestors so the downstream node stays connected.
-    const wfNodes = opts.workflow?.nodes ?? {};
-    const presentDeps = (id: string, seenIds = new Set<string>()): string[] => {
-      const out: string[] = [];
-      for (const d of wfNodes[id]?.deps ?? []) {
-        if (seenIds.has(d)) continue;
-        seenIds.add(d);
-        if (nodeById.has(d)) out.push(d);
-        else out.push(...presentDeps(d, seenIds));
-      }
-      return out;
-    };
-    const pairLinked = new Set(edges.map((e) => `${e.from}|${e.to}`));
-    for (const to of Object.keys(wfNodes)) {
-      if (!nodeById.has(to)) continue;
-      for (const from of presentDeps(to)) {
-        if (from === to || pairLinked.has(`${from}|${to}`)) continue;
-        pairLinked.add(`${from}|${to}`);
-        edges.push({ from, to, path: '' });
-      }
-    }
-  }
+  // STRUCTURE — the run's stage spine + data-flow edges via the ONE shared resolver (structure.ts). Priority:
+  // the run-local resolved DAG (`.pi/workflow.json`) → the declared template (opts.workflow) → phase grouping
+  // in execution order (with runtime file-flow edges). `readRunModel` uses the SAME resolver, so the live
+  // snapshot and this enriched view draw the SAME graph. buildRunView feeds it the declared io ledger PLUS the
+  // events-observed I/O (already absolute) — the extra tier-3 signal the lean reader lacks.
+  const { stages, edges, placement } = resolveStructure(
+    runDir,
+    nodes.map((n) => ({
+      id: n.id,
+      phase: n.phase,
+      startedAt: n.startedAt,
+      ioReads: ioByNode.get(n.id)?.reads ?? [],
+      ioWrites: ioByNode.get(n.id)?.writes ?? [],
+      observedReads: n.reads.map((r) => r.path),
+      observedWrites: n.writes.map((w) => w.path),
+    })),
+    { workflow: opts.workflow, toAbs, displayPath },
+  );
+  for (const [id, place] of Object.entries(placement)) { const n = nodeById.get(id); if (n) { n.stageIndex = place.stageIndex; n.lane = place.lane; } }
 
   const tokenTotal: RunTokens = nodes.reduce((acc, n) => {
     const t = n.tokens || ({} as RunTokens);
@@ -443,12 +444,16 @@ export function buildRunView(runDir: string, opts: BuildRunViewOpts = {}): { vie
     return acc;
   }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, billable: 0, contextPeak: 0 });
 
+  // The resolver returns a nullable phase (it also serves the lean StageView); every buildRunView tier yields
+  // a non-null phase at runtime (`?? '—'`), so coerce to the RunViewStage contract without changing values.
+  const viewStages: RunViewStage[] = stages.map((st) => ({ index: st.index, phase: st.phase ?? '—', parallel: st.parallel, nodeIds: st.nodeIds }));
+
   const view: RunView = {
     run: rj.run, source: rj.source, provider: rj.provider, model: rj.model,
     ...(rj.sandbox ? { sandbox: rj.sandbox } : {}), // (SKIN) the run's effective backend → GUI node skin
     startedAt: rj.startedAt, updatedAt: rj.updatedAt, durationMs: rj.durationMs,
     done: rj.done, ok: rj.ok, totals: rj.totals, tokenTotal,
-    stages, edges, nodes,
+    stages: viewStages, edges, nodes,
   };
   return { view, audit };
 }
@@ -493,7 +498,7 @@ export function previewView(wf: Workflow, opts: PreviewViewOpts = {}): RunView {
 
   const nodes: RunViewNode[] = Object.values(wf.nodes).map((n) => {
     const p = place.get(n.id);
-    return {
+    const node: RunViewNode = {
       id: n.id,
       label: n.label ?? n.id,
       phase: n.phase ?? null,
@@ -520,6 +525,9 @@ export function previewView(wf: Workflow, opts: PreviewViewOpts = {}): RunView {
       repeatedTool: null,
       ...(p ? { stageIndex: p.stageIndex, lane: p.lane } : {}),
     };
+    // A never-ran node still carries the derived shape (all-neutral zones) so the GUI stays render-only.
+    node.derived = deriveNode(node);
+    return node;
   });
 
   return {

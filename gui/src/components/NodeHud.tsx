@@ -25,7 +25,7 @@ import { CacheDonut } from "./CacheDonut";
 import { NodeGates } from "./NodeGates";
 import { expandTransition, easing } from "../motion/transitions";
 import type { FlowNodeData } from "./WorkflowNode";
-import { formatMs, formatBytes, type RunViewNode, type ScopeKind } from "../data/runView";
+import { formatMs, formatBytes, type RunViewNode, type ScopeKind, type Tone } from "../data/runView";
 import "../styles/hud.css";
 import "../styles/reader.css";
 
@@ -72,6 +72,10 @@ export const TOOL_TONE: Record<string, string> = {
   edit: "success", write: "success", bash: "warn", submit_result: "accent",
 };
 export const toolTone = (t: string) => TOOL_TONE[t] ?? "muted";
+
+// Tone → the flag's CSS data-tone vocabulary. A pure VIEW mapping: the attention level is computed in the
+// observe surface (node.derived.*); here we only pick the class the HUD styles (high→error, warn→warn, ok→muted).
+const toneToFlag = (t: Tone): "error" | "warn" | "muted" => (t === "high" ? "error" : t === "warn" ? "warn" : "muted");
 
 // status → the progress eyebrow word
 const STATUS_LABEL: Record<NonNullable<FlowNodeData["status"]>, string> = {
@@ -134,7 +138,8 @@ export function NodeHud({ id, data, run, onClose, reduce, dialogRef }: NodeHudPr
     );
   }
 
-  const breakdown = Object.entries(rv.toolBreakdown).sort((a, b) => b[1] - a[1]);
+  // the ranked tool list is derived once in the observe surface (node.derived.topTools) — render it, don't re-sort.
+  const topTools = rv.derived?.topTools ?? [];
 
   // input files grouped by source — each read is opened by its path in the CENTER file viewer
   const sources = rv.scopes.map((s) => ({
@@ -171,8 +176,8 @@ export function NodeHud({ id, data, run, onClose, reduce, dialogRef }: NodeHudPr
           <div className="ds-hud-stat">
             <span className="ds-hud-stat__v">{rv.toolCalls}</span>
             <span className="ds-hud-stat__k ds-hud-stat__k--wrap">
-              {breakdown.map(([t, c]) => (
-                <span key={t} className="ds-tooltag" data-tone={toolTone(t)}>{t} {c}</span>
+              {topTools.map((b) => (
+                <span key={b.name} className="ds-tooltag" data-tone={toolTone(b.name)}>{b.name} {b.count}</span>
               ))}
             </span>
           </div>
@@ -458,7 +463,7 @@ function Detail({ region, rv, expected, elapsedMs, pct, onOpenFile }: { region: 
             <KV k="Context peak" v={t.contextPeak.toLocaleString()} />
           </>}
         </div>
-        {t && <CacheDonut cacheRead={t.cacheRead} input={t.input} />}
+        {rv.derived?.cacheHit && <CacheDonut hit={rv.derived.cacheHit} />}
       </div>
     );
   }
@@ -468,39 +473,38 @@ function Detail({ region, rv, expected, elapsedMs, pct, onOpenFile }: { region: 
     // (docs/research/telemetry-observability-2026.md §4.1). The chips above are the signals that
     // actually matter for tool use: error rate (§3.5), provider retries (§3.8), truncation (§3.7),
     // single-tool dominance (§3.9). All derived from real fields.
-    const bars = Object.entries(rv.toolBreakdown).sort((a, b) => b[1] - a[1]);
-    const total = bars.reduce((s, [, c]) => s + c, 0) || rv.toolCalls || 1;
-    const max = Math.max(1, ...bars.map(([, c]) => c));
-    const errors = rv.timeline.filter((s) => !s.ok).length;
-    const errRate = rv.toolCalls ? errors / rv.toolCalls : 0;
-    const top = bars[0];
-    const dominance = top ? top[1] / total : 0;
+    // Every signal here is derived ONCE in the observe surface (node.derived) — the HUD renders it, and
+    // re-derives no threshold: error rate (§3.5), provider retries (§3.8), truncation (§3.7), single-tool
+    // dominance (§3.9), and the ranked per-tool bars (§4.1, count + share).
+    const d = rv.derived;
+    const bars = d?.topTools ?? [];
+    const max = Math.max(1, ...bars.map((b) => b.count));
     return (
       <div className="ds-tools-detail">
         <div className="ds-tools-flags">
           <span className="ds-tools-total"><b>{rv.toolCalls}</b> calls · {bars.length} tool{bars.length === 1 ? "" : "s"}</span>
-          {errors > 0 && (
-            <span className="ds-flag" data-tone={errRate > 0.15 ? "error" : errRate > 0.05 ? "warn" : "muted"} title="failed tool-call spans / total calls">
-              {errors} error{errors === 1 ? "" : "s"} · {Math.round(errRate * 100)}%
+          {d && d.toolError.errors > 0 && (
+            <span className="ds-flag" data-tone={toneToFlag(d.toolError.tone)} title="failed tool-call spans / total calls">
+              {d.toolError.errors} error{d.toolError.errors === 1 ? "" : "s"} · {Math.round(d.toolError.rate * 100)}%
             </span>
           )}
-          {rv.retries > 0 && (
-            <span className="ds-flag" data-tone={rv.retries >= 5 ? "error" : "warn"} title="provider rate-limit / overload retries">
-              {rv.retries} retr{rv.retries === 1 ? "y" : "ies"}
+          {d && d.retries.count > 0 && (
+            <span className="ds-flag" data-tone={toneToFlag(d.retries.tone)} title="provider rate-limit / overload retries">
+              {d.retries.count} retr{d.retries.count === 1 ? "y" : "ies"}
             </span>
           )}
           {rv.truncated && <span className="ds-flag" data-tone="error" title="output was cut off by the token cap">truncated</span>}
-          {top && dominance > 0.8 && rv.toolCalls > 5 && (
-            <span className="ds-flag" data-tone="warn" title="one tool dominates — possible stuck loop">{top[0]} {Math.round(dominance * 100)}%</span>
+          {d?.dominance.dominant && (
+            <span className="ds-flag" data-tone="warn" title="one tool dominates — possible stuck loop">{d.dominance.tool} {Math.round(d.dominance.ratio * 100)}%</span>
           )}
         </div>
         <div className="ds-bars">
           {bars.length === 0 && <div className="ds-hud-empty">no tool calls recorded</div>}
-          {bars.map(([t, c]) => (
-            <div key={t} className="ds-bar" data-tone={toolTone(t)}>
-              <span className="ds-bar__label">{t}</span>
-              <span className="ds-bar__track"><span className="ds-bar__fill" style={{ width: `${(c / max) * 100}%` }} /></span>
-              <span className="ds-bar__val">{c}<span className="ds-bar__pct">{Math.round((c / total) * 100)}%</span></span>
+          {bars.map((b) => (
+            <div key={b.name} className="ds-bar" data-tone={toolTone(b.name)}>
+              <span className="ds-bar__label">{b.name}</span>
+              <span className="ds-bar__track"><span className="ds-bar__fill" style={{ width: `${(b.count / max) * 100}%` }} /></span>
+              <span className="ds-bar__val">{b.count}<span className="ds-bar__pct">{Math.round(b.pct * 100)}%</span></span>
             </div>
           ))}
         </div>
