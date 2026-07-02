@@ -5,6 +5,10 @@ A **blueprint** is the GRAPH-level sibling of an agent-type preset. A preset see
 is the recurring skeleton ("fan-out research → fuse → author") an init agent stamps when the task fits the
 shape, so the DAG isn't reinvented each time.
 
+**The grammar these recipes obey — the slot model, the three compose ops (stamp whole · insert a fragment
+anywhere · hand-add a node), and the file-transfer/token rules — is `AUTHORING-GUIDE.md`. Read it first; this
+README is the catalog + the pick-a-blueprint contract.**
+
 A blueprint is **NOT loadable and NOT a template.** Its lane COUNT and lane CONTENT are HOLES the init agent
 fills by reasoning about the target task — it is instructions for an author, not a `node.json`. It rides the
 EXISTING scaffolder (`piflowctl new` / `add-node` + Write); it needs ZERO engine/core code.
@@ -35,12 +39,12 @@ time. Different layers; never confuse them.
 3. **Stamp the shape via the scaffolder:** `piflowctl new <dir>`, then one `piflowctl add-node` per node with
    the flags the blueprint's wiring rule prescribes (`--dep` for edges, disjoint `--owns` per parallel lane,
    `--artifact`, `--read`, `--on-fail block` on every PRODUCING node).
-4. **Bind each lane to a base agent BY HAND** (there is NO `--agent-type` flag — replicate `mergePreset`): read
-   the base agent at `~/.piflow/agents/<id>.md`; (a) add its `tools.allow` via `--tool` flags; (b) prepend its
-   role-prompt BODY to the lane's `prompt.md`, then the lane's specific task below it; (c) if it declares a
-   `skill`, pass `--skill`. The `agentType` LABEL cannot be set via flag — a known gap, note it to the author.
-5. **Write each node's `prompt.md`** with the Write tool (the scaffolder never writes prose; a node with no
-   prompt.md FAILS `checkRefs` as a dangling ref).
+4. **Bind each lane to a base agent with `--agent-type <id>`** — one flag folds the preset's tools + skill +
+   the `agentType` branding label (via the real `mergePreset`). The preset's role-prompt is inherited BY
+   REFERENCE at render, so you do NOT prepend the role body. Add any extra tools with `--tool`; override the
+   skill with `--skill`. (Unknown `<id>` ⇒ HALT; never invent a preset.)
+5. **Write each node's `prompt.md`** with the Write tool — ONLY the lane's task (the role comes from the preset
+   at render). The scaffolder never writes prose; a node with no `prompt.md` FAILS `checkRefs` as a dangling ref.
 6. **`piflowctl extract <dir>` must EXIT 0** with the shape the blueprint implies (the loader-backed oracle, no
    model). Not green ⇒ fix the cause (missing prompt.md · dangling dep · non-disjoint parallel `owns`); never
    ship a red extract.
@@ -63,4 +67,12 @@ single-purpose (≤ ~90 lines), like this file.
 ## The blueprints that exist
 
 - **`research-synthesize-author`** — fan-out of N parallel research lanes → one synthesize node → one author
-  node. Golden instance: `.piflow/outbound-design/template/` (the cold-email outbound playbook designer).
+  node. Golden: `.piflow/outbound-design/template/` (the cold-email outbound playbook designer).
+- **`produce-verify-fix`** — a self-correcting pipeline: `plan → produce → verify ⟲(reroute→produce, max K)`,
+  optionally ×N per item. Golden: `.piflow/example-produce-verify-fix/template/`.
+- **`fan-out-map-reduce`** — N independent workers (disjoint owns) → one reduce/consensus node. Golden:
+  `templates/quality/verify/`.
+- **`spec-fanout-build`** — `design(freeze one spec) → [producer×M writing disjoint fragments] → verify-join →
+  build`. Golden: `.piflow/example-spec-fanout/template/`.
+- **`candidate-fusion-refine`** — `plan → draft(moa panel→judge) → harden(best-of-n→select) → publish`, via the
+  built-in `--fusion` topology. Golden: `.piflow/example-fusion/template/`.

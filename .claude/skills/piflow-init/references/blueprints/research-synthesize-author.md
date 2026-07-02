@@ -1,3 +1,9 @@
+---
+id: research-synthesize-author
+description: the default shape for "go learn a domain, then design from what you learned"
+golden: .piflow/outbound-design/template/
+params: [N]
+---
 # Blueprint: research → synthesize → author
 
 The default shape for "go learn a domain, then design from what you learned." You (the init agent) are stamping
@@ -28,19 +34,19 @@ two that share a source and a reader, split one that carries two disjoint invest
   parallel stage). If lane B needs lane A's result, it is not a sibling; it belongs after synthesize, or the two
   collapse into one lane.
 
-## Lane → base-agent binding (the by-hand mergePreset — there is no `--agent-type` flag)
+## Lane → base-agent binding (`--agent-type <id>`)
 
-| role | base agent | tools to add (`--tool …`) | skill |
+| role | base agent (`--agent-type`) | extra tools (`--tool …`) | skill |
 |---|---|---|---|
-| each research lane | **market-research** | `fs:read fs:write oc.firecrawl:firecrawl_search oc.tavily:tavily_search` | `--skill multi-source-research` |
-| synthesize | **plan** + `write` | `read write submit_result` | — |
-| author | **general-purpose** | `read write edit bash submit_result` | — |
+| each research lane | **market-research** | — (preset carries `fs:read fs:write oc.firecrawl:firecrawl_search oc.tavily:tavily_search`) | preset's `multi-source-research` |
+| synthesize | **plan** | `--tool write` (add persist) | — |
+| author | **general-purpose** | — (preset carries `read write edit bash submit_result`) | — |
 
-For EACH node: read `~/.piflow/agents/<id>.md`, add its `tools.allow` via `--tool`, and PREPEND its role-prompt
-BODY to the node's `prompt.md` (role first, the lane's specific task appended below). `plan` is read-only by
-default — you ADD `write` so synthesize can persist the design doc. `author` keeps `bash` because it shells out
-to `piflowctl` to scaffold the downstream template at run time. (The `agentType` LABEL cannot be set via a
-scaffolder flag — note this gap to the human; the binding is otherwise complete.)
+Bind each node with `--agent-type <id>` — one flag folds the preset's tools + skill + the `agentType` label via
+`mergePreset`; the role-prompt is inherited BY REFERENCE at render, so you do NOT prepend it. `plan` is
+read-only by default — ADD `--tool write` so synthesize can persist the design doc. `author` carries `bash`
+because it shells out to `piflowctl` to scaffold the downstream template at run time. Each node's `prompt.md`
+holds ONLY the lane's task (the role comes from the preset at render).
 
 ## Per-node I/O contract (read-this → write-that; shape = match the CONSUMER)
 
@@ -73,8 +79,8 @@ scaffolder flag — note this gap to the human; the binding is otherwise complet
 1. `piflowctl extract <dir>` EXITS 0 and shows N research lanes in ONE parallel stage, then synthesize, then
    author (3 stages).
 2. Every node dir has BOTH `node.json` AND a non-empty `prompt.md`.
-3. Each research lane's `tools.allow` has market-research's four tools, and its `prompt.md` BEGINS with
-   market-research's role body; synthesize's tools include `write`; author's include `bash`.
+3. Each research lane carries `agentType: market-research` (its four tools folded in) and its `prompt.md` holds
+   the lane's task only; synthesize's tools include `write`; author's include `bash`.
 4. Every producing node has `policy.fail: block`.
 5. N was chosen by the parametricity rule above (one lane per distinct unknown), not arbitrarily.
 

@@ -28,6 +28,7 @@ import { runInspectCli } from './inspect.js';
 import { runTelemetryCli } from './telemetry.js';
 import { runOptimizeCli } from './optimize.js';
 import { runOptimizeFixCli } from './optimize-fix.js';
+import { runOptimizeAdoptCli } from './optimize-adopt.js';
 import { runOptimizeLoopCli } from './optimize-loop.js';
 import { runGuiCli } from './gui.js';
 import { runContextCli } from './context.js';
@@ -36,6 +37,7 @@ import { runServeCli } from '@piflow/server';
 import { runTuiCli } from './tui.js';
 import { runSkillsCli } from './skills.js';
 import { runUnderstandCli } from './understand.js';
+import { runBlueprintCli } from './blueprint.js';
 import { createRequire } from 'node:module';
 
 // CLI version, read from this package's own package.json (always shipped in the tarball; resolved
@@ -48,7 +50,9 @@ USAGE
   piflowctl init                            interactive setup wizard for ~/.piflow (model tiers + optional executors)
   piflowctl new     <templateDir> [flags]   scaffold meta.json + the nodes/ dir (then add-node + Write prose)
   piflowctl add-node <templateDir> --id <id> [flags]  emit one schema-valid node.json (prose is yours)
-  piflowctl memory  scaffold <templateDir>  seed the memory layer (template + per-node memory.md/code-map.md)
+  piflowctl memory  <scaffold|find|check|compact> <templateDir>  the Leg-A memory verb: scaffold the layer ·
+                                            find a node's standing lessons + recurrence · check lesson
+                                            freshness · compact (retire graduated/code-shifted/over-cap lessons)
   piflowctl run     <templateDir> [--run <id>] [flags]  drive a template run (real or --dry-run)
   piflowctl node    <run> <nodeId> --resume [-m "<msg>"]  warm-resume a node's stored pi session (--stop too)
   piflowctl inspect <templateDir> [nodeId] [--full]  per-node RESOLVED view (sandbox · tools · ops · prompt)
@@ -67,6 +71,10 @@ USAGE
                                             PRODUCT binding (oracle/copyScope/fixer); strict-improvement gate on
                                             a candidate copy → STAGES a manifest. --node scopes the worklist to
                                             one node; --watch streams live progress (--watch-json = JSON lines).
+  piflowctl optimize --adopt <manifest> [--dry-run] [--backup-dir <d>]  physically LAND a staged manifest's
+                                            accepted edits onto the live file(s) — backup-first, the EXPLICIT
+                                            out-of-loop adopt (never a side effect of --fix/--rounds; skips
+                                            symlinks + degrades a stale record). --dry-run reports without writing.
   piflowctl logs    [dir|run] [options]     stream / replay / diagnose per-node event archives
   piflowctl model   [list | set <tier> <modelId> [--claude] | activate | deactivate]  the model-tier config
   piflowctl claude-code [connect [--token <t>] | status]  OPTIONAL credential for the claude-code executor
@@ -96,6 +104,8 @@ USAGE
   piflowctl tui     [<rundir>] [--every <s>]  launch the terminal run viewer, scoped to the project at cwd
   piflowctl skills  install [targetDir] [--force] [--with <id>|--all|--wizard]  install the authoring skills (+ add-ons) into a repo
   piflowctl understand [subsystem] [--check|--rebuild]  how a subsystem works / where to change it (code slices)
+  piflowctl blueprint <list | show <id>>    discover DAG topologies to stamp: list = every 'id — description';
+                                            show = the full recipe (topology + wiring) before you compose
   piflowctl --version                       print the piflowctl version
 
 RUN
@@ -161,12 +171,23 @@ ${renderAddNodeHelp()}
 
   Emits/overwrites node.json from the flags; NEVER touches nodes/<id>/prompt.md (yours to Write).
 
-MEMORY
+MEMORY  (the Leg-A per-node memory layer — OPTIMIZER-FACING reference, NEVER prompt-injected into a worker)
   scaffold <templateDir>  seed the memory layer — the template's memory.md (system reconcile summary) +
                 each node's memory.md (Leg A: standing behavior + failure lessons) and code-map.md (Leg B:
                 Tier-0 OKF slice of the product code it touches). CREATE-IF-ABSENT — never clobbers curated
                 files. new/add-node seed these automatically; use this to backfill an older template.
                 These files are OPTIMIZER-FACING (the Hermes fixer reads+updates them) — NEVER prompt-injected.
+  find <templateDir> [--node <id>] [symptom…]  READ-ONLY: surface a node's standing lessons + cross-run
+                RECURRENCE count (root/prevention/[[okf-slice]]) — the LAPSE-vs-SKILL signal the triage/fixer
+                reads. --node scopes to one node; a bare <symptom> filters signatures (case-insensitive).
+  check <templateDir> [node…] [--strict]  ADVISORY: ride the OKF --check gate through each lesson's
+                [[okf-slice]] link and flag the code-shifted / dangling ones. Advisory by default (exit 0);
+                --strict makes a code-shifted/dangling lesson a non-zero exit (for a pre-commit hook).
+  compact <templateDir> [--apply] [--node <s>] [--max-lessons <n>] [--no-graduated] [--no-code-shifted] [--json]
+                OUT-OF-BAND cap/retire pass: retire lessons whose fix GRADUATED to git (a skillsys/flowCommit
+                commit body carries the sig), whose linked [[okf-slice]] went code-shifted (rides the OKF gate
+                per-key), or that overflow the per-node cap (lowest recurrence first). DELETES whole lessons,
+                never re-summarizes. DEFAULT DRY-RUN (reports the plan, writes nothing); --apply mutates.
 
 INSPECT
   <templateDir> an authored template/ dir. Compiles it and prints each node's RESOLVED view —
@@ -224,8 +245,9 @@ SKILLS
                             workflows against the SDK. Default targetDir = cwd. An existing skill dir is
                             kept unless --force. (The skills are bundled in the npm tarball; a source checkout
                             falls back to this repo's canonical .claude/skills.)
-      ADD-ONS: the trio always installs; opt in extra skill packs (currently 'understand' = the code slices):
-      --with <id>           add one add-on (repeatable), e.g. --with understand.
+      ADD-ONS: the trio always installs; opt in extra skill packs ('understand' = the code slices (Leg B),
+      'memory' = per-node memory lessons + recurrence (Leg A)):
+      --with <id>           add one add-on (repeatable), e.g. --with understand --with memory.
       --all                 add every add-on.
       --wizard              interactively choose which add-ons to install.
       A chosen set is remembered in <targetDir>/.piflow/skills.json ({ "addons": [...] }); a later bare
@@ -294,8 +316,11 @@ async function main(): Promise<void> {
     case 'optimize':
       // `--rounds N` routes to the MULTI-ROUND overlord (autonomous-propose: run→score→fix→memorize per round;
       // the `run` stage is product-side, so N>1 needs a binding that exports `run`). `--fix` routes to the
-      // single-shot FIX→GATE→LAND driver (writes a staging manifest); bare `optimize` is read-only.
+      // single-shot FIX→GATE→LAND driver (writes a staging manifest). `--adopt` routes to the EXPLICIT,
+      // OUT-OF-LOOP physical land (replays a staged manifest onto live files — the ONLY writer of live files;
+      // never a side effect of --fix/--rounds). Bare `optimize` is read-only.
       if (rest.includes('--rounds')) await runOptimizeLoopCli(rest);
+      else if (rest.includes('--adopt')) await runOptimizeAdoptCli(rest);
       else if (rest.includes('--fix')) await runOptimizeFixCli(rest);
       else await runOptimizeCli(rest);
       break;
@@ -328,6 +353,11 @@ async function main(): Promise<void> {
       break;
     case 'understand':
       await runUnderstandCli(rest);
+      break;
+    case 'blueprint':
+      // DISCOVER→UNDERSTAND over the materialized ~/.piflow/blueprints/ catalog (parity with the presets).
+      // `list`/`show` are built; `stamp`/`insert` route to a placeholder (a later task owns them).
+      process.exitCode = await runBlueprintCli(rest);
       break;
     case '--version':
     case '-v':
