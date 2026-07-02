@@ -14,6 +14,10 @@ export { createNodeAccumulator } from './distill.js';
 export type { RichNode, RichTokens, NodeAccumulator } from './distill.js';
 export { buildRunView, previewView } from './runView.js';
 export type { RunView, RunViewNode, RunViewStage, RunViewEdge, RunTokens, ScopeBucket, ReadRef, WriteRef, ArtifactRef, NodeAudit, PreviewViewOpts } from './runView.js';
+// The falsifiable full-run rubric (docs/design/full-run-simulation.md §5) — the reusable "did this run
+// actually succeed?" assessor the smoke drivers + L1–L3 E2E tiers call instead of reward-hackable substrings.
+export { assessRunView } from './assess.js';
+export type { AssessOpts, RunAssessment } from './assess.js';
 export { loadModelCatalog, contextWindowFor, DEFAULT_CONTEXT_WINDOW } from './models.js';
 export type { ModelCaps, ModelCatalog } from './models.js';
 

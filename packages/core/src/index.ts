@@ -345,6 +345,10 @@ export type {
 // GUI build the SAME view from here (no view-local copy). Used by consumers that show cost/token panels.
 export { buildRunView } from './observe/index.js';
 export type { RunView, RunViewNode, RunViewStage, RunViewEdge, RunTokens } from './observe/index.js';
+// The falsifiable full-run rubric — the reusable "did this run actually succeed?" assessor (see §5 of
+// docs/design/full-run-simulation.md) that smoke drivers + E2E tiers call instead of substring checks.
+export { assessRunView } from './observe/index.js';
+export type { AssessOpts, RunAssessment } from './observe/index.js';
 
 // The TELEMETRY tier — the agent-facing PROJECTION over the run-view (a lens, not a second collector).
 // `projectRunDigest` = the one-shot record; `telemetryStream` = edge-triggered live deltas over `watchRun`;
