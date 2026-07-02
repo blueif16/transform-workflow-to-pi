@@ -1,13 +1,15 @@
 // liveSource.ts — the CLIENT-SIDE transport flag for the live graph (docs/design/observe-live-sse-single-source.md
-// DR7). It picks how a LIVE run's graph is fed: 'poll' (today's 3 s /run-view re-poll — the DEFAULT, byte-identical
-// to before) or 'sse' (render from the SSE-enriched live.model, computing nothing client-side). PURE, no side
-// effects: it only reads the URL `?live=` override and the build-time default. The server ALWAYS folds after P2 —
-// this flag is transport-only, never a data switch, so a bug is a transport bug, isolated to the client.
+// DR7). It picks how a LIVE run's graph is fed: 'sse' (render from the SSE-enriched live.model, computing nothing
+// client-side — the DEFAULT since P4-live proved SSE ≡ /run-view) or 'poll' (the legacy 3 s /run-view re-poll,
+// still the safety-valve the client degrades to on SSE failure/done). PURE, no side effects: it only reads the URL
+// `?live=` override and the build-time default. The server ALWAYS folds after P2 — this flag is transport-only,
+// never a data switch, so a bug is a transport bug, isolated to the client (flip back with `?live=poll`).
 export type LiveSource = "poll" | "sse";
 
-/** The build-time default. `VITE_PIFLOW_LIVE_SOURCE=sse` flips it for a build; unset ⇒ 'poll' (the safe default). */
+/** The build-time default: 'sse' (P4-live parity proven — sseParity.test.ts + real gs01/p06/run01 runs). Set
+ *  `VITE_PIFLOW_LIVE_SOURCE=poll` to build with the legacy poll transport; any other value ⇒ 'sse'. */
 function buildDefault(): LiveSource {
-  return import.meta.env.VITE_PIFLOW_LIVE_SOURCE === "sse" ? "sse" : "poll";
+  return import.meta.env.VITE_PIFLOW_LIVE_SOURCE === "poll" ? "poll" : "sse";
 }
 
 /**

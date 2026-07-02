@@ -1,7 +1,7 @@
-// liveSource — the CLIENT transport flag resolver (docs/design/observe-live-sse-single-source.md DR7/P3).
-// The contract that MUST hold: the DEFAULT is 'poll' (so P3 is a no-op until parity is proven), and the URL
-// `?live=` override wins for a session. These tests FAIL if the default flips (would change today's behavior
-// silently) or if the override is ignored/mis-parsed. Pure resolver — no side effects.
+// liveSource — the CLIENT transport flag resolver (docs/design/observe-live-sse-single-source.md DR7/P4).
+// The contract that MUST hold: the DEFAULT is now 'sse' (P4-live proved SSE ≡ /run-view — sseParity.test.ts +
+// real gs01/p06/run01 runs), and the URL `?live=poll` override is the per-session escape back to the legacy
+// transport. These tests FAIL if the default silently reverts or if the override is ignored/mis-parsed.
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { liveSource } from "./liveSource";
 
@@ -12,23 +12,23 @@ function setSearch(search: string) {
 describe("liveSource — the client transport flag", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("defaults to 'poll' with no ?live= override (the safe no-op default)", () => {
+  it("defaults to 'sse' with no ?live= override (parity proven — P4-live)", () => {
     setSearch("");
-    expect(liveSource()).toBe("poll");
-  });
-
-  it("?live=sse selects the enriched SSE render path", () => {
-    setSearch("?live=sse&foo=1");
     expect(liveSource()).toBe("sse");
   });
 
-  it("?live=poll forces the poll path (an explicit runtime override back to default)", () => {
-    setSearch("?live=poll");
+  it("?live=poll is the escape hatch back to the legacy poll transport", () => {
+    setSearch("?live=poll&foo=1");
     expect(liveSource()).toBe("poll");
   });
 
-  it("an unrecognized ?live= value falls through to the default 'poll', never throws", () => {
+  it("?live=sse selects the enriched SSE render path (matches the new default)", () => {
+    setSearch("?live=sse");
+    expect(liveSource()).toBe("sse");
+  });
+
+  it("an unrecognized ?live= value falls through to the default 'sse', never throws", () => {
     setSearch("?live=nonsense");
-    expect(liveSource()).toBe("poll");
+    expect(liveSource()).toBe("sse");
   });
 });
