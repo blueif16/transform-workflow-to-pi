@@ -59,7 +59,7 @@ import { FusionContext, type FusionMode } from "./FusionContext";
 import { FusionSaveBar } from "./FusionSaveBar";
 import { ComposeContext } from "./ComposeContext";
 import { ChipPalette } from "./ChipPalette";
-import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, liveModelToRunView, digestLiveSig, loadAgentCatalog, loadNodeConfig, dropChipOnNode, type GateChip, type AuthoredNodeConfig, type AgentCatalog } from "../data/runView";
+import { loadRunView, loadPreview, saveRunFusion, loadRunTree, toFlowGraph, buildDirectory, liveModelToRunView, runViewToLiveModel, digestLiveSig, loadAgentCatalog, loadNodeConfig, dropChipOnNode, type GateChip, type AuthoredNodeConfig, type AgentCatalog } from "../data/runView";
 import { deriveZones, toZoneFlowNode, type ZoneFlowNode } from "../data/zones";
 import { loadIndex, pickCurrentRun, type GlobalIndex } from "../data/runIndex";
 import { useRunStream, RunStreamContext } from "../data/runStream";
@@ -268,6 +268,30 @@ function CanvasInner({ initialExpandedId }: { initialExpandedId?: string }) {
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch keyed on status change, not every fold
   }, [sseLive, activeRun, statusSig, endpointBase]);
+
+  // ── (DR6) Reconcile net — heal drift after a backgrounded / throttled tab ────────────────────────────────────
+  // A backgrounded tab throttles (or silently stalls) SSE delivery, so on return to the foreground the live model
+  // may be BEHIND the run. On `visibilitychange` → visible, fetch the authoritative /run-view ONCE and MODEL-REPLACE
+  // the live model with it (`live.reconcile` → the same snapshot-replace merge path) so the graph re-bases to
+  // ground truth. Active only under the SSE path; best-effort — a failed fetch never disturbs the live stream, and
+  // on SSE failure/done `sseLive` is false so the poll path (which already re-polls) owns the graph. A dropped
+  // stream self-heals separately (EventSource auto-reconnects → the server re-sends a fresh snapshot). A slow ≥30 s
+  // safety poll is the next lever if a FOREGROUND tab is ever seen to silently stall; omitted to preserve P5's
+  // zero-fetch-when-idle property.
+  const reconcile = live.reconcile;
+  useEffect(() => {
+    if (!sseLive || !activeRun) return;
+    let alive = true;
+    const resync = async () => {
+      if (document.visibilityState !== "visible") return; // fire only on becoming visible, never on hide
+      try {
+        const view = await loadRunView(activeRun);
+        if (alive) reconcile(runViewToLiveModel(view));
+      } catch { /* best-effort — the SSE stream stays the source of truth */ }
+    };
+    document.addEventListener("visibilitychange", resync);
+    return () => { alive = false; document.removeEventListener("visibilitychange", resync); };
+  }, [sseLive, activeRun, reconcile, endpointBase]);
 
   // switch the viewed run (from the menu-bar switcher): load it + close any open node / file
   const selectRun = useCallback((run: string) => {

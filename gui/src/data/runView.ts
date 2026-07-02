@@ -493,6 +493,62 @@ export function liveModelToRunView(model: LiveModel): RunView {
   };
 }
 
+/** Map one authoritative RunViewNode → the LiveNode the SSE model carries (the inverse of `liveNodeToRunViewNode`).
+ *  Copies exactly the fields the live model holds — which are precisely the shadow-diff RENDER key — so the
+ *  re-based node renders identically to /run-view. Fields the LiveNode shape omits (scopes/bash/thinkingChars/
+ *  agentType/config) are NOT rendered on the SSE path anyway, so dropping them here matches the live path's own
+ *  coverage (no NEW divergence). `stageIndex`/`lane` default the SAME way `toFlowGraph` does, so an unplaced node
+ *  still lays out identically. PURE. */
+function runViewNodeToLiveNode(n: RunViewNode): LiveNode {
+  return {
+    id: n.id,
+    label: n.label,
+    phase: n.phase,
+    status: n.status as LiveNode["status"],
+    stageIndex: n.stageIndex ?? 1,
+    lane: n.lane ?? 0,
+    tokens: n.tokens,
+    derived: n.derived,
+    model: n.model ?? null,
+    provider: n.provider ?? null,
+    durationMs: n.durationMs ?? null,
+    contextWindow: n.contextWindow ?? null,
+    toolCalls: n.toolCalls,
+    toolBreakdown: n.toolBreakdown,
+    timeline: n.timeline,
+    reads: n.reads,
+    writes: n.writes,
+    artifacts: n.artifacts,
+    retries: n.retries,
+    stopReason: n.stopReason,
+    truncated: n.truncated,
+    summary: n.summary,
+  };
+}
+
+/** (DR6) Adapt an AUTHORITATIVE RunView → the LiveModel the SSE stream carries — the inverse of
+ *  `liveModelToRunView`, used by the reconcile net. When a backgrounded/throttled tab returns, the client fetches
+ *  `/run-view` once and MODEL-REPLACEs the live model with `runViewToLiveModel(view)` (via the same snapshot-
+ *  replace merge path), re-basing the graph to ground truth. Because it carries the entire shadow-diff render key
+ *  verbatim, a reconcile introduces ZERO divergence vs /run-view (proven by the round-trip parity test). The
+ *  run-level `tokenTotal`, resolved `stages` spine, and edges are ADOPTED from the authoritative view (not
+ *  recomputed client-side) — MODEL REPLACE, not field-merge. PURE. */
+export function runViewToLiveModel(view: RunView): LiveModel {
+  return {
+    run: view.run,
+    done: view.done ?? false,
+    ok: view.ok ?? null,
+    durationMs: view.durationMs ?? null,
+    provider: view.provider,
+    model: view.model,
+    totals: view.totals ?? null,
+    tokenTotal: view.tokenTotal,
+    stages: view.stages,
+    edges: view.edges.map((e) => ({ from: e.from, to: e.to, path: e.path })),
+    nodes: view.nodes.map((n) => runViewNodeToLiveNode(n)),
+  };
+}
+
 /** (P5) The trigger signature RunDigestPanel refetches `/run-digest` on UNDER SSE — the panel/canvas decide
  *  WHEN to refetch; they never compute the digest (that stays server-side). Returns `null` in POLL-mode
  *  (`!sseLive || !model`), which tells the panel to keep its 3 s fallback timer; otherwise a STABLE string over

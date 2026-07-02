@@ -4,7 +4,7 @@
 // (RunModel/RunUpdate) — the shapes are the shared contract, not a fork. It carries the live
 // status + snapshot model and folds NOTHING: the canvas renders the fully-derived run-view the
 // `/__piflow/run-view/<run>` poll returns (the observe surface stamps every zone). Real data only.
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { sse, useEndpoint } from "./apiBase";
 import type { RunTokens, NodeDerived, TimelineSpan, ReadRef, WriteRef, ArtifactRef, RunViewStage } from "./runView";
 
@@ -106,6 +106,14 @@ export interface RunStreamState {
   error?: string;
 }
 
+/** What `useRunStream` returns: the stream state PLUS the DR6 reconcile handle. `reconcile(model)` MODEL-REPLACEs
+ *  the live model with an authoritative snapshot (fetched from /run-view by the reconcile net) via the SAME
+ *  snapshot-replace merge path the SSE snapshot uses — one merge path, no field-merge. Callers that only read the
+ *  state (e.g. the Companion via context) ignore it; the widened shape is still assignable to `RunStreamState`. */
+export interface RunStreamHandle extends RunStreamState {
+  reconcile: (model: LiveModel) => void;
+}
+
 export const INITIAL: RunStreamState = { status: "connecting", model: null, recent: [] };
 const RECENT_CAP = 40;
 
@@ -172,9 +180,15 @@ export function reduce(prev: RunStreamState, f: Frame): RunStreamState {
  * so we stop EventSource's auto-reconnect). A transient drop mid-run auto-reconnects
  * (EventSource default) and the bridge re-sends a fresh snapshot — idempotent.
  */
-export function useRunStream(run: string | null | undefined): RunStreamState {
+export function useRunStream(run: string | null | undefined): RunStreamHandle {
   const [state, setState] = useState<RunStreamState>(INITIAL);
   const esRef = useRef<EventSource | null>(null);
+  // (DR6) Reconcile net entry point: re-base the live model to an authoritative snapshot by folding a synthetic
+  // `snapshot` frame through the SAME `reduce` (MODEL REPLACE, one merge path). Stable identity (no deps) so the
+  // WorkflowCanvas effect that owns the visibilitychange listener can depend on it without re-arming.
+  const reconcile = useCallback((model: LiveModel) => {
+    setState((prev) => reduce(prev, { kind: "snapshot", model }));
+  }, []);
   // Re-point trigger: a migrate switches the console to a new serve → this baseUrl changes → the effect
   // re-runs and reopens the telemetry stream against the new origin (for the same run id).
   const endpointBase = useEndpoint().baseUrl;
@@ -198,5 +212,7 @@ export function useRunStream(run: string | null | undefined): RunStreamState {
     return () => { es.close(); esRef.current = null; };
   }, [run, endpointBase]);
 
-  return state;
+  // Memoized so the handle's identity changes ONLY when `state` changes (reconcile is stable) — the context value
+  // ticks at the same cadence as before DR6, so the Companion doesn't re-render on every canvas render.
+  return useMemo(() => ({ ...state, reconcile }), [state, reconcile]);
 }
