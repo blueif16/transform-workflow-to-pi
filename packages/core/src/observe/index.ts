@@ -18,6 +18,10 @@ export type { RunView, RunViewNode, RunViewStage, RunViewEdge, RunTokens, ScopeB
 // as `derived` — the ONE compute site so the GUI + TUI render identical numbers and re-derive nothing.
 export { deriveNode, cacheTone, toolErrorTone, contextTone, timeTone, retriesTone } from './derive.js';
 export type { NodeDerived, DeriveInput, Tone, RankedTool, DerivedOutput } from './derive.js';
+// The falsifiable full-run rubric (docs/design/full-run-simulation.md §5) — the reusable "did this run
+// actually succeed?" assessor the smoke drivers + L1–L3 E2E tiers call instead of reward-hackable substrings.
+export { assessRunView } from './assess.js';
+export type { AssessOpts, RunAssessment } from './assess.js';
 export { loadModelCatalog, contextWindowFor, DEFAULT_CONTEXT_WINDOW } from './models.js';
 export type { ModelCaps, ModelCatalog } from './models.js';
 
